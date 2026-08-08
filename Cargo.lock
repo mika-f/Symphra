@@ -43,6 +43,10 @@ version = "0.1.0"
 [[package]]
 name = "symphra-export"
 version = "0.1.0"
+dependencies = [
+ "symphra-render",
+ "thiserror",
+]
 
 [[package]]
 name = "symphra-lsp"

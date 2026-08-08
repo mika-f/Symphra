@@ -1,14 +1,191 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+//! Deterministic offline rendering from score events to interleaved PCM.
+
+use std::num::NonZeroU32;
+
+use symphra_dsp::{SineOscillator, fade_gain};
+use symphra_score::{Channels, MusicalTime, Score, Song, TimeError};
+
+const NOTE_GAIN: f32 = 0.2;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioBuffer {
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+    pub samples: Vec<f32>,
+}
+
+impl AudioBuffer {
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.samples.len() / usize::from(self.channels)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RenderError {
+    #[error("song index is out of range")]
+    SongNotFound,
+    #[error("tempo must be finite and greater than zero")]
+    InvalidTempo,
+    #[error("sample rate must be greater than zero")]
+    InvalidSampleRate,
+    #[error("rendered audio is too large")]
+    AudioTooLarge,
+    #[error(transparent)]
+    Time(#[from] TimeError),
+}
+
+/// Renders one song from a score into an interleaved PCM buffer.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] for an invalid song index, tempo, musical time, or
+/// a buffer too large for the current platform.
+pub fn render_song(score: &Score, song_index: usize) -> Result<AudioBuffer, RenderError> {
+    let song = score
+        .songs
+        .get(song_index)
+        .ok_or(RenderError::SongNotFound)?;
+    if !song.tempo_bpm.is_finite() || song.tempo_bpm <= 0.0 {
+        return Err(RenderError::InvalidTempo);
+    }
+    let channels = match score.channels {
+        Channels::Mono => 1,
+        Channels::Stereo => 2,
+    };
+    let frames = song_frames(song, score.sample_rate_hz)?;
+    let sample_count = frames
+        .checked_mul(u64::from(channels))
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or(RenderError::AudioTooLarge)?;
+    let mut samples = vec![0.0; sample_count];
+    render_notes(song, score.sample_rate_hz, channels, &mut samples)?;
+    for sample in &mut samples {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+    Ok(AudioBuffer {
+        sample_rate_hz: score.sample_rate_hz,
+        channels,
+        samples,
+    })
+}
+
+fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
+    song.tracks
+        .iter()
+        .flat_map(|track| &track.notes)
+        .map(|note| {
+            time_to_frame(
+                note.start.checked_add(note.duration)?,
+                song.tempo_bpm,
+                sample_rate_hz,
+            )
+        })
+        .try_fold(0, |latest, end| end.map(|end| latest.max(end)))
+}
+
+fn render_notes(
+    song: &Song,
+    sample_rate_hz: u32,
+    channels: u16,
+    samples: &mut [f32],
+) -> Result<(), RenderError> {
+    let Some(sample_rate) = NonZeroU32::new(sample_rate_hz) else {
+        return Err(RenderError::InvalidSampleRate);
+    };
+    let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
+    for note in song.tracks.iter().flat_map(|track| &track.notes) {
+        let start = time_to_frame(note.start, song.tempo_bpm, sample_rate_hz)?;
+        let end = time_to_frame(
+            note.start.checked_add(note.duration)?,
+            song.tempo_bpm,
+            sample_rate_hz,
+        )?;
+        let note_frames = end.saturating_sub(start);
+        let mut oscillator = SineOscillator::from_midi(note.midi_pitch, sample_rate);
+        for frame in start..end {
+            let value = oscillator.next_sample()
+                * fade_gain(frame - start, note_frames, fade_samples)
+                * NOTE_GAIN;
+            let first_sample = frame
+                .checked_mul(u64::from(channels))
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or(RenderError::AudioTooLarge)?;
+            for channel in 0..usize::from(channels) {
+                samples[first_sample + channel] += value;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "the finite non-negative frame count is range-checked before conversion"
+)]
+fn time_to_frame(
+    time: MusicalTime,
+    tempo_bpm: f64,
+    sample_rate_hz: u32,
+) -> Result<u64, RenderError> {
+    let frames =
+        time.numerator() as f64 / time.denominator() as f64 * 240.0 * f64::from(sample_rate_hz)
+            / tempo_bpm;
+    if !frames.is_finite() || frames < 0.0 || frames > u64::MAX as f64 {
+        Err(RenderError::AudioTooLarge)
+    } else {
+        Ok(frames.round() as u64)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use symphra_score::{
+        Channels, EntityId, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass, Score, Song,
+        Track,
+    };
+
+    use super::render_song;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn render_song_should_be_deterministic_and_interleaved() {
+        let score = Score {
+            seed: 1,
+            sample_rate_hz: 8,
+            channels: Channels::Stereo,
+            songs: vec![Song {
+                id: EntityId(0),
+                name: "test".to_owned(),
+                tempo_bpm: 60.0,
+                meter: Meter {
+                    numerator: 4,
+                    denominator: 4,
+                },
+                key: Key {
+                    tonic: PitchClass::A,
+                    mode: Mode::Minor,
+                },
+                tracks: vec![Track {
+                    id: EntityId(1),
+                    name: "tone".to_owned(),
+                    notes: vec![NoteEvent {
+                        id: EntityId(2),
+                        start: MusicalTime::ZERO,
+                        duration: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+                        midi_pitch: 69,
+                    }],
+                }],
+            }],
+        };
+
+        let first = render_song(&score, 0).expect("score should render");
+        let second = render_song(&score, 0).expect("score should render again");
+
+        assert_eq!(
+            (first.frames(), first.channels, first.samples),
+            (8, 2, second.samples)
+        );
     }
 }

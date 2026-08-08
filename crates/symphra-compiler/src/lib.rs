@@ -9,10 +9,13 @@ use symphra_syntax::ast::{
 };
 
 use crate::hir::{
-    Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, Program, Project, Song,
+    Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program, Project, Song,
 };
 
 pub mod hir;
+mod schedule;
+
+pub use schedule::schedule;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileDiagnostic {
@@ -296,10 +299,19 @@ impl Compiler {
     }
 
     fn key(&mut self, tonic: &str, mode: &str, span: SourceSpan) -> Option<Key> {
-        if !matches!(tonic, "A" | "B" | "C" | "D" | "E" | "F" | "G") {
-            self.error("key tonic must be a natural note from A to G", span);
-            return None;
-        }
+        let tonic = match tonic {
+            "C" => PitchClass::C,
+            "D" => PitchClass::D,
+            "E" => PitchClass::E,
+            "F" => PitchClass::F,
+            "G" => PitchClass::G,
+            "A" => PitchClass::A,
+            "B" => PitchClass::B,
+            _ => {
+                self.error("key tonic must be a natural note from A to G", span);
+                return None;
+            }
+        };
         let mode = match mode {
             "major" => Mode::Major,
             "minor" => Mode::Minor,
@@ -308,10 +320,7 @@ impl Compiler {
                 return None;
             }
         };
-        Some(Key {
-            tonic: tonic.to_owned(),
-            mode,
-        })
+        Some(Key { tonic, mode })
     }
 
     fn pitch(&mut self, pitch: &str, span: SourceSpan) -> Option<u8> {

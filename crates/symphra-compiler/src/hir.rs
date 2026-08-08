@@ -41,8 +41,19 @@ pub struct Meter {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Key {
-    pub tonic: String,
+    pub tonic: PitchClass,
     pub mode: Mode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PitchClass {
+    C,
+    D,
+    E,
+    F,
+    G,
+    A,
+    B,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

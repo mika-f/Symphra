@@ -1,7 +1,8 @@
-use symphra_compiler::compile;
 use symphra_compiler::hir::{
-    Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, Program, Project, Song,
+    Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program, Project, Song,
 };
+use symphra_compiler::{compile, schedule};
+use symphra_score::MusicalTime;
 use symphra_syntax::{SourceId, parse};
 
 const EXAMPLE: &str = r#"
@@ -47,7 +48,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                     denominator: 4,
                 },
                 key: Key {
-                    tonic: "C".to_owned(),
+                    tonic: PitchClass::C,
                     mode: Mode::Major,
                 },
                 patterns: vec![Pattern {
@@ -117,6 +118,28 @@ song "Bad" {
             "key tonic must be a natural note from A to G",
             "pitch must be a natural note followed by an octave",
             "note duration must be greater than zero",
+        ]
+    );
+}
+
+#[test]
+fn schedule_should_place_sequence_notes_back_to_back() {
+    let parsed = parse(SourceId(0), EXAMPLE);
+    let program = compile(&parsed.file).expect("example should compile");
+
+    let score = schedule(&program).expect("example times should fit");
+    let starts = score.songs[0].tracks[0]
+        .notes
+        .iter()
+        .map(|note| note.start)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        starts,
+        [
+            MusicalTime::ZERO,
+            MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            MusicalTime::new(1, 2).expect("half note should be valid"),
         ]
     );
 }

@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = [
+    "apps/*",
+    "crates/*",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/<owner>/symphra"
+
+[workspace.dependencies]
+thiserror = "2"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+
+symphra-syntax = { path = "crates/symphra-syntax" }
+symphra-compiler = { path = "crates/symphra-compiler" }
+symphra-score = { path = "crates/symphra-score" }
+symphra-render = { path = "crates/symphra-render" }
+symphra-dsp = { path = "crates/symphra-dsp" }
+symphra-sampler = { path = "crates/symphra-sampler" }
+symphra-engine = { path = "crates/symphra-engine" }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

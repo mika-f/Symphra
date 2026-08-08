@@ -57,6 +57,9 @@ version = "0.1.0"
 [[package]]
 name = "symphra-compiler"
 version = "0.1.0"
+dependencies = [
+ "symphra-syntax",
+]
 
 [[package]]
 name = "symphra-dsp"

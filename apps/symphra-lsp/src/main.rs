@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
-use symphra_syntax::ast::{Declaration, SongStatement};
+use symphra_syntax::ast::{Declaration, PatternBody, SongStatement};
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
 };
@@ -400,7 +400,9 @@ fn hover(source: &SourceText, position: Position) -> Option<Hover> {
         .tokens
         .into_iter()
         .find(|token| token.span.start <= offset && offset < token.span.end)?;
-    let description = keyword_description(token.kind)?;
+    let description = keyword_description(token.kind)
+        .map(str::to_owned)
+        .or_else(|| pitch_description(source, token.span))?;
     let range = lsp_range(source, token.span)?;
 
     Some(Hover {
@@ -410,6 +412,39 @@ fn hover(source: &SourceText, position: Position) -> Option<Hover> {
         }),
         range: Some(range),
     })
+}
+
+fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
+    let parsed = parse(source.id, &source.text);
+    let program = parsed
+        .diagnostics
+        .is_empty()
+        .then(|| compile(&parsed.file).ok())??;
+    let songs = parsed.file.declarations.iter().filter_map(|declaration| {
+        let Declaration::Song(song) = declaration else {
+            return None;
+        };
+        Some(song)
+    });
+
+    for (source_song, song) in songs.zip(&program.songs) {
+        let patterns = source_song
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                SongStatement::Pattern(pattern) => Some(pattern),
+                _ => None,
+            });
+        for (source_pattern, pattern) in patterns.zip(&song.patterns) {
+            let PatternBody::Sequence { notes, .. } = &source_pattern.body;
+            for (source_note, note) in notes.iter().zip(&pattern.notes) {
+                if source_note.pitch.span == span {
+                    return Some(format!("MIDI note {}.", note.midi_pitch));
+                }
+            }
+        }
+    }
+    None
 }
 
 const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
@@ -565,5 +600,24 @@ mod tests {
             Some(Range::new(Position::new(0, 3), Position::new(0, 7)))
         );
         assert!(hover(&source, Position::new(0, 1)).is_none());
+    }
+
+    #[test]
+    fn hovers_compiled_pitch_values() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 48khz output stereo }\n",
+                "song \"Test\" { tempo 120bpm meter 4/4 key C major\n",
+                "pattern melody = sequence { note C4 for 1/4 } }",
+            ),
+        );
+        let result = hover(&source, Position::new(2, 34)).expect("C4 should have pitch help");
+
+        let super::HoverContents::Markup(contents) = result.contents else {
+            panic!("hover should use markup content");
+        };
+        assert_eq!(contents.value, "`C4` — MIDI note 60.");
     }
 }

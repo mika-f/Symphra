@@ -3,10 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
 use symphra_syntax::ast::{Declaration, SongStatement};
-use symphra_syntax::{SourceId, SourceSpan, SourceText, parse};
+use symphra_syntax::{
+    SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
+};
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     InitializeParams, InitializeResult, Location, OneOf, Position, PositionEncodingKind, Range,
@@ -51,6 +54,7 @@ impl LanguageServer for Backend {
                     TextDocumentSyncKind::FULL,
                 )),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                completion_provider: Some(CompletionOptions::default()),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -107,6 +111,19 @@ impl LanguageServer for Backend {
                 &symbols,
             ))
         }))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let documents = self.documents.read().await;
+        let position = params.text_document_position.position;
+        let uri = params.text_document_position.text_document.uri;
+        let Some(source) = documents.get(&uri) else {
+            return Ok(None);
+        };
+
+        Ok(Some(CompletionResponse::Array(completions(
+            source, position,
+        ))))
     }
 }
 
@@ -254,6 +271,115 @@ fn symbol(
     })
 }
 
+#[derive(Clone, Copy)]
+enum CompletionBlock {
+    Project,
+    Song,
+    Sequence,
+    Other,
+}
+
+fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
+    let Some(byte_offset) = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    }) else {
+        return Vec::new();
+    };
+    let byte_offset = byte_offset as usize;
+    let prefix = &source.text[..byte_offset];
+    let tokens = lex(source.id, prefix).tokens;
+    let tokens = &tokens[..tokens.len() - 1];
+    let block = completion_block(tokens);
+    let line_start = prefix.rfind('\n').map_or(0, |offset| offset + 1);
+    let Ok(line_start) = u32::try_from(line_start) else {
+        return Vec::new();
+    };
+    let line_token_start = tokens
+        .iter()
+        .rposition(|token| token.span.start < line_start || token.kind == TokenKind::LeftBrace)
+        .map_or(0, |index| index + 1);
+    let line_tokens = &tokens[line_token_start..];
+
+    let labels: &[&str] = if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal)
+    {
+        &["sequence"]
+    } else if matches!(
+        line_tokens,
+        [
+            Token {
+                kind: TokenKind::Note,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            }
+        ]
+    ) {
+        &["for"]
+    } else if completion_statement_start(line_tokens) {
+        match block {
+            None => &["project", "song"],
+            Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
+            Some(CompletionBlock::Song) => &["tempo", "meter", "key", "pattern"],
+            Some(CompletionBlock::Sequence) => &["note"],
+            Some(CompletionBlock::Other) => &[],
+        }
+    } else {
+        &[]
+    };
+
+    labels
+        .iter()
+        .map(|label| CompletionItem {
+            label: (*label).to_owned(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Symphra keyword".to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
+    let mut pending = None;
+    let mut blocks = Vec::new();
+    for token in tokens {
+        match token.kind {
+            TokenKind::Project => pending = Some(CompletionBlock::Project),
+            TokenKind::Song => pending = Some(CompletionBlock::Song),
+            TokenKind::Sequence => pending = Some(CompletionBlock::Sequence),
+            TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
+            TokenKind::RightBrace => {
+                blocks.pop();
+            }
+            _ => {}
+        }
+    }
+    blocks.last().copied()
+}
+
+fn completion_statement_start(tokens: &[Token]) -> bool {
+    tokens.is_empty()
+        || matches!(
+            tokens,
+            [Token {
+                kind: TokenKind::Identifier
+                    | TokenKind::Project
+                    | TokenKind::Song
+                    | TokenKind::Seed
+                    | TokenKind::SampleRate
+                    | TokenKind::Output
+                    | TokenKind::Tempo
+                    | TokenKind::Meter
+                    | TokenKind::Key
+                    | TokenKind::Pattern
+                    | TokenKind::Note,
+                ..
+            }]
+        )
+}
+
 #[tokio::main]
 async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
@@ -268,7 +394,9 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceId, SourceText, diagnostics, document_symbols, flatten_document_symbols};
+    use super::{
+        SourceId, SourceText, completions, diagnostics, document_symbols, flatten_document_symbols,
+    };
     use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, SymbolKind, Uri};
 
     #[test]
@@ -334,5 +462,41 @@ mod tests {
             (flat.len(), flat[2].container_name.as_deref()),
             (3, Some("Test"))
         );
+    }
+
+    #[test]
+    fn completes_keywords_for_the_current_grammar_context() {
+        fn labels(source: &str, line: u32, character: u32) -> Vec<String> {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+        }
+
+        assert_eq!(labels("so", 0, 2), ["project", "song"]);
+        assert_eq!(
+            labels("project {\n  sam", 1, 5),
+            ["seed", "sample_rate", "output"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\n  pat", 1, 5),
+            ["tempo", "meter", "key", "pattern"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\npattern p = sequence {\n  no", 2, 4),
+            ["note"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\n  pattern p = ", 1, 14),
+            ["sequence"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\npattern p = sequence {\n  note C4 ", 2, 10),
+            ["for"]
+        );
+        assert!(labels("😀", 0, 1).is_empty());
     }
 }

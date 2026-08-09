@@ -189,7 +189,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
                 "text": concat!(
                     "project { seed 1 sample_rate 48khz output stereo } ",
                     "song \"Test\" { tempo 120bpm meter 4/4 key C major ",
-                    "pattern melody = sequence {} }"
+                    "pattern melody = sequence {} }\n"
                 )
             }]
         }
@@ -208,6 +208,19 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     let symbols = server.receive();
     assert_eq!(symbols["result"][1]["name"], "Test");
     assert_eq!(symbols["result"][1]["children"][0]["name"], "melody");
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "textDocument/completion",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 1, "character": 0 }
+        }
+    }));
+    let completion = server.receive();
+    assert_eq!(completion["result"][0]["label"], "project");
+    assert_eq!(completion["result"][1]["label"], "song");
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -234,11 +247,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 3,
+        "id": 4,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 3);
+    assert_eq!(server.receive()["id"], 4);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

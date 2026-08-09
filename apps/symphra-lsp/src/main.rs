@@ -307,6 +307,8 @@ enum CompletionBlock {
     Song,
     Arrangement,
     Sequence,
+    Sampled,
+    Sampler,
     Other,
 }
 
@@ -335,7 +337,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
     let labels: &[&str] = if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal)
     {
         if matches!(line_tokens.first(), Some(token) if token.kind == TokenKind::Instrument) {
-            &["sine", "triangle"]
+            &["sine", "triangle", "sampled", "sampler"]
         } else {
             &["sequence"]
         }
@@ -361,6 +363,8 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
                 "arrangement",
             ],
             Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
+            Some(CompletionBlock::Sampled) => &["source", "root"],
+            Some(CompletionBlock::Sampler) => &["pack"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
         }
     } else {
@@ -433,6 +437,8 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Song => pending = Some(CompletionBlock::Song),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => pending = Some(CompletionBlock::Sequence),
+            TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
+            TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
             TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
             TokenKind::RightBrace => {
                 blocks.pop();
@@ -462,7 +468,10 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Arrangement
                     | TokenKind::Note
                     | TokenKind::Chord
-                    | TokenKind::Rest,
+                    | TokenKind::Rest
+                    | TokenKind::Source
+                    | TokenKind::Root
+                    | TokenKind::Pack,
                 ..
             }]
         )
@@ -616,6 +625,12 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Rest => "advances a sequence without producing sound.",
         TokenKind::For => "introduces a duration, such as `1/4`.",
         TokenKind::Velocity => "sets note intensity from 0 to 127.",
+        TokenKind::Sample => "selects a sample from the current sampler pack.",
+        TokenKind::Sampled => "declares a pitched instrument backed by one WAV file.",
+        TokenKind::Sampler => "declares an instrument backed by a sample pack.",
+        TokenKind::Source => "sets the WAV file used by a sampled instrument.",
+        TokenKind::Root => "sets the sample's original pitch, such as `C4`.",
+        TokenKind::Pack => "sets the sample pack used by a sampler instrument.",
         _ => return None,
     })
 }
@@ -735,7 +750,23 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\n  instrument lead = ", 1, 20),
-            ["sine", "triangle"]
+            ["sine", "triangle", "sampled", "sampler"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  instrument piano = sampled {\n    ",
+                2,
+                4
+            ),
+            ["source", "root"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  instrument voice = sampler {\n    ",
+                2,
+                4
+            ),
+            ["pack"]
         );
         assert_eq!(
             labels("song \"Test\" {\narrangement {\n  melody", 2, 8),

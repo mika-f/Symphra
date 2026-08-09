@@ -1,11 +1,25 @@
-use super::{FrequencyLiteral, Identifier, PatternDeclaration, RateLiteral};
+use super::{FrequencyLiteral, Identifier, PatternDeclaration, QuotedString, RateLiteral};
 use crate::SourceSpan;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentDeclaration {
     pub name: Identifier,
-    pub kind: Identifier,
+    pub body: InstrumentBody,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstrumentBody {
+    Builtin(Identifier),
+    Sampled {
+        source: QuotedString,
+        root: Identifier,
+        span: SourceSpan,
+    },
+    Sampler {
+        pack: QuotedString,
+        span: SourceSpan,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -3,6 +3,7 @@
 use std::num::NonZeroU32;
 
 use symphra_dsp::{Oscillator, Waveform, fade_gain};
+use symphra_sampler::{SampleLibrary, SamplePlayer};
 use symphra_score::{Channels, InstrumentKind, MusicalTime, Score, Song, TimeError};
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -21,7 +22,7 @@ impl AudioBuffer {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RenderError {
     #[error("song index is out of range")]
     SongNotFound,
@@ -31,6 +32,10 @@ pub enum RenderError {
     InvalidSampleRate,
     #[error("rendered audio is too large")]
     AudioTooLarge,
+    #[error("sample `{0}` was not loaded")]
+    MissingSample(String),
+    #[error("sampler pack `{0}` requires sample selection events")]
+    SamplerRequiresSampleEvents(String),
     #[error(transparent)]
     Time(#[from] TimeError),
 }
@@ -42,6 +47,20 @@ pub enum RenderError {
 /// Returns [`RenderError`] for an invalid song index, tempo, musical time, or
 /// a buffer too large for the current platform.
 pub fn render_song(score: &Score, song_index: usize) -> Result<AudioBuffer, RenderError> {
+    render_song_with_samples(score, song_index, &SampleLibrary::default())
+}
+
+/// Renders one song using preloaded sample assets.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] for an invalid score or a referenced sample that is
+/// absent from `sample_library`.
+pub fn render_song_with_samples(
+    score: &Score,
+    song_index: usize,
+    sample_library: &SampleLibrary,
+) -> Result<AudioBuffer, RenderError> {
     let song = score
         .songs
         .get(song_index)
@@ -59,7 +78,13 @@ pub fn render_song(score: &Score, song_index: usize) -> Result<AudioBuffer, Rend
         .and_then(|count| usize::try_from(count).ok())
         .ok_or(RenderError::AudioTooLarge)?;
     let mut samples = vec![0.0; sample_count];
-    render_notes(song, score.sample_rate_hz, channels, &mut samples)?;
+    render_notes(
+        song,
+        score.sample_rate_hz,
+        channels,
+        sample_library,
+        &mut samples,
+    )?;
     for sample in &mut samples {
         *sample = sample.clamp(-1.0, 1.0);
     }
@@ -92,6 +117,7 @@ fn render_notes(
     song: &Song,
     sample_rate_hz: u32,
     channels: u16,
+    sample_library: &SampleLibrary,
     samples: &mut [f32],
 ) -> Result<(), RenderError> {
     let Some(sample_rate) = NonZeroU32::new(sample_rate_hz) else {
@@ -99,10 +125,6 @@ fn render_notes(
     };
     let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
     for track in &song.tracks {
-        let waveform = match track.instrument {
-            InstrumentKind::Sine => Waveform::Sine,
-            InstrumentKind::Triangle => Waveform::Triangle,
-        };
         for note in &track.notes {
             let start = time_to_frame(note.start, song.tempo_bpm, sample_rate_hz)?;
             let end = time_to_frame(
@@ -111,11 +133,45 @@ fn render_notes(
                 sample_rate_hz,
             )?;
             let note_frames = end.saturating_sub(start);
-            let mut oscillator = Oscillator::from_midi(note.midi_pitch, sample_rate, waveform);
+            let (mut voice, instrument_gain) = match &track.instrument {
+                InstrumentKind::Sine => (
+                    Voice::Oscillator(Oscillator::from_midi(
+                        note.midi_pitch,
+                        sample_rate,
+                        Waveform::Sine,
+                    )),
+                    MAX_NOTE_GAIN,
+                ),
+                InstrumentKind::Triangle => (
+                    Voice::Oscillator(Oscillator::from_midi(
+                        note.midi_pitch,
+                        sample_rate,
+                        Waveform::Triangle,
+                    )),
+                    MAX_NOTE_GAIN,
+                ),
+                InstrumentKind::Sampled { source, root_midi } => (
+                    Voice::Sample(SamplePlayer::new(
+                        sample_library
+                            .get(source)
+                            .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
+                        sample_rate,
+                        *root_midi,
+                        note.midi_pitch,
+                    )),
+                    1.0,
+                ),
+                InstrumentKind::Sampler { pack } => {
+                    return Err(RenderError::SamplerRequiresSampleEvents(pack.clone()));
+                }
+            };
             for frame in start..end {
-                let value = oscillator.next_sample()
+                let Some(sample) = voice.next_sample() else {
+                    break;
+                };
+                let value = sample
                     * fade_gain(frame - start, note_frames, fade_samples)
-                    * MAX_NOTE_GAIN
+                    * instrument_gain
                     * (f32::from(note.velocity) / 127.0);
                 let first_sample = frame
                     .checked_mul(u64::from(channels))
@@ -128,6 +184,20 @@ fn render_notes(
         }
     }
     Ok(())
+}
+
+enum Voice<'a> {
+    Oscillator(Oscillator),
+    Sample(SamplePlayer<'a>),
+}
+
+impl Voice<'_> {
+    fn next_sample(&mut self) -> Option<f32> {
+        match self {
+            Self::Oscillator(oscillator) => Some(oscillator.next_sample()),
+            Self::Sample(player) => player.next_sample(),
+        }
+    }
 }
 
 #[expect(
@@ -158,11 +228,39 @@ mod tests {
         Score, Song, Track,
     };
 
-    use super::render_song;
+    use super::{RenderError, render_song};
 
     #[test]
     fn render_song_should_be_deterministic_and_interleaved() {
-        let score = Score {
+        let score = score(InstrumentKind::Sine);
+
+        let first = render_song(&score, 0).expect("score should render");
+        let second = render_song(&score, 0).expect("score should render again");
+
+        assert_eq!(
+            (first.frames(), first.channels, first.samples),
+            (8, 2, second.samples)
+        );
+    }
+
+    #[test]
+    fn render_song_should_reject_note_events_for_sampler_packs() {
+        let error = render_song(
+            &score(InstrumentKind::Sampler {
+                pack: "numbers".to_owned(),
+            }),
+            0,
+        )
+        .expect_err("sampler packs require sample selection events");
+
+        assert_eq!(
+            error,
+            RenderError::SamplerRequiresSampleEvents("numbers".to_owned())
+        );
+    }
+
+    fn score(instrument: InstrumentKind) -> Score {
+        Score {
             seed: 1,
             sample_rate_hz: 8,
             channels: Channels::Stereo,
@@ -181,7 +279,7 @@ mod tests {
                 tracks: vec![Track {
                     id: EntityId(1),
                     name: "tone".to_owned(),
-                    instrument: InstrumentKind::Sine,
+                    instrument,
                     notes: vec![NoteEvent {
                         id: EntityId(2),
                         start: MusicalTime::ZERO,
@@ -192,14 +290,6 @@ mod tests {
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],
             }],
-        };
-
-        let first = render_song(&score, 0).expect("score should render");
-        let second = render_song(&score, 0).expect("score should render again");
-
-        assert_eq!(
-            (first.frames(), first.channels, first.samples),
-            (8, 2, second.samples)
-        );
+        }
     }
 }

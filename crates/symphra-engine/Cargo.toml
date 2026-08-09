@@ -14,4 +14,5 @@ thiserror.workspace = true
 symphra-compiler.workspace = true
 symphra-render.workspace = true
 symphra-score.workspace = true
+symphra-sampler.workspace = true
 symphra-syntax.workspace = true

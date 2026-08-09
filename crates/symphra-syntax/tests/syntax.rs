@@ -1,5 +1,5 @@
 use symphra_syntax::ast::{
-    Declaration, PatternBody, ProjectStatement, SequenceItem, SongStatement,
+    Declaration, InstrumentBody, PatternBody, ProjectStatement, SequenceItem, SongStatement,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -135,6 +135,9 @@ fn parses_instrument_assignments_in_arrangements() {
     let SongStatement::Instrument(instrument) = &song.statements[0] else {
         panic!("first statement should be an instrument");
     };
+    let InstrumentBody::Builtin(kind) = &instrument.body else {
+        panic!("instrument should be built in");
+    };
     let SongStatement::Arrangement { occurrences, .. } = &song.statements[2] else {
         panic!("third statement should be an arrangement");
     };
@@ -142,7 +145,7 @@ fn parses_instrument_assignments_in_arrangements() {
     assert_eq!(
         (
             instrument.name.text.as_str(),
-            instrument.kind.text.as_str(),
+            kind.text.as_str(),
             occurrences[0].pattern.text.as_str(),
             occurrences[0]
                 .instrument
@@ -152,6 +155,53 @@ fn parses_instrument_assignments_in_arrangements() {
         ),
         ("lead", "triangle", "melody", Some("lead"), None)
     );
+}
+
+#[test]
+fn parses_sampled_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Sample" {
+  instrument piano = sampled { source "samples/piano-c4.wav" root C4 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::Sampled { source, root, .. } = &instrument.body else {
+        panic!("instrument should be sampled");
+    };
+
+    assert_eq!(
+        (source.value.as_str(), root.text.as_str()),
+        ("samples/piano-c4.wav", "C4")
+    );
+}
+
+#[test]
+fn parses_sampler_packs() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Sampler" {
+  instrument voice_numbers = sampler { pack "numbers" }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::Sampler { pack, .. } = &instrument.body else {
+        panic!("instrument should be a sampler");
+    };
+
+    assert_eq!(pack.value, "numbers");
 }
 
 #[test]

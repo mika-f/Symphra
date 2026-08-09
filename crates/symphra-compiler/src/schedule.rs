@@ -61,7 +61,7 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
             .patterns
             .iter()
             .map(|pattern| {
-                schedule_track(pattern, MusicalTime::ZERO, None, hir::InstrumentKind::Sine)
+                schedule_track(pattern, MusicalTime::ZERO, None, &hir::InstrumentKind::Sine)
                     .map(|(track, _)| track)
             })
             .collect();
@@ -85,7 +85,7 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
             .find(|pattern| pattern.id == occurrence.pattern)
             .ok_or(ScheduleError::UnknownPattern(occurrence.pattern))?;
         let (track, end) =
-            schedule_track(pattern, cursor, Some(occurrence.id), occurrence.instrument)?;
+            schedule_track(pattern, cursor, Some(occurrence.id), &occurrence.instrument)?;
         tracks.push(track);
         cursor = end;
     }
@@ -96,7 +96,7 @@ fn schedule_track(
     pattern: &hir::Pattern,
     mut cursor: MusicalTime,
     occurrence: Option<hir::NodeId>,
-    instrument: hir::InstrumentKind,
+    instrument: &hir::InstrumentKind,
 ) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::new();
     for step in &pattern.steps {
@@ -141,6 +141,13 @@ fn schedule_track(
             instrument: match instrument {
                 hir::InstrumentKind::Sine => InstrumentKind::Sine,
                 hir::InstrumentKind::Triangle => InstrumentKind::Triangle,
+                hir::InstrumentKind::Sampled { source, root_midi } => InstrumentKind::Sampled {
+                    source: source.clone(),
+                    root_midi: *root_midi,
+                },
+                hir::InstrumentKind::Sampler { pack } => {
+                    InstrumentKind::Sampler { pack: pack.clone() }
+                }
             },
             notes,
             end: cursor,

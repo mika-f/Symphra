@@ -371,13 +371,13 @@ song "Instruments" {
                 arrangement
                     .occurrences
                     .iter()
-                    .map(|occurrence| occurrence.instrument)
+                    .map(|occurrence| occurrence.instrument.clone())
                     .collect::<Vec<_>>()
             }),
             score.songs[0]
                 .tracks
                 .iter()
-                .map(|track| track.instrument)
+                .map(|track| track.instrument.clone())
                 .collect::<Vec<_>>(),
         ),
         (
@@ -414,9 +414,96 @@ song "Invalid instruments" {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         [
-            "instrument kind must be `sine` or `triangle`",
+            "instrument kind must be `sine`, `triangle`, `sampled`, or `sampler`",
             "instrument name is declared more than once",
             "arrangement references an unknown instrument",
+        ]
+    );
+}
+
+#[test]
+fn compile_should_lower_sampled_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Sample" {
+  tempo 120bpm meter 4/4 key C major
+  arrangement { phrase with piano }
+  instrument piano = sampled { source "samples/piano-c4.wav" root C4 }
+  pattern phrase = sequence { note C4 for 1/4 }
+}
+"#,
+    );
+
+    let program = compile(&parsed.file).expect("sampled instrument should compile");
+
+    assert_eq!(
+        program.songs[0]
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.occurrences.first())
+            .map(|occurrence| &occurrence.instrument),
+        Some(&InstrumentKind::Sampled {
+            source: "samples/piano-c4.wav".to_owned(),
+            root_midi: 60,
+        })
+    );
+}
+
+#[test]
+fn compile_should_lower_sampler_packs() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice_numbers = sampler { pack "numbers" }
+  pattern phrase = sequence { rest for 1/4 }
+  arrangement { phrase with voice_numbers }
+}
+"#,
+    );
+
+    let program = compile(&parsed.file).expect("sampler instrument should compile");
+
+    assert_eq!(
+        program.songs[0]
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.occurrences.first())
+            .map(|occurrence| &occurrence.instrument),
+        Some(&InstrumentKind::Sampler {
+            pack: "numbers".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn compile_should_reject_empty_sample_asset_names() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Empty samples" {
+  tempo 120bpm meter 4/4 key C major
+  instrument piano = sampled { source "" root C4 }
+  instrument voice = sampler { pack "" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty asset names should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "sample source path must not be empty",
+            "sample pack name must not be empty",
         ]
     );
 }

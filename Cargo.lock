@@ -370,6 +370,7 @@ version = "0.1.0"
 dependencies = [
  "symphra-compiler",
  "symphra-render",
+ "symphra-sampler",
  "symphra-score",
  "symphra-syntax",
  "thiserror",
@@ -399,6 +400,7 @@ name = "symphra-render"
 version = "0.1.0"
 dependencies = [
  "symphra-dsp",
+ "symphra-sampler",
  "symphra-score",
  "thiserror",
 ]
@@ -406,6 +408,9 @@ dependencies = [
 [[package]]
 name = "symphra-sampler"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "symphra-score"

@@ -1,10 +1,12 @@
 //! Source-to-audio orchestration for Symphra.
 
 use symphra_compiler::{CompileDiagnostic, ScheduleError, compile, schedule};
-use symphra_render::{RenderError, render_song};
+use symphra_render::{RenderError, render_song_with_samples};
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
+pub use symphra_sampler::{DecodeError, Sample, SampleLibrary, decode_wav};
+pub use symphra_score::Score;
 pub use symphra_syntax::{SourceId, SourceSpan, SourceText};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -26,18 +28,46 @@ pub enum EngineError {
 /// Returns structured syntax or compile diagnostics before scheduling and
 /// rendering errors. No later stage runs after an earlier stage fails.
 pub fn render_source(source: &SourceText, song_index: usize) -> Result<AudioBuffer, EngineError> {
+    let score = compile_source(source)?;
+    render_score(&score, song_index, &SampleLibrary::default())
+}
+
+/// Compiles source into a score without loading or rendering audio assets.
+///
+/// # Errors
+///
+/// Returns structured syntax, compile, or scheduling errors.
+pub fn compile_source(source: &SourceText) -> Result<Score, EngineError> {
     let ParsedSource { file, diagnostics } = parse(source.id, &source.text);
     if !diagnostics.is_empty() {
         return Err(EngineError::Syntax(diagnostics));
     }
     let program = compile(&file).map_err(EngineError::Compile)?;
-    let score = schedule(&program)?;
-    render_song(&score, song_index).map_err(EngineError::Render)
+    schedule(&program).map_err(EngineError::Schedule)
+}
+
+/// Renders a compiled score using preloaded sample assets.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Render`] when the score or sample library cannot be
+/// rendered.
+pub fn render_score(
+    score: &Score,
+    song_index: usize,
+    samples: &SampleLibrary,
+) -> Result<AudioBuffer, EngineError> {
+    render_song_with_samples(score, song_index, samples).map_err(EngineError::Render)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{EngineError, SourceId, SourceText, render_source};
+    use std::num::NonZeroU32;
+
+    use super::{
+        EngineError, Sample, SampleLibrary, SourceId, SourceText, compile_source, render_score,
+        render_source,
+    };
 
     const SOURCE: &str = r#"
 project {
@@ -205,5 +235,39 @@ song "Instrument" {
         let audio = render_source(&source, 0).expect("instrument should render");
 
         assert_ne!(audio.samples[..4_000], audio.samples[4_000..]);
+    }
+
+    #[test]
+    fn render_score_should_play_preloaded_samples() {
+        let source = SourceText::new(
+            SourceId(0),
+            "sample.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sample" {
+  tempo 120bpm meter 4/4 key C major
+  instrument piano = sampled {
+    source "samples/piano-c4.wav"
+    root C4
+  }
+  pattern phrase = sequence { note C4 for 1/4 }
+  arrangement { phrase with piano }
+}
+"#,
+        );
+        let score = compile_source(&source).expect("sample instrument should compile");
+        let mut samples = SampleLibrary::default();
+        samples.insert(
+            "samples/piano-c4.wav",
+            Sample {
+                sample_rate_hz: NonZeroU32::new(8_000).expect("sample rate should be non-zero"),
+                samples: vec![0.5; 4_000],
+            },
+        );
+
+        let audio = render_score(&score, 0, &samples).expect("loaded sample should render");
+
+        assert_eq!(audio.frames(), 4_000);
+        assert!(audio.samples[100..3_900].iter().any(|sample| *sample > 0.0));
     }
 }

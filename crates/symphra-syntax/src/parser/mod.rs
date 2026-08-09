@@ -1,10 +1,10 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChordExpression, Declaration, Identifier, InstrumentDeclaration,
-    NoteExpression, NumberLiteral, PatternBody, PatternDeclaration, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, VelocityExpression,
+    ArrangementOccurrence, ChordExpression, Declaration, Identifier, InstrumentBody,
+    InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody, PatternDeclaration,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -206,9 +206,45 @@ impl Parser {
         let start = self.bump().span;
         let name = self.identifier("expected an instrument name")?;
         self.required(TokenKind::Equal, "expected `=` after instrument name")?;
-        let kind = self.identifier("expected an instrument kind")?;
-        let span = start.cover(kind.span);
-        Some(InstrumentDeclaration { name, kind, span })
+        let body = if self.at(TokenKind::Sampled) {
+            let sample_start = self.bump().span;
+            self.required(TokenKind::LeftBrace, "expected `{` after `sampled`")?;
+            self.required(TokenKind::Source, "expected `source` in sampled instrument")?;
+            let source = self.string("expected a quoted sample source path")?;
+            self.required(TokenKind::Root, "expected `root` after sample source")?;
+            let root = self.identifier("expected a root pitch")?;
+            let end = self.required(
+                TokenKind::RightBrace,
+                "expected `}` to close sampled instrument",
+            )?;
+            InstrumentBody::Sampled {
+                source,
+                root,
+                span: sample_start.cover(end.span),
+            }
+        } else if self.at(TokenKind::Sampler) {
+            let sampler_start = self.bump().span;
+            self.required(TokenKind::LeftBrace, "expected `{` after `sampler`")?;
+            self.required(TokenKind::Pack, "expected `pack` in sampler instrument")?;
+            let pack = self.string("expected a quoted sample pack name")?;
+            let end = self.required(
+                TokenKind::RightBrace,
+                "expected `}` to close sampler instrument",
+            )?;
+            InstrumentBody::Sampler {
+                pack,
+                span: sampler_start.cover(end.span),
+            }
+        } else {
+            InstrumentBody::Builtin(self.identifier("expected an instrument kind")?)
+        };
+        let span = match &body {
+            InstrumentBody::Builtin(kind) => start.cover(kind.span),
+            InstrumentBody::Sampled { span, .. } | InstrumentBody::Sampler { span, .. } => {
+                start.cover(*span)
+            }
+        };
+        Some(InstrumentDeclaration { name, body, span })
     }
 
     fn arrangement(&mut self) -> Option<SongStatement> {

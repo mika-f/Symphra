@@ -4,8 +4,8 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, Declaration, PatternBody, PatternDeclaration, ProjectDeclaration,
-    ProjectStatement, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    ArrangementOccurrence, Declaration, InstrumentBody, PatternBody, PatternDeclaration,
+    ProjectDeclaration, ProjectStatement, SequenceItem, SongDeclaration, SongStatement, SourceFile,
 };
 
 use crate::hir::{
@@ -195,7 +195,7 @@ impl Compiler {
                     if instrument_names.insert(instrument.name.text.as_str()) {
                         instruments.push((
                             instrument.name.text.as_str(),
-                            self.instrument_kind(&instrument.kind.text, instrument.kind.span),
+                            self.instrument_kind(&instrument.body),
                         ));
                     } else {
                         self.error(
@@ -281,7 +281,7 @@ impl Compiler {
                                     reference.span,
                                 );
                             }
-                            instrument.and_then(|(_, kind)| *kind)
+                            instrument.and_then(|(_, kind)| kind.clone())
                         });
                 pattern
                     .zip(instrument)
@@ -295,13 +295,40 @@ impl Compiler {
         Some(Arrangement { occurrences })
     }
 
-    fn instrument_kind(&mut self, kind: &str, span: SourceSpan) -> Option<InstrumentKind> {
-        match kind {
-            "sine" => Some(InstrumentKind::Sine),
-            "triangle" => Some(InstrumentKind::Triangle),
-            _ => {
-                self.error("instrument kind must be `sine` or `triangle`", span);
-                None
+    fn instrument_kind(&mut self, body: &InstrumentBody) -> Option<InstrumentKind> {
+        match body {
+            InstrumentBody::Builtin(kind) => match kind.text.as_str() {
+                "sine" => Some(InstrumentKind::Sine),
+                "triangle" => Some(InstrumentKind::Triangle),
+                _ => {
+                    self.error(
+                        "instrument kind must be `sine`, `triangle`, `sampled`, or `sampler`",
+                        kind.span,
+                    );
+                    None
+                }
+            },
+            InstrumentBody::Sampled { source, root, .. } => {
+                if source.value.is_empty() {
+                    self.error("sample source path must not be empty", source.span);
+                    None
+                } else {
+                    self.pitch(&root.text, root.span)
+                        .map(|root_midi| InstrumentKind::Sampled {
+                            source: source.value.clone(),
+                            root_midi,
+                        })
+                }
+            }
+            InstrumentBody::Sampler { pack, .. } => {
+                if pack.value.is_empty() {
+                    self.error("sample pack name must not be empty", pack.span);
+                    None
+                } else {
+                    Some(InstrumentKind::Sampler {
+                        pack: pack.value.clone(),
+                    })
+                }
             }
         }
     }

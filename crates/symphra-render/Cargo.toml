@@ -13,3 +13,4 @@ workspace = true
 thiserror.workspace = true
 symphra-dsp.workspace = true
 symphra-score.workspace = true
+symphra-sampler.workspace = true

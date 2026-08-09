@@ -65,10 +65,26 @@ pub struct Track {
     pub end: MusicalTime,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstrumentKind {
     Sine,
     Triangle,
+    Sampled { source: String, root_midi: u8 },
+    Sampler { pack: String },
+}
+
+impl Score {
+    pub fn sampled_sources(&self) -> impl Iterator<Item = &str> {
+        self.songs
+            .iter()
+            .flat_map(|song| &song.tracks)
+            .filter_map(|track| match &track.instrument {
+                InstrumentKind::Sampled { source, .. } => Some(source.as_str()),
+                InstrumentKind::Sine
+                | InstrumentKind::Triangle
+                | InstrumentKind::Sampler { .. } => None,
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

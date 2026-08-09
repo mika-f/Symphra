@@ -39,17 +39,19 @@ pub struct Arrangement {
     pub occurrences: Vec<PatternOccurrence>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PatternOccurrence {
     pub id: NodeId,
     pub pattern: NodeId,
     pub instrument: InstrumentKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstrumentKind {
     Sine,
     Triangle,
+    Sampled { source: String, root_midi: u8 },
+    Sampler { pack: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

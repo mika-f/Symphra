@@ -5,7 +5,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use symphra_engine::{EngineError, SourceId, SourceText, render_source};
+use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
+use symphra_engine::{EngineError, SourceId, SourceSpan, SourceText, render_source};
 use symphra_export::{ExportError, encode_wav};
 
 fn main() -> ExitCode {
@@ -54,18 +55,14 @@ fn engine_error(source: &SourceText, error: EngineError) -> CliError {
         EngineError::Syntax(diagnostics) => CliError::Diagnostics(
             diagnostics
                 .iter()
-                .map(|diagnostic| {
-                    format_diagnostic(source, &diagnostic.message, diagnostic.span.start)
-                })
+                .map(|diagnostic| render_diagnostic(source, &diagnostic.message, diagnostic.span))
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
         EngineError::Compile(diagnostics) => CliError::Diagnostics(
             diagnostics
                 .iter()
-                .map(|diagnostic| {
-                    format_diagnostic(source, &diagnostic.message, diagnostic.span.start)
-                })
+                .map(|diagnostic| render_diagnostic(source, &diagnostic.message, diagnostic.span))
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
@@ -73,20 +70,15 @@ fn engine_error(source: &SourceText, error: EngineError) -> CliError {
     }
 }
 
-fn format_diagnostic(source: &SourceText, message: &str, offset: u32) -> String {
-    let offset = usize::try_from(offset)
-        .unwrap_or(source.text.len())
-        .min(source.text.len());
-    let prefix = source.text.get(..offset).unwrap_or(&source.text);
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-    let column = prefix
-        .rsplit('\n')
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .count()
-        + 1;
-    format!("{}:{line}:{column}: error: {message}", source.name)
+fn render_diagnostic(source: &SourceText, message: &str, span: SourceSpan) -> String {
+    let group = Level::ERROR.primary_title(message).element(
+        Snippet::source(&source.text)
+            .line_start(1)
+            .path(&source.name)
+            .fold(true)
+            .annotation(AnnotationKind::Primary.span(span.range()).label(message)),
+    );
+    Renderer::plain().render(&[group])
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -115,7 +107,7 @@ enum CliError {
 
 #[cfg(test)]
 mod tests {
-    use super::{SourceId, SourceText, format_diagnostic, source_to_wav};
+    use super::{SourceId, SourceSpan, SourceText, render_diagnostic, source_to_wav};
 
     #[test]
     fn source_to_wav_should_run_the_complete_offline_pipeline() {
@@ -134,18 +126,31 @@ song "Test" {
         )
         .expect("valid source should encode");
 
-        assert_eq!(
-            (&wav[0..4], &wav[8..12]),
-            (&b"RIFF"[..], &b"WAVE"[..])
+        assert_eq!((&wav[0..4], &wav[8..12]), (&b"RIFF"[..], &b"WAVE"[..]));
+    }
+
+    #[test]
+    fn render_diagnostic_should_highlight_unicode_source() {
+        let source = SourceText::new(SourceId(0), "bad.sym", "aé\n@");
+
+        let diagnostic = render_diagnostic(
+            &source,
+            "unexpected character",
+            SourceSpan::new(SourceId(0), 4..5),
+        );
+
+        assert!(
+            diagnostic.contains("bad.sym")
+                && diagnostic.contains('@')
+                && diagnostic.contains("unexpected character")
         );
     }
 
     #[test]
-    fn format_diagnostic_should_count_unicode_columns() {
-        let source = SourceText::new(SourceId(0), "bad.sym", "aé\n@");
+    fn source_to_wav_should_render_end_of_file_diagnostics() {
+        let error = source_to_wav("bad.sym".to_owned(), "project {".to_owned())
+            .expect_err("unclosed project should fail");
 
-        let diagnostic = format_diagnostic(&source, "unexpected character", 4);
-
-        assert_eq!(diagnostic, "bad.sym:2:1: error: unexpected character");
+        assert!(error.to_string().contains("expected `}` to close project"));
     }
 }

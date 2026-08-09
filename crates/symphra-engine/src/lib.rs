@@ -6,7 +6,7 @@ use symphra_score::TimeError;
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
-pub use symphra_syntax::{SourceId, SourceText};
+pub use symphra_syntax::{SourceId, SourceSpan, SourceText};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum EngineError {

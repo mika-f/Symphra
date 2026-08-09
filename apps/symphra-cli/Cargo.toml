@@ -10,6 +10,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+annotate-snippets.workspace = true
 thiserror.workspace = true
 symphra-engine.workspace = true
 symphra-export.workspace = true

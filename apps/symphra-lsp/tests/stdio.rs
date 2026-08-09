@@ -145,6 +145,10 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         true
     );
     assert_eq!(initialized["result"]["capabilities"]["hoverProvider"], true);
+    assert_eq!(
+        initialized["result"]["capabilities"]["definitionProvider"],
+        true
+    );
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -188,9 +192,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
             },
             "contentChanges": [{
                 "text": concat!(
-                    "project { seed 1 sample_rate 48khz output stereo } ",
-                    "song \"Test\" { tempo 120bpm meter 4/4 key C major ",
-                    "pattern melody = sequence {} }\n"
+                    "project { seed 1 sample_rate 48khz output stereo }\n",
+                    "song \"Test\" { tempo 120bpm meter 4/4 key C major\n",
+                    "  pattern melody = sequence {}\n",
+                    "  arrangement { melody }\n",
+                    "}\n"
                 )
             }]
         }
@@ -216,7 +222,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         "method": "textDocument/completion",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
-            "position": { "line": 1, "character": 0 }
+            "position": { "line": 5, "character": 0 }
         }
     }));
     let completion = server.receive();
@@ -236,6 +242,24 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     assert_eq!(
         hover["result"]["contents"]["value"],
         "`project` — starts the project-wide settings block."
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "textDocument/definition",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 3, "character": 17 }
+        }
+    }));
+    let definition = server.receive();
+    assert_eq!(
+        definition["result"]["range"],
+        json!({
+            "start": { "line": 2, "character": 10 },
+            "end": { "line": 2, "character": 16 }
+        })
     );
 
     server.send(&json!({
@@ -263,11 +287,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 5,
+        "id": 6,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 5);
+    assert_eq!(server.receive()["id"], 6);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

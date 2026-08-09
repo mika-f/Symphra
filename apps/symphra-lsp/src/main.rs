@@ -11,11 +11,11 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover,
-    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
-    Location, MarkupContent, MarkupKind, OneOf, Position, PositionEncodingKind, Range,
-    ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
+    MarkupKind, OneOf, Position, PositionEncodingKind, Range, ServerCapabilities, ServerInfo,
+    SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -57,6 +57,7 @@ impl LanguageServer for Backend {
                 document_symbol_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -135,6 +136,18 @@ impl LanguageServer for Backend {
         Ok(documents
             .get(&uri)
             .and_then(|source| hover(source, position)))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let documents = self.documents.read().await;
+        let position = params.text_document_position_params.position;
+        let uri = params.text_document_position_params.text_document.uri;
+        Ok(documents.get(&uri).and_then(|source| {
+            definition(source, &uri, position).map(GotoDefinitionResponse::Scalar)
+        }))
     }
 }
 
@@ -453,6 +466,42 @@ fn hover(source: &SourceText, position: Position) -> Option<Hover> {
     })
 }
 
+fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Location> {
+    let offset = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    })?;
+    let parsed = parse(source.id, &source.text);
+
+    for declaration in &parsed.file.declarations {
+        let Declaration::Song(song) = declaration else {
+            continue;
+        };
+        let reference = song.statements.iter().find_map(|statement| {
+            let SongStatement::Arrangement { patterns, .. } = statement else {
+                return None;
+            };
+            patterns
+                .iter()
+                .find(|pattern| pattern.span.start <= offset && offset < pattern.span.end)
+        });
+        let Some(reference) = reference else {
+            continue;
+        };
+        let pattern = song.statements.iter().find_map(|statement| {
+            let SongStatement::Pattern(pattern) = statement else {
+                return None;
+            };
+            (pattern.name.text == reference.text).then_some(pattern)
+        })?;
+        return Some(Location::new(
+            uri.clone(),
+            lsp_range(source, pattern.name.span)?,
+        ));
+    }
+    None
+}
+
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
     let parsed = parse(source.id, &source.text);
     let program = parsed
@@ -541,8 +590,8 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceId, SourceText, completions, diagnostics, document_symbols, flatten_document_symbols,
-        hover,
+        SourceId, SourceText, completions, definition, diagnostics, document_symbols,
+        flatten_document_symbols, hover,
     };
     use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, SymbolKind, Uri};
 
@@ -711,5 +760,33 @@ mod tests {
             panic!("hover should use markup content");
         };
         assert_eq!(contents.value, "`C#4` — MIDI note 61.");
+    }
+
+    #[test]
+    fn finds_pattern_definitions_from_arrangements() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  pattern melody = sequence {}\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  arrangement { melody }\n",
+                "}",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let location = definition(&source, &uri, Position::new(5, 17))
+            .expect("arrangement reference should resolve");
+
+        assert_eq!(location.uri, uri);
+        assert_eq!(
+            location.range,
+            Range::new(Position::new(4, 10), Position::new(4, 16))
+        );
+        assert!(definition(&source, &uri, Position::new(1, 10)).is_none());
     }
 }

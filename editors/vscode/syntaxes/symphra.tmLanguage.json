@@ -66,9 +66,13 @@
       }
     },
     "pitches": {
-      "comment": "A natural-note letter followed by a decimal octave, e.g. C4, A4.",
-      "match": "\\b([A-G])(\\d+)\\b",
-      "name": "constant.language.pitch.symphra"
+      "comment": "A natural-note letter, an optional # or b accidental directly followed by the octave digits, and the octave, e.g. C4, C#4, Eb4. An accidental not followed by a digit (e.g. `C#` at end of line) is left for #comments to claim.",
+      "match": "\\b([A-G])(#|b)?(\\d+)\\b",
+      "captures": {
+        "1": { "name": "constant.language.pitch.symphra" },
+        "2": { "name": "keyword.operator.accidental.symphra" },
+        "3": { "name": "constant.language.pitch.symphra" }
+      }
     },
     "numbers": {
       "name": "constant.numeric.symphra",

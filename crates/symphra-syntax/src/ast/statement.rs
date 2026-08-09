@@ -36,6 +36,7 @@ pub struct PlayStatement {
     pub repeat: Option<RepeatExpression>,
     pub reverse: bool,
     pub pan: Option<PanExpression>,
+    pub chance: Option<ChanceExpression>,
     pub span: SourceSpan,
 }
 
@@ -84,6 +85,13 @@ impl PanExpression {
             Self::Fixed { span, .. } | Self::Alternate { span, .. } => span,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChanceExpression {
+    pub percent: u32,
+    pub transpose: TransposeExpression,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug, PartialEq)]

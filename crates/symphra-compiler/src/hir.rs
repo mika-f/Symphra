@@ -50,6 +50,13 @@ pub struct TrackDefinition {
     pub repeat_count: u16,
     pub reverse: bool,
     pub pan: Pan,
+    pub chance: Option<Chance>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chance {
+    pub percent: u8,
+    pub transpose_semitones: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

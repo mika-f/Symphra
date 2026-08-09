@@ -490,6 +490,15 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
     if play.reverse {
         line.push_str(" |> reverse");
     }
+    if let Some(chance) = &play.chance {
+        let _ = write!(
+            line,
+            " |> chance {}% {{ transpose {} {} }}",
+            chance.percent,
+            chance.transpose.semitones,
+            ctx.text(chance.transpose.unit.span)
+        );
+    }
     if let Some(pan) = play.pan {
         match pan {
             PanExpression::Fixed { percent, .. } => {

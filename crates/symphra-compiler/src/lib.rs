@@ -11,10 +11,10 @@ use symphra_syntax::ast::{
 };
 
 use crate::hir::{
-    Arrangement, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key, Meter,
-    Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project,
-    Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, TrackDefinition, WeightedNote,
-    WeightedSampleSequence,
+    Arrangement, Chance, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key,
+    Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program,
+    Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, TrackDefinition,
+    WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -409,6 +409,7 @@ impl Compiler {
         let gain = self.track_gain(declaration);
         let repeat_count = self.repeat_count(declaration);
         let pan = self.pan(declaration);
+        let chance = self.chance(declaration, pattern).ok();
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -422,14 +423,14 @@ impl Compiler {
             .zip(transpose_semitones)
             .zip(gain)
             .zip(repeat_count)
-            .zip(pan)
+            .zip(pan.zip(chance))
             .map(
                 |(
                     (
                         ((((pattern, instrument), gate_percent), transpose_semitones), gain),
                         repeat_count,
                     ),
-                    pan,
+                    (pan, chance),
                 )| {
                     TrackDefinition {
                         id: self.id(),
@@ -444,6 +445,7 @@ impl Compiler {
                         repeat_count,
                         reverse: declaration.play.reverse,
                         pan,
+                        chance,
                     }
                 },
             )
@@ -493,6 +495,39 @@ impl Compiler {
             }
             None => Some(Pan::Fixed(0)),
         }
+    }
+
+    fn chance(
+        &mut self,
+        declaration: &TrackDeclaration,
+        pattern: Option<&Pattern>,
+    ) -> Result<Option<Chance>, SourceSpan> {
+        let Some(expression) = declaration.play.chance.as_ref() else {
+            return Ok(None);
+        };
+        if expression.transpose.unit.text != "st" {
+            self.error(
+                "chance transpose unit must be `st`",
+                expression.transpose.unit.span,
+            );
+            return Err(expression.transpose.unit.span);
+        }
+        let Ok(percent) = u8::try_from(expression.percent) else {
+            self.error("chance must be from 0% to 100%", expression.span);
+            return Err(expression.span);
+        };
+        if percent > 100 {
+            self.error("chance must be from 0% to 100%", expression.span);
+            return Err(expression.span);
+        }
+        let chance = Chance {
+            percent,
+            transpose_semitones: expression.transpose.semitones,
+        };
+        if let Some(pattern) = pattern {
+            self.validate_transpose(pattern, chance.transpose_semitones, expression.span);
+        }
+        Ok(Some(chance))
     }
 
     fn track_gain(&mut self, declaration: &TrackDeclaration) -> Option<f32> {

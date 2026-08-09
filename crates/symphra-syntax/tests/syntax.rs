@@ -386,6 +386,7 @@ fn parses_tracks_with_rhythm_triggers() {
             "track chords role harmony { ",
             "instrument lead volume -5.2db play progression |> trigger_with stabs |> gate 95% ",
             "|> transpose +12st |> gain 0.30 |> repeat 4 |> reverse ",
+            "|> chance 15% { transpose +12st } ",
             "|> pan alternate(30%, 70%) } }",
         ),
     );
@@ -441,6 +442,14 @@ fn parses_tracks_with_rhythm_triggers() {
                 span: track.play.pan.expect("pan should be present").span(),
             })
         )
+    );
+    assert_eq!(
+        track.play.chance.as_ref().map(|chance| (
+            chance.percent,
+            chance.transpose.semitones,
+            chance.transpose.unit.text.as_str(),
+        )),
+        Some((15, 12, "st"))
     );
 }
 

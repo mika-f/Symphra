@@ -471,6 +471,58 @@ song "Pan" {
 }
 
 #[test]
+fn compile_should_reject_chance_above_one_hundred_percent() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Chance" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> chance 101% { transpose +12st }
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range chance should fail");
+
+    assert_eq!(diagnostics[0].message, "chance must be from 0% to 100%");
+}
+
+#[test]
+fn schedule_should_apply_certain_chance_transpose() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Chance" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 note D4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> chance 100% { transpose +12st }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("chance transpose should compile");
+    let score = schedule(&program).expect("chance transpose should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .notes
+            .iter()
+            .map(|note| note.midi_pitch)
+            .collect::<Vec<_>>(),
+        [72, 74]
+    );
+}
+
+#[test]
 fn schedule_should_reverse_events_within_the_track_duration() {
     let parsed = parse(
         SourceId(0),

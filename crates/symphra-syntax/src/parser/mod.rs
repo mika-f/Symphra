@@ -1,9 +1,9 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression,
-    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlayStatement,
+    ArrangementOccurrence, ChanceExpression, ChordExpression, Declaration, DegreeChoiceAlternative,
+    GainExpression, GateExpression, Identifier, InstrumentBody, InstrumentDeclaration,
+    NoteExpression, NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlayStatement,
     ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
     RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
     SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration, TransposeExpression,
@@ -415,6 +415,7 @@ impl Parser {
         let mut repeat = None;
         let mut reverse = false;
         let mut pan = None;
+        let mut chance = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -478,9 +479,12 @@ impl Parser {
                         ));
                     }
                 }
+                TokenKind::Chance => {
+                    play_end = self.chance(&mut chance)?;
+                }
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, or `pan` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, or `chance` after `|>`",
                     );
                     return None;
                 }
@@ -495,8 +499,36 @@ impl Parser {
             repeat,
             reverse,
             pan,
+            chance,
             span: play_start.cover(play_end),
         })
+    }
+
+    fn chance(&mut self, chance: &mut Option<ChanceExpression>) -> Option<SourceSpan> {
+        let start = self.bump().span;
+        let percent = self.unsigned_percentage("expected a percentage after `chance`")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after chance percentage")?;
+        if !self.at(TokenKind::Transpose) {
+            self.error("expected `transpose` in chance block");
+            return None;
+        }
+        let transpose = self.transpose()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` after chance block")?
+            .span;
+        let span = start.cover(end);
+        let expression = ChanceExpression {
+            percent,
+            transpose,
+            span,
+        };
+        if chance.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`chance` may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
     }
 
     fn gate(&mut self, gate: &mut Option<GateExpression>) -> Option<SourceSpan> {

@@ -149,10 +149,23 @@ fn schedule_declared_track(
         apply_gate(&mut scheduled, percent)?;
     }
     apply_repeat(&mut scheduled, track.repeat_count)?;
+    if let Some(chance) = track.chance {
+        apply_chance(&mut scheduled, chance, seed)?;
+    }
     if track.reverse {
         apply_reverse(&mut scheduled)?;
     }
     Ok(scheduled)
+}
+
+fn apply_chance(track: &mut Track, chance: hir::Chance, seed: u64) -> Result<(), ScheduleError> {
+    for note in &mut track.notes {
+        if mix(seed ^ note.id.0) % 100 < u64::from(chance.percent) {
+            note.midi_pitch = crate::transposed_pitch(note.midi_pitch, chance.transpose_semitones)
+                .ok_or(ScheduleError::TransposedPitchOutOfRange)?;
+        }
+    }
+    Ok(())
 }
 
 fn apply_reverse(track: &mut Track) -> Result<(), TimeError> {

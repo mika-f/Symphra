@@ -64,6 +64,7 @@ pub struct Track {
     pub notes: Vec<NoteEvent>,
     pub samples: Vec<SampleEvent>,
     pub gain: f32,
+    pub pan_percent: i8,
     pub end: MusicalTime,
 }
 

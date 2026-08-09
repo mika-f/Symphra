@@ -406,16 +406,8 @@ impl Compiler {
             None => Some(None),
         };
         let gain = self.track_gain(declaration);
-        let repeat_count = match declaration.play.repeat {
-            Some(repeat) => match u16::try_from(repeat.count) {
-                Ok(count) if count > 0 => Some(count),
-                _ => {
-                    self.error("repeat must be from 1 to 65535", repeat.span);
-                    None
-                }
-            },
-            None => Some(1),
-        };
+        let repeat_count = self.repeat_count(declaration);
+        let pan_percent = self.pan_percent(declaration);
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -429,10 +421,14 @@ impl Compiler {
             .zip(transpose_semitones)
             .zip(gain)
             .zip(repeat_count)
+            .zip(pan_percent)
             .map(
                 |(
-                    ((((pattern, instrument), gate_percent), transpose_semitones), gain),
-                    repeat_count,
+                    (
+                        ((((pattern, instrument), gate_percent), transpose_semitones), gain),
+                        repeat_count,
+                    ),
+                    pan_percent,
                 )| {
                     TrackDefinition {
                         id: self.id(),
@@ -446,9 +442,36 @@ impl Compiler {
                         gain,
                         repeat_count,
                         reverse: declaration.play.reverse,
+                        pan_percent,
                     }
                 },
             )
+    }
+
+    fn repeat_count(&mut self, declaration: &TrackDeclaration) -> Option<u16> {
+        match declaration.play.repeat {
+            Some(repeat) => match u16::try_from(repeat.count) {
+                Ok(count) if count > 0 => Some(count),
+                _ => {
+                    self.error("repeat must be from 1 to 65535", repeat.span);
+                    None
+                }
+            },
+            None => Some(1),
+        }
+    }
+
+    fn pan_percent(&mut self, declaration: &TrackDeclaration) -> Option<i8> {
+        match declaration.play.pan {
+            Some(pan) => match i8::try_from(pan.percent) {
+                Ok(percent) if (-100..=100).contains(&percent) => Some(percent),
+                _ => {
+                    self.error("pan must be from -100% to 100%", pan.span);
+                    None
+                }
+            },
+            None => Some(0),
+        }
     }
 
     fn track_gain(&mut self, declaration: &TrackDeclaration) -> Option<f32> {

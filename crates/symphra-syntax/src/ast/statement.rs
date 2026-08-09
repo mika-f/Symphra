@@ -35,6 +35,7 @@ pub struct PlayStatement {
     pub gain: Option<GainExpression>,
     pub repeat: Option<RepeatExpression>,
     pub reverse: bool,
+    pub pan: Option<PanExpression>,
     pub span: SourceSpan,
 }
 
@@ -60,6 +61,12 @@ pub struct GainExpression {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepeatExpression {
     pub count: u32,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanExpression {
+    pub percent: i32,
     pub span: SourceSpan,
 }
 

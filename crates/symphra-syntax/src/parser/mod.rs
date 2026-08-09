@@ -3,11 +3,11 @@ mod literal;
 use crate::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression,
     GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
-    NumberLiteral, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
-    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, StepItem, TrackDeclaration, TransposeExpression, VelocityExpression,
-    VolumeExpression,
+    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
+    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration, TransposeExpression,
+    VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -414,6 +414,7 @@ impl Parser {
         let mut gain = None;
         let mut repeat = None;
         let mut reverse = false;
+        let mut pan = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -431,24 +432,7 @@ impl Parser {
                     }
                 }
                 TokenKind::Gate => {
-                    let gate_start = self.bump().span;
-                    let value =
-                        self.required(TokenKind::Integer, "expected a percentage after `gate`")?;
-                    let percent = self.parse_u32(&value)?;
-                    let percent_end = self
-                        .required(TokenKind::Percent, "expected `%` after gate percentage")?
-                        .span;
-                    let expression = GateExpression {
-                        percent,
-                        span: gate_start.cover(percent_end),
-                    };
-                    play_end = expression.span;
-                    if gate.replace(expression).is_some() {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "`gate` may only appear once in a play pipeline",
-                            expression.span,
-                        ));
-                    }
+                    play_end = self.gate(&mut gate)?;
                 }
                 TokenKind::Transpose => {
                     let expression = self.transpose()?;
@@ -484,9 +468,19 @@ impl Parser {
                     let span = self.reverse(&mut reverse);
                     play_end = span;
                 }
+                TokenKind::Pan => {
+                    let expression = self.pan()?;
+                    play_end = expression.span;
+                    if pan.replace(expression).is_some() {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "`pan` may only appear once in a play pipeline",
+                            expression.span,
+                        ));
+                    }
+                }
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, or `reverse` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, or `pan` after `|>`",
                     );
                     return None;
                 }
@@ -500,7 +494,55 @@ impl Parser {
             gain,
             repeat,
             reverse,
+            pan,
             span: play_start.cover(play_end),
+        })
+    }
+
+    fn gate(&mut self, gate: &mut Option<GateExpression>) -> Option<SourceSpan> {
+        let start = self.bump().span;
+        let value = self.required(TokenKind::Integer, "expected a percentage after `gate`")?;
+        let percent = self.parse_u32(&value)?;
+        let end = self
+            .required(TokenKind::Percent, "expected `%` after gate percentage")?
+            .span;
+        let expression = GateExpression {
+            percent,
+            span: start.cover(end),
+        };
+        if gate.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`gate` may only appear once in a play pipeline",
+                expression.span,
+            ));
+        }
+        Some(expression.span)
+    }
+
+    fn pan(&mut self) -> Option<PanExpression> {
+        let start = self.bump().span;
+        let sign = if self.at(TokenKind::Minus) {
+            self.bump();
+            -1
+        } else {
+            if self.at(TokenKind::Plus) {
+                self.bump();
+            }
+            1
+        };
+        let value = self.required(TokenKind::Integer, "expected a percentage after `pan`")?;
+        let magnitude = self.parse_u32(&value)?;
+        let Ok(magnitude) = i32::try_from(magnitude) else {
+            self.diagnostics
+                .push(Diagnostic::syntax("pan is out of range", value.span));
+            return None;
+        };
+        let end = self
+            .required(TokenKind::Percent, "expected `%` after pan percentage")?
+            .span;
+        Some(PanExpression {
+            percent: sign * magnitude,
+            span: start.cover(end),
         })
     }
 

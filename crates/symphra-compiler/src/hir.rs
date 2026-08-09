@@ -49,6 +49,7 @@ pub struct TrackDefinition {
     pub gain: f32,
     pub repeat_count: u16,
     pub reverse: bool,
+    pub pan_percent: i8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

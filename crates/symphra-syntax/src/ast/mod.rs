@@ -11,6 +11,6 @@ pub use expression::{
 pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, RateLiteral};
 pub use statement::{
     ArrangementOccurrence, GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration,
-    PlayStatement, ProjectStatement, RepeatExpression, RhythmDeclaration, RhythmItem,
-    SongStatement, TrackDeclaration, TransposeExpression, VolumeExpression,
+    PanExpression, PlayStatement, ProjectStatement, RepeatExpression, RhythmDeclaration,
+    RhythmItem, SongStatement, TrackDeclaration, TransposeExpression, VolumeExpression,
 };

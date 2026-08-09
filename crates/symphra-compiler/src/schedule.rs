@@ -141,6 +141,7 @@ fn schedule_declared_track(
     )?;
     scheduled.name.clone_from(&track.name);
     scheduled.gain = track.gain;
+    scheduled.pan_percent = track.pan_percent;
     if let Some(semitones) = track.transpose_semitones {
         apply_transpose(&mut scheduled, semitones)?;
     }
@@ -450,6 +451,7 @@ fn schedule_track(
             notes,
             samples,
             gain: 1.0,
+            pan_percent: 0,
             end: cursor,
         },
         cursor,

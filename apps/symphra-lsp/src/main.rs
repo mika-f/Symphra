@@ -460,6 +460,7 @@ fn completion_labels(
             "gain",
             "repeat",
             "reverse",
+            "pan",
         ]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
@@ -602,6 +603,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Gain
                     | TokenKind::Repeat
                     | TokenKind::Reverse
+                    | TokenKind::Pan
                     | TokenKind::PipeGreater
                     | TokenKind::Percent
                     | TokenKind::Plus
@@ -778,6 +780,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Gain => "scales a played pattern's linear amplitude.",
         TokenKind::Repeat => "repeats a played pattern a fixed number of times.",
         TokenKind::Reverse => "mirrors a played pattern across its end time.",
+        TokenKind::Pan => "places a track from `-100%` left to `100%` right.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -1047,7 +1050,8 @@ mod tests {
                 "transpose",
                 "gain",
                 "repeat",
-                "reverse"
+                "reverse",
+                "pan"
             ]
         );
     }

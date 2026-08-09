@@ -372,6 +372,51 @@ song "Repeat" {
 }
 
 #[test]
+fn compile_should_reject_out_of_range_pan() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output stereo }
+song "Pan" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> pan -101%
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range pan should fail");
+
+    assert_eq!(diagnostics[0].message, "pan must be from -100% to 100%");
+}
+
+#[test]
+fn schedule_should_preserve_track_pan() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output stereo }
+song "Pan" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> pan +55%
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("panned track should compile");
+    let score = schedule(&program).expect("panned track should schedule");
+
+    assert_eq!(score.songs[0].tracks[0].pan_percent, 55);
+}
+
+#[test]
 fn schedule_should_reverse_events_within_the_track_duration() {
     let parsed = parse(
         SourceId(0),

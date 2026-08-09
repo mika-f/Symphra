@@ -30,6 +30,8 @@ pub enum RenderError {
     InvalidTempo,
     #[error("track gain must be finite and greater than or equal to zero")]
     InvalidTrackGain,
+    #[error("track pan must be from -100% to 100%")]
+    InvalidTrackPan,
     #[error("sample rate must be greater than zero")]
     InvalidSampleRate,
     #[error("rendered audio is too large")]
@@ -78,6 +80,13 @@ pub fn render_song_with_samples(
         .any(|track| !track.gain.is_finite() || track.gain < 0.0)
     {
         return Err(RenderError::InvalidTrackGain);
+    }
+    if song
+        .tracks
+        .iter()
+        .any(|track| !(-100..=100).contains(&track.pan_percent))
+    {
+        return Err(RenderError::InvalidTrackPan);
     }
     let channels = match score.channels {
         Channels::Mono => 1,
@@ -196,9 +205,7 @@ fn render_notes(
                     .checked_mul(u64::from(channels))
                     .and_then(|offset| usize::try_from(offset).ok())
                     .ok_or(RenderError::AudioTooLarge)?;
-                for channel in 0..usize::from(channels) {
-                    samples[first_sample + channel] += value;
-                }
+                mix_sample(samples, first_sample, channels, value, track.pan_percent);
             }
         }
     }
@@ -250,13 +257,28 @@ fn render_samples(
                     .checked_mul(u64::from(channels))
                     .and_then(|offset| usize::try_from(offset).ok())
                     .ok_or(RenderError::AudioTooLarge)?;
-                for channel in 0..usize::from(channels) {
-                    samples[first_sample + channel] += value;
-                }
+                mix_sample(samples, first_sample, channels, value, track.pan_percent);
             }
         }
     }
     Ok(())
+}
+
+fn mix_sample(samples: &mut [f32], first_sample: usize, channels: u16, value: f32, pan: i8) {
+    samples[first_sample] += value
+        * if pan > 0 {
+            1.0 - f32::from(pan) / 100.0
+        } else {
+            1.0
+        };
+    if channels == 2 {
+        samples[first_sample + 1] += value
+            * if pan < 0 {
+                1.0 + f32::from(pan) / 100.0
+            } else {
+                1.0
+            };
+    }
 }
 
 enum Voice<'a> {
@@ -348,6 +370,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_song_should_pan_stereo_tracks_linearly() {
+        let mut centered_score = score(InstrumentKind::Sine);
+        let centered = render_song(&centered_score, 0).expect("centered score should render");
+        centered_score.songs[0].tracks[0].pan_percent = -100;
+        let left = render_song(&centered_score, 0).expect("left-panned score should render");
+
+        assert!(
+            centered
+                .samples
+                .chunks_exact(2)
+                .zip(left.samples.chunks_exact(2))
+                .all(|(centered, left)| {
+                    (centered[0] - left[0]).abs() < f32::EPSILON && left[1].abs() < f32::EPSILON
+                })
+        );
+    }
+
     fn score(instrument: InstrumentKind) -> Score {
         Score {
             seed: 1,
@@ -378,6 +418,7 @@ mod tests {
                     }],
                     samples: Vec::new(),
                     gain: 1.0,
+                    pan_percent: 0,
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],
             }],

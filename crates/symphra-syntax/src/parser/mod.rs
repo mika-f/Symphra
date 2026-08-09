@@ -248,13 +248,10 @@ impl Parser {
             "expected a number",
         )?;
         let unit = self.identifier("expected a unit immediately after the number")?;
-        let value = match number.text.parse::<f64>() {
-            Ok(value) => value,
-            Err(_) => {
-                self.diagnostics
-                    .push(Diagnostic::syntax("number is out of range", number.span));
-                return None;
-            }
+        let Ok(value) = number.text.parse::<f64>() else {
+            self.diagnostics
+                .push(Diagnostic::syntax("number is out of range", number.span));
+            return None;
         };
         let span = number.span.cover(unit.span);
         Some(RateLiteral {

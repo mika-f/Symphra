@@ -6,6 +6,12 @@ pub struct Lexed {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+/// Lexes one Symphra source buffer.
+///
+/// # Panics
+///
+/// Panics if `input` is larger than 4 GiB, because source spans use 32-bit
+/// byte offsets.
 #[must_use]
 pub fn lex(source: SourceId, input: &str) -> Lexed {
     let mut lexer = Lexer {

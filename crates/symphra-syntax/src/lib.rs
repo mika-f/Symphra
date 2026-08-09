@@ -14,6 +14,6 @@ mod token;
 pub use diagnostic::{Diagnostic, DiagnosticKind};
 pub use lexer::{Lexed, lex};
 pub use parser::{ParsedSource, parse};
-pub use source::SourceText;
+pub use source::{SourcePosition, SourceRange, SourceText};
 pub use span::{SourceId, SourceSpan};
 pub use token::{Token, TokenKind};

@@ -13,6 +13,11 @@ pub struct SourceSpan {
 }
 
 impl SourceSpan {
+    /// Creates a source span from a half-open UTF-8 byte range.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either range boundary exceeds the 32-bit source offset limit.
     #[must_use]
     pub fn new(source: SourceId, range: Range<usize>) -> Self {
         Self {

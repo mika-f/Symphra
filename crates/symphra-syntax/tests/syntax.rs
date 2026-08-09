@@ -60,7 +60,7 @@ fn parses_the_draft_example() {
     let ProjectStatement::SampleRate { value, .. } = &project.statements[1] else {
         panic!("second project statement should be sample_rate");
     };
-    assert_eq!(value.value.value, 48.0);
+    assert!((value.value.value - 48.0).abs() < f64::EPSILON);
     assert_eq!(value.unit.text, "khz");
 
     let Declaration::Song(song) = &parsed.file.declarations[1] else {

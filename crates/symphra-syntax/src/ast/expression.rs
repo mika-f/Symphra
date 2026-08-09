@@ -37,9 +37,9 @@ pub enum StepItem {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SampleChoiceAlternative {
-    pub index: u32,
+    pub indices: Vec<u32>,
     pub weight: u32,
     pub span: SourceSpan,
 }

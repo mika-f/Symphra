@@ -251,7 +251,9 @@ fn parses_weighted_sample_choices() {
     let parsed = parse(
         SourceId(0),
         r#"song "Choice" {
-  pattern phrase = steps 1/8 { choose { sample 1 sample 3 weight 2 } }
+  pattern phrase = steps 1/8 {
+    choose { sample 1 sequence weight 2 { sample 3 sample 5 } }
+  }
 }"#,
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -271,9 +273,9 @@ fn parses_weighted_sample_choices() {
     assert_eq!(
         alternatives
             .iter()
-            .map(|alternative| (alternative.index, alternative.weight))
+            .map(|alternative| (alternative.indices.clone(), alternative.weight))
             .collect::<Vec<_>>(),
-        [(1, 1), (3, 2)]
+        [(vec![1], 1), (vec![3, 5], 2)]
     );
 }
 

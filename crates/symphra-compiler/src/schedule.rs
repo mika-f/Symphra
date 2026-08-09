@@ -117,7 +117,32 @@ fn schedule_track(
             hir::PatternStep::Note(note) => note.duration,
             hir::PatternStep::Chord(chord) => chord.duration,
             hir::PatternStep::Sample(sample) => sample.duration,
-            hir::PatternStep::Choice(choice) => choice.duration,
+            hir::PatternStep::Choice(choice) => {
+                let alternative = choose_sample_sequence(
+                    &choice.alternatives,
+                    seed,
+                    occurrence.unwrap_or(pattern.id),
+                    choice.id,
+                )?;
+                for sample in &alternative.samples {
+                    let duration = MusicalTime::new(
+                        u64::from(sample.duration.numerator),
+                        u64::from(sample.duration.denominator),
+                    )?;
+                    samples.push(SampleEvent {
+                        id: occurrence.map_or_else(
+                            || id(sample.id),
+                            |occurrence| occurrence_note_id(occurrence, sample.id),
+                        ),
+                        start: cursor,
+                        duration,
+                        index: sample.index,
+                        velocity: sample.velocity,
+                    });
+                    cursor = cursor.checked_add(duration)?;
+                }
+                continue;
+            }
             hir::PatternStep::Rest(rest) => rest.duration,
         };
         let duration = MusicalTime::new(
@@ -155,24 +180,7 @@ fn schedule_track(
                 index: sample.index,
                 velocity: sample.velocity,
             }),
-            hir::PatternStep::Choice(choice) => {
-                let alternative = choose_sample(
-                    &choice.alternatives,
-                    seed,
-                    occurrence.unwrap_or(pattern.id),
-                    choice.id,
-                )?;
-                samples.push(SampleEvent {
-                    id: occurrence.map_or_else(
-                        || id(choice.id),
-                        |occurrence| occurrence_note_id(occurrence, choice.id),
-                    ),
-                    start: cursor,
-                    duration,
-                    index: alternative.index,
-                    velocity: choice.velocity,
-                });
-            }
+            hir::PatternStep::Choice(_) => unreachable!("choices are scheduled above"),
             hir::PatternStep::Rest(_) => {}
         }
         cursor = cursor.checked_add(duration)?;
@@ -200,12 +208,12 @@ fn schedule_track(
     ))
 }
 
-fn choose_sample(
-    alternatives: &[hir::WeightedSample],
+fn choose_sample_sequence(
+    alternatives: &[hir::WeightedSampleSequence],
     seed: u64,
     track: hir::NodeId,
     choice: hir::NodeId,
-) -> Result<&hir::WeightedSample, ScheduleError> {
+) -> Result<&hir::WeightedSampleSequence, ScheduleError> {
     let total = alternatives.iter().try_fold(0u64, |total, alternative| {
         total
             .checked_add(u64::from(alternative.weight))

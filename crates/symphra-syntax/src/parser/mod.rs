@@ -393,8 +393,51 @@ impl Parser {
         self.required(TokenKind::LeftBrace, "expected `{` after `choose`")?;
         let mut alternatives = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let sample = self.required(TokenKind::Sample, "expected `sample` in choose")?;
-            let index = self.required(TokenKind::Integer, "expected sample index")?;
+            let alternative_start = self.current().span;
+            let (indices, default_weight_span) = match self.current().kind {
+                TokenKind::Sample => {
+                    self.bump();
+                    let index = self.required(TokenKind::Integer, "expected sample index")?;
+                    (vec![self.parse_u32(&index)?], index.span)
+                }
+                TokenKind::Sequence => {
+                    self.bump();
+                    let weight = if self.at(TokenKind::Weight) {
+                        self.bump();
+                        Some(self.required(TokenKind::Integer, "expected choice weight")?)
+                    } else {
+                        None
+                    };
+                    self.required(TokenKind::LeftBrace, "expected `{` after choice sequence")?;
+                    let mut indices = Vec::new();
+                    while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+                        self.required(TokenKind::Sample, "expected `sample` in choice sequence")?;
+                        let index = self.required(TokenKind::Integer, "expected sample index")?;
+                        indices.push(self.parse_u32(&index)?);
+                    }
+                    let end = self
+                        .required(
+                            TokenKind::RightBrace,
+                            "expected `}` to close choice sequence",
+                        )?
+                        .span;
+                    let weight = weight.unwrap_or(Token {
+                        kind: TokenKind::Integer,
+                        text: "1".to_owned(),
+                        span: end,
+                    });
+                    alternatives.push(SampleChoiceAlternative {
+                        indices,
+                        weight: self.parse_u32(&weight)?,
+                        span: alternative_start.cover(end),
+                    });
+                    continue;
+                }
+                _ => {
+                    self.error("expected `sample` or `sequence` in choose");
+                    return None;
+                }
+            };
             let weight = if self.at(TokenKind::Weight) {
                 self.bump();
                 self.required(TokenKind::Integer, "expected choice weight")?
@@ -402,13 +445,13 @@ impl Parser {
                 Token {
                     kind: TokenKind::Integer,
                     text: "1".to_owned(),
-                    span: index.span,
+                    span: default_weight_span,
                 }
             };
             alternatives.push(SampleChoiceAlternative {
-                index: self.parse_u32(&index)?,
+                indices,
                 weight: self.parse_u32(&weight)?,
-                span: sample.span.cover(weight.span),
+                span: alternative_start.cover(weight.span),
             });
         }
         let end = self

@@ -554,6 +554,46 @@ song "Choice" {
 }
 
 #[test]
+fn schedule_should_expand_a_chosen_sample_sequence() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Choice sequence" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 {
+    choose { sequence weight 1 { sample 4 sample 7 } }
+  }
+  arrangement { phrase with voice }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("choice sequences should compile");
+    let score = schedule(&program).expect("choice sequences should schedule");
+    let track = &score.songs[0].tracks[0];
+
+    assert_eq!(
+        track
+            .samples
+            .iter()
+            .map(|sample| (sample.index, sample.start))
+            .collect::<Vec<_>>(),
+        [
+            (4, MusicalTime::ZERO),
+            (
+                7,
+                MusicalTime::new(1, 8).expect("eighth note should be valid")
+            ),
+        ]
+    );
+    assert_eq!(
+        track.end,
+        MusicalTime::new(1, 4).expect("quarter note should be valid")
+    );
+}
+
+#[test]
 fn compile_should_reject_empty_sample_asset_names() {
     let parsed = parse(
         SourceId(0),
@@ -592,6 +632,7 @@ song "Invalid choices" {
   pattern phrase = steps 1/8 {
     choose {}
     choose { sample 1 weight 0 }
+    choose { sequence weight 1 {} }
   }
 }
 "#,
@@ -607,6 +648,7 @@ song "Invalid choices" {
         [
             "choose must contain at least one sample",
             "choice weight must be greater than zero",
+            "choice sequence must contain at least one sample",
         ]
     );
 }

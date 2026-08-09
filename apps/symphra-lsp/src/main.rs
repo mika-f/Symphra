@@ -309,6 +309,7 @@ enum CompletionBlock {
     Sequence,
     Steps,
     Choice,
+    ChoiceSequence,
     Sampled,
     Sampler,
     Other,
@@ -366,7 +367,8 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
             ],
             Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
             Some(CompletionBlock::Steps) => &["sample", "rest", "choose"],
-            Some(CompletionBlock::Choice) => &["sample"],
+            Some(CompletionBlock::Choice) => &["sample", "sequence"],
+            Some(CompletionBlock::ChoiceSequence) => &["sample"],
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
@@ -440,7 +442,13 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Project => pending = Some(CompletionBlock::Project),
             TokenKind::Song => pending = Some(CompletionBlock::Song),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
-            TokenKind::Sequence => pending = Some(CompletionBlock::Sequence),
+            TokenKind::Sequence => {
+                pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
+                    CompletionBlock::ChoiceSequence
+                } else {
+                    CompletionBlock::Sequence
+                });
+            }
             TokenKind::Steps => pending = Some(CompletionBlock::Steps),
             TokenKind::Choose => pending = Some(CompletionBlock::Choice),
             TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
@@ -803,6 +811,14 @@ mod tests {
                 "song \"Test\" {\npattern p = steps 1/8 {\n  choose {\n    ",
                 3,
                 4
+            ),
+            ["sample", "sequence"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\npattern p = steps 1/8 {\n  choose {\n    sequence weight 1 {\n      ",
+                4,
+                6
             ),
             ["sample"]
         );

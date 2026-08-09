@@ -12,7 +12,7 @@ use symphra_syntax::ast::{
 use crate::hir::{
     Arrangement, Channels, Chord, ChordNote, Duration, InstrumentKind, Key, Meter, Mode, NodeId,
     Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest,
-    SampleChoice, SampleTrigger, Song, WeightedSample,
+    SampleChoice, SampleTrigger, Song, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -455,6 +455,13 @@ impl Compiler {
                     let alternatives = alternatives
                         .iter()
                         .filter_map(|alternative| {
+                            if alternative.indices.is_empty() {
+                                self.error(
+                                    "choice sequence must contain at least one sample",
+                                    alternative.span,
+                                );
+                                return None;
+                            }
                             if alternative.weight == 0 {
                                 self.error(
                                     "choice weight must be greater than zero",
@@ -462,8 +469,17 @@ impl Compiler {
                                 );
                                 None
                             } else {
-                                Some(WeightedSample {
-                                    index: alternative.index,
+                                Some(WeightedSampleSequence {
+                                    samples: alternative
+                                        .indices
+                                        .iter()
+                                        .map(|index| SampleTrigger {
+                                            id: self.id(),
+                                            index: *index,
+                                            duration,
+                                            velocity: DEFAULT_VELOCITY,
+                                        })
+                                        .collect(),
                                     weight: alternative.weight,
                                 })
                             }
@@ -472,8 +488,6 @@ impl Compiler {
                     PatternStep::Choice(SampleChoice {
                         id: self.id(),
                         alternatives,
-                        duration,
-                        velocity: DEFAULT_VELOCITY,
                     })
                 }
             })

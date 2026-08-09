@@ -71,7 +71,8 @@ pub fn render_song(score: &Score, song_index: usize) -> Result<AudioBuffer, Rend
 }
 
 fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
-    song.tracks
+    let note_ends = song
+        .tracks
         .iter()
         .flat_map(|track| &track.notes)
         .map(|note| {
@@ -81,7 +82,10 @@ fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
                 sample_rate_hz,
             )
         })
-        .try_fold(0, |latest, end| end.map(|end| latest.max(end)))
+        .try_fold(0, |latest, end| end.map(|end| latest.max(end)))?;
+    song.tracks.iter().try_fold(note_ends, |latest, track| {
+        time_to_frame(track.end, song.tempo_bpm, sample_rate_hz).map(|end| latest.max(end))
+    })
 }
 
 fn render_notes(
@@ -176,6 +180,7 @@ mod tests {
                         duration: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                         midi_pitch: 69,
                     }],
+                    end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],
             }],
         };

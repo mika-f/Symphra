@@ -1,6 +1,6 @@
 use symphra_compiler::hir::{
     Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PatternOccurrence,
-    PitchClass, Program, Project, Song,
+    PatternStep, PitchClass, Program, Project, Song,
 };
 use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::MusicalTime;
@@ -55,31 +55,31 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                 patterns: vec![Pattern {
                     id: NodeId(1),
                     name: "melody".to_owned(),
-                    notes: vec![
-                        Note {
+                    steps: vec![
+                        PatternStep::Note(Note {
                             id: NodeId(2),
                             midi_pitch: 60,
                             duration: Duration {
                                 numerator: 1,
                                 denominator: 4,
                             },
-                        },
-                        Note {
+                        }),
+                        PatternStep::Note(Note {
                             id: NodeId(3),
                             midi_pitch: 64,
                             duration: Duration {
                                 numerator: 1,
                                 denominator: 4,
                             },
-                        },
-                        Note {
+                        }),
+                        PatternStep::Note(Note {
                             id: NodeId(4),
                             midi_pitch: 67,
                             duration: Duration {
                                 numerator: 1,
                                 denominator: 2,
                             },
-                        },
+                        }),
                     ],
                 }],
                 arrangement: None,
@@ -98,7 +98,7 @@ song "Bad" {
   tempo 0bpm
   meter 4/0
   key H dorian
-  pattern bad = sequence { note H4 for 0/4 }
+  pattern bad = sequence { note H4 for 0/4 rest for 1/0 }
 }
 "#,
     );
@@ -120,6 +120,7 @@ song "Bad" {
             "key tonic must be a natural note from A to G",
             "pitch must be a natural note followed by an octave",
             "note duration must be greater than zero",
+            "rest duration must be greater than zero",
         ]
     );
 }
@@ -143,6 +144,37 @@ fn schedule_should_place_sequence_notes_back_to_back() {
             MusicalTime::new(1, 4).expect("quarter note should be valid"),
             MusicalTime::new(1, 2).expect("half note should be valid"),
         ]
+    );
+}
+
+#[test]
+fn schedule_should_advance_over_rests_and_preserve_trailing_silence() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Rests" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = sequence {
+    note C4 for 1/4
+    rest for 1/4
+    note E4 for 1/4
+    rest for 1/4
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("rests should compile");
+
+    let score = schedule(&program).expect("rests should schedule");
+    let track = &score.songs[0].tracks[0];
+    assert_eq!(
+        (track.notes[0].start, track.notes[1].start, track.end),
+        (
+            MusicalTime::ZERO,
+            MusicalTime::new(1, 2).expect("half note should be valid"),
+            MusicalTime::new(1, 1).expect("whole note should be valid"),
+        )
     );
 }
 

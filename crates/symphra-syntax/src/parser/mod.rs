@@ -2,8 +2,8 @@ mod literal;
 
 use crate::ast::{
     Declaration, Identifier, NoteExpression, NumberLiteral, PatternBody, PatternDeclaration,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, SongDeclaration,
-    SongStatement, SourceFile,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -24,7 +24,12 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
-const SEQUENCE_ITEM_START: &[TokenKind] = &[TokenKind::Note, TokenKind::RightBrace, TokenKind::Eof];
+const SEQUENCE_ITEM_START: &[TokenKind] = &[
+    TokenKind::Note,
+    TokenKind::Rest,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSource {
@@ -224,16 +229,18 @@ impl Parser {
         let body_start = self
             .required(TokenKind::LeftBrace, "expected `{` after `sequence`")?
             .span;
-        let mut notes = Vec::new();
+        let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let note = if self.at(TokenKind::Note) {
-                self.note()
-            } else {
-                self.error("expected a note in sequence");
-                None
+            let item = match self.current().kind {
+                TokenKind::Note => self.note().map(SequenceItem::Note),
+                TokenKind::Rest => self.rest().map(SequenceItem::Rest),
+                _ => {
+                    self.error("expected a note or rest in sequence");
+                    None
+                }
             };
-            if let Some(note) = note {
-                notes.push(note);
+            if let Some(item) = item {
+                items.push(item);
             } else {
                 self.recover_to(SEQUENCE_ITEM_START);
             }
@@ -244,7 +251,7 @@ impl Parser {
         Some(PatternDeclaration {
             name,
             body: PatternBody::Sequence {
-                notes,
+                items,
                 span: body_start.cover(end),
             },
             span: start.cover(end),
@@ -261,6 +268,20 @@ impl Parser {
             self.required(TokenKind::Integer, "expected duration denominator")?;
         Some(NoteExpression {
             pitch,
+            duration_numerator: self.parse_u32(&numerator_token)?,
+            duration_denominator: self.parse_u32(&denominator_token)?,
+            span: start.cover(denominator_token.span),
+        })
+    }
+
+    fn rest(&mut self) -> Option<RestExpression> {
+        let start = self.bump().span;
+        self.required(TokenKind::For, "expected `for` after `rest`")?;
+        let numerator_token = self.required(TokenKind::Integer, "expected duration numerator")?;
+        self.required(TokenKind::Slash, "expected `/` in rest duration")?;
+        let denominator_token =
+            self.required(TokenKind::Integer, "expected duration denominator")?;
+        Some(RestExpression {
             duration_numerator: self.parse_u32(&numerator_token)?,
             duration_denominator: self.parse_u32(&denominator_token)?,
             span: start.cover(denominator_token.span),

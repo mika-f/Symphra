@@ -11,14 +11,27 @@ pub struct PatternDeclaration {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PatternBody {
     Sequence {
-        notes: Vec<NoteExpression>,
+        items: Vec<SequenceItem>,
         span: SourceSpan,
     },
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub enum SequenceItem {
+    Note(NoteExpression),
+    Rest(RestExpression),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct NoteExpression {
     pub pitch: Identifier,
+    pub duration_numerator: u32,
+    pub duration_denominator: u32,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RestExpression {
     pub duration_numerator: u32,
     pub duration_denominator: u32,
     pub span: SourceSpan,

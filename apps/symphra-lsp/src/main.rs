@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
-use symphra_syntax::ast::{Declaration, PatternBody, SongStatement};
+use symphra_syntax::ast::{Declaration, PatternBody, SequenceItem, SongStatement};
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
 };
@@ -334,7 +334,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
             None => &["project", "song"],
             Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
             Some(CompletionBlock::Song) => &["tempo", "meter", "key", "pattern", "arrangement"],
-            Some(CompletionBlock::Sequence) => &["note"],
+            Some(CompletionBlock::Sequence) => &["note", "rest"],
             Some(CompletionBlock::Other) => &[],
         }
     } else {
@@ -386,7 +386,8 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Key
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
-                    | TokenKind::Note,
+                    | TokenKind::Note
+                    | TokenKind::Rest,
                 ..
             }]
         )
@@ -437,8 +438,16 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
                 _ => None,
             });
         for (source_pattern, pattern) in patterns.zip(&song.patterns) {
-            let PatternBody::Sequence { notes, .. } = &source_pattern.body;
-            for (source_note, note) in notes.iter().zip(&pattern.notes) {
+            let PatternBody::Sequence { items, .. } = &source_pattern.body;
+            let source_notes = items.iter().filter_map(|item| match item {
+                SequenceItem::Note(note) => Some(note),
+                SequenceItem::Rest(_) => None,
+            });
+            let notes = pattern.steps.iter().filter_map(|step| match step {
+                symphra_compiler::hir::PatternStep::Note(note) => Some(note),
+                symphra_compiler::hir::PatternStep::Rest(_) => None,
+            });
+            for (source_note, note) in source_notes.zip(notes) {
                 if source_note.pitch.span == span {
                     return Some(format!("MIDI note {}.", note.midi_pitch));
                 }
@@ -462,6 +471,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Note => "adds a written pitch to a sequence.",
+        TokenKind::Rest => "advances a sequence without producing sound.",
         TokenKind::For => "introduces a note duration, such as `1/4`.",
         _ => return None,
     })
@@ -575,7 +585,7 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  no", 2, 4),
-            ["note"]
+            ["note", "rest"]
         );
         assert_eq!(
             labels("song \"Test\" {\n  pattern p = ", 1, 14),

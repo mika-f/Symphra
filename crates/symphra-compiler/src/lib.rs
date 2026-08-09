@@ -5,12 +5,12 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     Declaration, Identifier, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
-    SongDeclaration, SongStatement, SourceFile,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile,
 };
 
 use crate::hir::{
     Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PatternOccurrence,
-    PitchClass, Program, Project, Song,
+    PatternStep, PitchClass, Program, Project, Rest, Song,
 };
 
 pub mod hir;
@@ -260,34 +260,64 @@ impl Compiler {
 
     fn pattern(&mut self, declaration: &PatternDeclaration) -> Pattern {
         let id = self.id();
-        let PatternBody::Sequence { notes, .. } = &declaration.body;
-        let notes = notes
+        let PatternBody::Sequence { items, .. } = &declaration.body;
+        let steps = items
             .iter()
-            .filter_map(|note| {
-                let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
-                let duration = if note.duration_numerator == 0 || note.duration_denominator == 0 {
-                    self.error("note duration must be greater than zero", note.span);
-                    None
-                } else {
-                    Some(Duration {
-                        numerator: note.duration_numerator,
-                        denominator: note.duration_denominator,
-                    })
-                };
-                let (Some(midi_pitch), Some(duration)) = (midi_pitch, duration) else {
-                    return None;
-                };
-                Some(Note {
-                    id: self.id(),
-                    midi_pitch,
-                    duration,
-                })
+            .filter_map(|item| match item {
+                SequenceItem::Note(note) => {
+                    let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
+                    let duration = self.duration(
+                        note.duration_numerator,
+                        note.duration_denominator,
+                        note.span,
+                        "note",
+                    );
+                    let (Some(midi_pitch), Some(duration)) = (midi_pitch, duration) else {
+                        return None;
+                    };
+                    Some(PatternStep::Note(Note {
+                        id: self.id(),
+                        midi_pitch,
+                        duration,
+                    }))
+                }
+                SequenceItem::Rest(rest) => self
+                    .duration(
+                        rest.duration_numerator,
+                        rest.duration_denominator,
+                        rest.span,
+                        "rest",
+                    )
+                    .map(|duration| {
+                        PatternStep::Rest(Rest {
+                            id: self.id(),
+                            duration,
+                        })
+                    }),
             })
             .collect();
         Pattern {
             id,
             name: declaration.name.text.clone(),
-            notes,
+            steps,
+        }
+    }
+
+    fn duration(
+        &mut self,
+        numerator: u32,
+        denominator: u32,
+        span: SourceSpan,
+        item: &str,
+    ) -> Option<Duration> {
+        if numerator == 0 || denominator == 0 {
+            self.error(&format!("{item} duration must be greater than zero"), span);
+            None
+        } else {
+            Some(Duration {
+                numerator,
+                denominator,
+            })
         }
     }
 

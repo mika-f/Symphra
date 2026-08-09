@@ -61,6 +61,7 @@ pub struct Track {
     pub id: EntityId,
     pub name: String,
     pub notes: Vec<NoteEvent>,
+    pub end: MusicalTime,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

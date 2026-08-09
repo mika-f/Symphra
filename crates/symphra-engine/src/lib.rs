@@ -103,4 +103,29 @@ song "Arranged" {
 
         assert_eq!(audio.frames(), 12_000);
     }
+
+    #[test]
+    fn render_source_should_preserve_trailing_rest() {
+        let source = SourceText::new(
+            SourceId(0),
+            "rest.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Rest" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = sequence { note C4 for 1/4 rest for 1/4 }
+}
+"#,
+        );
+
+        let audio = render_source(&source, 0).expect("rest should render");
+
+        assert_eq!(
+            (
+                audio.frames(),
+                audio.samples[4_000..].iter().all(|sample| *sample == 0.0)
+            ),
+            (8_000, true)
+        );
+    }
 }

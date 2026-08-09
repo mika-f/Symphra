@@ -78,13 +78,25 @@ pub enum Mode {
 pub struct Pattern {
     pub id: NodeId,
     pub name: String,
-    pub notes: Vec<Note>,
+    pub steps: Vec<PatternStep>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternStep {
+    Note(Note),
+    Rest(Rest),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Note {
     pub id: NodeId,
     pub midi_pitch: u8,
+    pub duration: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rest {
+    pub id: NodeId,
     pub duration: Duration,
 }
 

@@ -1,4 +1,6 @@
-use symphra_syntax::ast::{Declaration, PatternBody, ProjectStatement, SongStatement};
+use symphra_syntax::ast::{
+    Declaration, PatternBody, ProjectStatement, SequenceItem, SongStatement,
+};
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
 const EXAMPLE: &str = r#"
@@ -16,6 +18,7 @@ song "First Song" {
   pattern melody = sequence {
     note C4 for 1/4
     note E4 for 1/4
+    rest for 1/4
     note G4 for 1/2
   }
   arrangement { melody }
@@ -80,13 +83,13 @@ fn parses_the_draft_example() {
         panic!("fourth song statement should be a pattern");
     };
     assert_eq!(pattern.name.text, "melody");
-    let PatternBody::Sequence { notes, .. } = &pattern.body;
-    assert_eq!(notes.len(), 3);
-    assert_eq!(notes[2].pitch.text, "G4");
-    assert_eq!(
-        (notes[2].duration_numerator, notes[2].duration_denominator),
-        (1, 2)
-    );
+    let PatternBody::Sequence { items, .. } = &pattern.body;
+    assert_eq!(items.len(), 4);
+    let SequenceItem::Note(note) = &items[3] else {
+        panic!("fourth sequence item should be a note");
+    };
+    assert_eq!(note.pitch.text, "G4");
+    assert_eq!((note.duration_numerator, note.duration_denominator), (1, 2));
     let SongStatement::Arrangement { patterns, .. } = &song.statements[4] else {
         panic!("fifth song statement should be an arrangement");
     };
@@ -155,6 +158,9 @@ song "Recovery" {
     let SongStatement::Pattern(pattern) = &song.statements[3] else {
         panic!("valid pattern should remain in the song");
     };
-    let PatternBody::Sequence { notes, .. } = &pattern.body;
-    assert_eq!((notes.len(), notes[0].pitch.text.as_str()), (1, "E4"));
+    let PatternBody::Sequence { items, .. } = &pattern.body;
+    let SequenceItem::Note(note) = &items[0] else {
+        panic!("recovered sequence item should be a note");
+    };
+    assert_eq!((items.len(), note.pitch.text.as_str()), (1, "E4"));
 }

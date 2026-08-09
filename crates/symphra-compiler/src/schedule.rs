@@ -93,21 +93,27 @@ fn schedule_track(
     mut cursor: MusicalTime,
     occurrence: Option<hir::NodeId>,
 ) -> Result<(Track, MusicalTime), ScheduleError> {
-    let mut notes = Vec::with_capacity(pattern.notes.len());
-    for note in &pattern.notes {
+    let mut notes = Vec::new();
+    for step in &pattern.steps {
+        let (duration, note) = match step {
+            hir::PatternStep::Note(note) => (note.duration, Some((note.id, note.midi_pitch))),
+            hir::PatternStep::Rest(rest) => (rest.duration, None),
+        };
         let duration = MusicalTime::new(
-            u64::from(note.duration.numerator),
-            u64::from(note.duration.denominator),
+            u64::from(duration.numerator),
+            u64::from(duration.denominator),
         )?;
-        notes.push(NoteEvent {
-            id: occurrence.map_or_else(
-                || id(note.id),
-                |occurrence| occurrence_note_id(occurrence, note.id),
-            ),
-            start: cursor,
-            duration,
-            midi_pitch: note.midi_pitch,
-        });
+        if let Some((note_id, midi_pitch)) = note {
+            notes.push(NoteEvent {
+                id: occurrence.map_or_else(
+                    || id(note_id),
+                    |occurrence| occurrence_note_id(occurrence, note_id),
+                ),
+                start: cursor,
+                duration,
+                midi_pitch,
+            });
+        }
         cursor = cursor.checked_add(duration)?;
     }
     Ok((
@@ -115,6 +121,7 @@ fn schedule_track(
             id: id(occurrence.unwrap_or(pattern.id)),
             name: pattern.name.clone(),
             notes,
+            end: cursor,
         },
         cursor,
     ))

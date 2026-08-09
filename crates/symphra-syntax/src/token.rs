@@ -18,6 +18,7 @@ pub enum TokenKind {
     Arrangement,
     Sequence,
     Note,
+    Rest,
     For,
     LeftBrace,
     RightBrace,
@@ -41,6 +42,7 @@ impl TokenKind {
             "arrangement" => Self::Arrangement,
             "sequence" => Self::Sequence,
             "note" => Self::Note,
+            "rest" => Self::Rest,
             "for" => Self::For,
             _ => return None,
         })

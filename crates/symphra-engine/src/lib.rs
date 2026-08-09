@@ -5,7 +5,7 @@ use symphra_render::{RenderError, render_song_with_samples};
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
-pub use symphra_sampler::{DecodeError, Sample, SampleLibrary, decode_wav};
+pub use symphra_sampler::{DecodeError, Sample, SampleLibrary, decode_wav, packed_sample_source};
 pub use symphra_score::Score;
 pub use symphra_syntax::{SourceId, SourceSpan, SourceText};
 
@@ -65,8 +65,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        EngineError, Sample, SampleLibrary, SourceId, SourceText, compile_source, render_score,
-        render_source,
+        EngineError, Sample, SampleLibrary, SourceId, SourceText, compile_source,
+        packed_sample_source, render_score, render_source,
     };
 
     const SOURCE: &str = r#"
@@ -269,5 +269,45 @@ song "Sample" {
 
         assert_eq!(audio.frames(), 4_000);
         assert!(audio.samples[100..3_900].iter().any(|sample| *sample > 0.0));
+    }
+
+    #[test]
+    fn render_score_should_play_samples_from_packs() {
+        let source = SourceText::new(
+            SourceId(0),
+            "pack.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Pack" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 rest sample 3 }
+  arrangement { phrase with voice }
+}
+"#,
+        );
+        let score = compile_source(&source).expect("sample pack should compile");
+        let mut samples = SampleLibrary::default();
+        for index in [1, 3] {
+            samples.insert(
+                packed_sample_source("numbers", index),
+                Sample {
+                    sample_rate_hz: NonZeroU32::new(8_000).expect("sample rate should be non-zero"),
+                    samples: vec![0.5; 2_000],
+                },
+            );
+        }
+
+        let audio = render_score(&score, 0, &samples).expect("sample pack should render");
+
+        assert_eq!(
+            (
+                audio.frames(),
+                audio.samples[2_000..4_000]
+                    .iter()
+                    .all(|sample| *sample == 0.0)
+            ),
+            (6_000, true)
+        );
     }
 }

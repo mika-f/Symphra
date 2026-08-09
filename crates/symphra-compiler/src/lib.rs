@@ -6,11 +6,13 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, Declaration, InstrumentBody, PatternBody, PatternDeclaration,
     ProjectDeclaration, ProjectStatement, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    StepItem,
 };
 
 use crate::hir::{
     Arrangement, Channels, Chord, ChordNote, Duration, InstrumentKind, Key, Meter, Mode, NodeId,
-    Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Song,
+    Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest,
+    SampleTrigger, Song,
 };
 
 pub mod hir;
@@ -335,8 +337,24 @@ impl Compiler {
 
     fn pattern(&mut self, declaration: &PatternDeclaration) -> Pattern {
         let id = self.id();
-        let PatternBody::Sequence { items, .. } = &declaration.body;
-        let steps = items
+        let steps = match &declaration.body {
+            PatternBody::Sequence { items, .. } => self.sequence_steps(items),
+            PatternBody::Steps {
+                resolution_numerator,
+                resolution_denominator,
+                items,
+                span,
+            } => self.steps(*resolution_numerator, *resolution_denominator, items, *span),
+        };
+        Pattern {
+            id,
+            name: declaration.name.text.clone(),
+            steps,
+        }
+    }
+
+    fn sequence_steps(&mut self, items: &[SequenceItem]) -> Vec<PatternStep> {
+        items
             .iter()
             .filter_map(|item| match item {
                 SequenceItem::Note(note) => {
@@ -404,12 +422,34 @@ impl Compiler {
                         })
                     }),
             })
-            .collect();
-        Pattern {
-            id,
-            name: declaration.name.text.clone(),
-            steps,
-        }
+            .collect()
+    }
+
+    fn steps(
+        &mut self,
+        numerator: u32,
+        denominator: u32,
+        items: &[StepItem],
+        span: SourceSpan,
+    ) -> Vec<PatternStep> {
+        let Some(duration) = self.duration(numerator, denominator, span, "step") else {
+            return Vec::new();
+        };
+        items
+            .iter()
+            .map(|item| match item {
+                StepItem::Sample { index, .. } => PatternStep::Sample(SampleTrigger {
+                    id: self.id(),
+                    index: *index,
+                    duration,
+                    velocity: DEFAULT_VELOCITY,
+                }),
+                StepItem::Rest { .. } => PatternStep::Rest(Rest {
+                    id: self.id(),
+                    duration,
+                }),
+            })
+            .collect()
     }
 
     fn duration(

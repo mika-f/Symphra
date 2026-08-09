@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use symphra_dsp::{Oscillator, Waveform, fade_gain};
-use symphra_sampler::{SampleLibrary, SamplePlayer};
+use symphra_sampler::{SampleLibrary, SamplePlayer, packed_sample_source};
 use symphra_score::{Channels, InstrumentKind, MusicalTime, Score, Song, TimeError};
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -36,6 +36,8 @@ pub enum RenderError {
     MissingSample(String),
     #[error("sampler pack `{0}` requires sample selection events")]
     SamplerRequiresSampleEvents(String),
+    #[error("sample selection events require a sampler instrument")]
+    SampleEventsRequireSampler,
     #[error(transparent)]
     Time(#[from] TimeError),
 }
@@ -79,6 +81,13 @@ pub fn render_song_with_samples(
         .ok_or(RenderError::AudioTooLarge)?;
     let mut samples = vec![0.0; sample_count];
     render_notes(
+        song,
+        score.sample_rate_hz,
+        channels,
+        sample_library,
+        &mut samples,
+    )?;
+    render_samples(
         song,
         score.sample_rate_hz,
         channels,
@@ -173,6 +182,59 @@ fn render_notes(
                     * fade_gain(frame - start, note_frames, fade_samples)
                     * instrument_gain
                     * (f32::from(note.velocity) / 127.0);
+                let first_sample = frame
+                    .checked_mul(u64::from(channels))
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .ok_or(RenderError::AudioTooLarge)?;
+                for channel in 0..usize::from(channels) {
+                    samples[first_sample + channel] += value;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_samples(
+    song: &Song,
+    sample_rate_hz: u32,
+    channels: u16,
+    sample_library: &SampleLibrary,
+    samples: &mut [f32],
+) -> Result<(), RenderError> {
+    let sample_rate = NonZeroU32::new(sample_rate_hz).ok_or(RenderError::InvalidSampleRate)?;
+    let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
+    for track in &song.tracks {
+        if track.samples.is_empty() {
+            continue;
+        }
+        let InstrumentKind::Sampler { pack } = &track.instrument else {
+            return Err(RenderError::SampleEventsRequireSampler);
+        };
+        for event in &track.samples {
+            let source = packed_sample_source(pack, event.index);
+            let mut player = SamplePlayer::new(
+                sample_library
+                    .get(&source)
+                    .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
+                sample_rate,
+                60,
+                60,
+            );
+            let start = time_to_frame(event.start, song.tempo_bpm, sample_rate_hz)?;
+            let end = time_to_frame(
+                event.start.checked_add(event.duration)?,
+                song.tempo_bpm,
+                sample_rate_hz,
+            )?;
+            let event_frames = end.saturating_sub(start);
+            for frame in start..end {
+                let Some(sample) = player.next_sample() else {
+                    break;
+                };
+                let value = sample
+                    * fade_gain(frame - start, event_frames, fade_samples)
+                    * (f32::from(event.velocity) / 127.0);
                 let first_sample = frame
                     .checked_mul(u64::from(channels))
                     .and_then(|offset| usize::try_from(offset).ok())
@@ -287,6 +349,7 @@ mod tests {
                         midi_pitch: 69,
                         velocity: 127,
                     }],
+                    samples: Vec::new(),
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],
             }],

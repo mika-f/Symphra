@@ -481,6 +481,40 @@ song "Sampler" {
 }
 
 #[test]
+fn schedule_should_create_sample_events_from_steps() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice_numbers = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 rest sample 3 }
+  arrangement { phrase with voice_numbers }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("sample steps should compile");
+
+    let score = schedule(&program).expect("sample steps should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .map(|event| (event.index, event.start))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, MusicalTime::ZERO),
+            (
+                3,
+                MusicalTime::new(1, 4).expect("quarter note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
 fn compile_should_reject_empty_sample_asset_names() {
     let parsed = parse(
         SourceId(0),

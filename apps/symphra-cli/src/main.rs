@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -8,7 +9,7 @@ use std::process::ExitCode;
 use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
 use symphra_engine::{
     DecodeError, EngineError, SampleLibrary, Score, SourceId, SourceSpan, SourceText,
-    compile_source, decode_wav, render_score,
+    compile_source, decode_wav, packed_sample_source, render_score,
 };
 use symphra_export::{ExportError, encode_wav};
 
@@ -61,13 +62,18 @@ fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
 
 fn load_samples(score: &Score, base: &Path) -> Result<SampleLibrary, CliError> {
     let mut samples = SampleLibrary::default();
-    for source in score.sampled_sources() {
-        if samples.get(source).is_some() {
+    let sources = score.sampled_sources().map(Cow::Borrowed).chain(
+        score
+            .packed_samples()
+            .map(|(pack, index)| Cow::Owned(packed_sample_source(pack, index))),
+    );
+    for source in sources {
+        if samples.get(&source).is_some() {
             continue;
         }
-        let relative = Path::new(source);
+        let relative = Path::new(source.as_ref());
         if relative.is_absolute() {
-            return Err(CliError::AbsoluteSamplePath(source.to_owned()));
+            return Err(CliError::AbsoluteSamplePath(source.into_owned()));
         }
         let path = base.join(relative);
         let bytes = fs::read(&path).map_err(|error| CliError::SampleRead {
@@ -78,7 +84,7 @@ fn load_samples(score: &Score, base: &Path) -> Result<SampleLibrary, CliError> {
             path: path.display().to_string(),
             source: error,
         })?;
-        samples.insert(source, sample);
+        samples.insert(source.into_owned(), sample);
     }
     Ok(samples)
 }
@@ -206,7 +212,7 @@ song "Test" {
     #[test]
     fn source_to_wav_should_load_samples_relative_to_the_source() {
         let directory =
-            std::env::temp_dir().join(format!("symphra-cli-sample-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("symphra-cli-sampled-test-{}", std::process::id()));
         fs::create_dir_all(&directory).expect("test directory should be created");
         fs::write(directory.join("piano.wav"), wav(&[16_384; 4_000], 8_000))
             .expect("test sample should be written");
@@ -228,6 +234,47 @@ song "Sample" {
         fs::remove_file(directory.join("piano.wav")).expect("test sample should be removed");
         fs::remove_dir(directory).expect("test directory should be removed");
         let rendered = result.expect("relative sample should render");
+        assert_eq!(
+            (&rendered[0..4], &rendered[8..12]),
+            (&b"RIFF"[..], &b"WAVE"[..])
+        );
+    }
+
+    #[test]
+    fn source_to_wav_should_load_numbered_pack_samples() {
+        let directory =
+            std::env::temp_dir().join(format!("symphra-cli-pack-test-{}", std::process::id()));
+        let pack = directory.join("numbers");
+        fs::create_dir_all(&pack).expect("sample pack directory should be created");
+        for index in [1, 3] {
+            fs::write(
+                pack.join(format!("{index}.wav")),
+                wav(&[16_384; 2_000], 8_000),
+            )
+            .expect("pack sample should be written");
+        }
+
+        let result = source_to_wav(
+            directory.join("song.sym").display().to_string(),
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Pack" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 rest sample 3 }
+  arrangement { phrase with voice }
+}
+"#
+            .to_owned(),
+        );
+
+        for index in [1, 3] {
+            fs::remove_file(pack.join(format!("{index}.wav")))
+                .expect("pack sample should be removed");
+        }
+        fs::remove_dir(pack).expect("sample pack directory should be removed");
+        fs::remove_dir(directory).expect("test directory should be removed");
+        let rendered = result.expect("numbered pack samples should render");
         assert_eq!(
             (&rendered[0..4], &rendered[8..12]),
             (&b"RIFF"[..], &b"WAVE"[..])

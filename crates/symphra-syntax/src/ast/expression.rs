@@ -14,6 +14,18 @@ pub enum PatternBody {
         items: Vec<SequenceItem>,
         span: SourceSpan,
     },
+    Steps {
+        resolution_numerator: u32,
+        resolution_denominator: u32,
+        items: Vec<StepItem>,
+        span: SourceSpan,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepItem {
+    Sample { index: u32, span: SourceSpan },
+    Rest { span: SourceSpan },
 }
 
 #[derive(Clone, Debug, PartialEq)]

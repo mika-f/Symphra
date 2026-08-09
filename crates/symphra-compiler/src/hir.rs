@@ -94,7 +94,16 @@ pub struct Pattern {
 pub enum PatternStep {
     Note(Note),
     Chord(Chord),
+    Sample(SampleTrigger),
     Rest(Rest),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleTrigger {
+    pub id: NodeId,
+    pub index: u32,
+    pub duration: Duration,
+    pub velocity: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

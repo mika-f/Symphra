@@ -1,6 +1,6 @@
 use symphra_score::{
     Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass,
-    Score, Song, TimeError, Track,
+    SampleEvent, Score, Song, TimeError, Track,
 };
 
 use crate::hir;
@@ -99,10 +99,12 @@ fn schedule_track(
     instrument: &hir::InstrumentKind,
 ) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::new();
+    let mut samples = Vec::new();
     for step in &pattern.steps {
         let written_duration = match step {
             hir::PatternStep::Note(note) => note.duration,
             hir::PatternStep::Chord(chord) => chord.duration,
+            hir::PatternStep::Sample(sample) => sample.duration,
             hir::PatternStep::Rest(rest) => rest.duration,
         };
         let duration = MusicalTime::new(
@@ -130,6 +132,16 @@ fn schedule_track(
                     )
                 }));
             }
+            hir::PatternStep::Sample(sample) => samples.push(SampleEvent {
+                id: occurrence.map_or_else(
+                    || id(sample.id),
+                    |occurrence| occurrence_note_id(occurrence, sample.id),
+                ),
+                start: cursor,
+                duration,
+                index: sample.index,
+                velocity: sample.velocity,
+            }),
             hir::PatternStep::Rest(_) => {}
         }
         cursor = cursor.checked_add(duration)?;
@@ -150,6 +162,7 @@ fn schedule_track(
                 }
             },
             notes,
+            samples,
             end: cursor,
         },
         cursor,

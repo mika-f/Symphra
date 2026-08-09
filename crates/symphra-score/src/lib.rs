@@ -62,6 +62,7 @@ pub struct Track {
     pub name: String,
     pub instrument: InstrumentKind,
     pub notes: Vec<NoteEvent>,
+    pub samples: Vec<SampleEvent>,
     pub end: MusicalTime,
 }
 
@@ -85,6 +86,20 @@ impl Score {
                 | InstrumentKind::Sampler { .. } => None,
             })
     }
+
+    pub fn packed_samples(&self) -> impl Iterator<Item = (&str, u32)> {
+        self.songs
+            .iter()
+            .flat_map(|song| &song.tracks)
+            .flat_map(|track| {
+                track.samples.iter().filter_map(move |sample| {
+                    let InstrumentKind::Sampler { pack } = &track.instrument else {
+                        return None;
+                    };
+                    Some((pack.as_str(), sample.index))
+                })
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +108,15 @@ pub struct NoteEvent {
     pub start: MusicalTime,
     pub duration: MusicalTime,
     pub midi_pitch: u8,
+    pub velocity: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleEvent {
+    pub id: EntityId,
+    pub start: MusicalTime,
+    pub duration: MusicalTime,
+    pub index: u32,
     pub velocity: u8,
 }
 

@@ -4,7 +4,7 @@ use crate::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, Identifier, InstrumentBody,
     InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody, PatternDeclaration,
     ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, VelocityExpression,
+    SongDeclaration, SongStatement, SourceFile, StepItem, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -29,6 +29,12 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
 const SEQUENCE_ITEM_START: &[TokenKind] = &[
     TokenKind::Note,
     TokenKind::Chord,
+    TokenKind::Rest,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+const STEP_ITEM_START: &[TokenKind] = &[
+    TokenKind::Sample,
     TokenKind::Rest,
     TokenKind::RightBrace,
     TokenKind::Eof,
@@ -288,7 +294,13 @@ impl Parser {
         let start = self.bump().span;
         let name = self.identifier("expected pattern name")?;
         self.required(TokenKind::Equal, "expected `=` after pattern name")?;
-        self.required(TokenKind::Sequence, "expected `sequence` pattern body")?;
+        if self.at(TokenKind::Steps) {
+            return self.steps_pattern(start, name);
+        }
+        self.required(
+            TokenKind::Sequence,
+            "expected `sequence` or `steps` pattern body",
+        )?;
         let body_start = self
             .required(TokenKind::LeftBrace, "expected `{` after `sequence`")?
             .span;
@@ -315,6 +327,57 @@ impl Parser {
         Some(PatternDeclaration {
             name,
             body: PatternBody::Sequence {
+                items,
+                span: body_start.cover(end),
+            },
+            span: start.cover(end),
+        })
+    }
+
+    fn steps_pattern(&mut self, start: SourceSpan, name: Identifier) -> Option<PatternDeclaration> {
+        self.bump();
+        let numerator = self.required(TokenKind::Integer, "expected step resolution numerator")?;
+        self.required(TokenKind::Slash, "expected `/` in step resolution")?;
+        let denominator =
+            self.required(TokenKind::Integer, "expected step resolution denominator")?;
+        let body_start = self
+            .required(TokenKind::LeftBrace, "expected `{` after step resolution")?
+            .span;
+        let mut items = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            let item = match self.current().kind {
+                TokenKind::Sample => {
+                    let sample = self.bump().span;
+                    self.required(TokenKind::Integer, "expected sample index")
+                        .and_then(|index| {
+                            self.parse_u32(&index).map(|index_value| StepItem::Sample {
+                                index: index_value,
+                                span: sample.cover(index.span),
+                            })
+                        })
+                }
+                TokenKind::Rest => Some(StepItem::Rest {
+                    span: self.bump().span,
+                }),
+                _ => {
+                    self.error("expected a sample or rest in steps");
+                    None
+                }
+            };
+            if let Some(item) = item {
+                items.push(item);
+            } else {
+                self.recover_to(STEP_ITEM_START);
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close steps")?
+            .span;
+        Some(PatternDeclaration {
+            name,
+            body: PatternBody::Steps {
+                resolution_numerator: self.parse_u32(&numerator)?,
+                resolution_denominator: self.parse_u32(&denominator)?,
                 items,
                 span: body_start.cover(end),
             },

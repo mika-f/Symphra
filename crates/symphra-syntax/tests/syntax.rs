@@ -1,5 +1,6 @@
 use symphra_syntax::ast::{
     Declaration, InstrumentBody, PatternBody, ProjectStatement, SequenceItem, SongStatement,
+    StepItem,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -105,7 +106,9 @@ fn parses_the_draft_example() {
         panic!("fourth song statement should be a pattern");
     };
     assert_eq!(pattern.name.text, "melody");
-    let PatternBody::Sequence { items, .. } = &pattern.body;
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should be a sequence");
+    };
     assert_eq!(items.len(), 4);
     let SequenceItem::Note(note) = &items[3] else {
         panic!("fourth sequence item should be a note");
@@ -205,6 +208,44 @@ fn parses_sampler_packs() {
 }
 
 #[test]
+fn parses_sample_steps() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Samples" {
+  pattern phrase = steps 1/8 { sample 1 rest sample 3 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps {
+        resolution_numerator,
+        resolution_denominator,
+        items,
+        ..
+    } = &pattern.body
+    else {
+        panic!("pattern should contain steps");
+    };
+
+    let indices = items
+        .iter()
+        .map(|item| match item {
+            StepItem::Sample { index, .. } => Some(*index),
+            StepItem::Rest { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (*resolution_numerator, *resolution_denominator, indices),
+        (1, 8, vec![Some(1), None, Some(3)])
+    );
+}
+
+#[test]
 fn parses_chord_pitches_and_duration() {
     let parsed = parse(
         SourceId(0),
@@ -217,7 +258,9 @@ fn parses_chord_pitches_and_duration() {
     let SongStatement::Pattern(pattern) = &song.statements[0] else {
         panic!("statement should be a pattern");
     };
-    let PatternBody::Sequence { items, .. } = &pattern.body;
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should be a sequence");
+    };
     let SequenceItem::Chord(chord) = &items[0] else {
         panic!("sequence item should be a chord");
     };
@@ -298,7 +341,9 @@ song "Recovery" {
     let SongStatement::Pattern(pattern) = &song.statements[3] else {
         panic!("valid pattern should remain in the song");
     };
-    let PatternBody::Sequence { items, .. } = &pattern.body;
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should be a sequence");
+    };
     let SequenceItem::Note(note) = &items[0] else {
         panic!("recovered sequence item should be a note");
     };

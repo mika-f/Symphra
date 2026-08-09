@@ -468,6 +468,7 @@ fn completion_labels(
             "alternate",
             "pan",
             "chance",
+            "choose_sample",
         ]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
@@ -623,6 +624,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Pan
                     | TokenKind::Alternate
                     | TokenKind::Chance
+                    | TokenKind::ChooseSample
                     | TokenKind::PipeGreater
                     | TokenKind::Percent
                     | TokenKind::LeftParen
@@ -809,6 +811,9 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Pan => "places a track from `-100%` left to `100%` right.",
         TokenKind::Alternate => "alternates successive pan positions or sampler speeds.",
         TokenKind::Chance => "applies a transform to a deterministic percentage of events.",
+        TokenKind::ChooseSample => {
+            "deterministically picks a new sample index per event from a range."
+        }
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -1107,7 +1112,8 @@ mod tests {
                 "speed",
                 "alternate",
                 "pan",
-                "chance"
+                "chance",
+                "choose_sample"
             ]
         );
         assert_eq!(

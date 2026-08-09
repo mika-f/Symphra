@@ -13,8 +13,9 @@ use symphra_syntax::ast::{
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, Duration,
     InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
-    PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleSelector,
-    SampleTrigger, Song, Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
+    PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleRange,
+    SampleSelector, SampleTrigger, Song, Speed, TrackDefinition, WeightedNote,
+    WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -372,22 +373,7 @@ impl Compiler {
                 declaration.instrument.span,
             );
         }
-        let rhythm = declaration
-            .play
-            .trigger_with
-            .as_ref()
-            .and_then(|reference| {
-                let rhythm = rhythms.iter().find(|rhythm| rhythm.name == reference.text);
-                if rhythm.is_none() {
-                    self.error("trigger_with references an unknown rhythm", reference.span);
-                }
-                rhythm
-            });
-        if let (Some(pattern), Some(rhythm), Some(reference)) =
-            (pattern, rhythm, declaration.play.trigger_with.as_ref())
-        {
-            self.validate_trigger(pattern, rhythm, reference.span);
-        }
+        let rhythm = self.resolve_trigger_with(declaration, pattern, rhythms);
         let gate_percent = match declaration.play.gate {
             Some(gate) => match u8::try_from(gate.percent) {
                 Ok(percent) if percent <= 100 => Some(Some(percent)),
@@ -411,6 +397,7 @@ impl Compiler {
         let pan = self.pan(declaration);
         let chance = self.chance(declaration, pattern, instrument.as_ref()).ok();
         let speed = self.speed(declaration, instrument.as_ref());
+        let choose_sample = self.choose_sample(declaration, instrument.as_ref()).ok();
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -424,14 +411,14 @@ impl Compiler {
             .zip(transpose_semitones)
             .zip(gain)
             .zip(repeat_count)
-            .zip(pan.zip(chance).zip(speed))
+            .zip(pan.zip(chance).zip(speed).zip(choose_sample))
             .map(
                 |(
                     (
                         ((((pattern, instrument), gate_percent), transpose_semitones), gain),
                         repeat_count,
                     ),
-                    ((pan, chance), speed),
+                    (((pan, chance), speed), choose_sample),
                 )| {
                     TrackDefinition {
                         id: self.id(),
@@ -448,9 +435,62 @@ impl Compiler {
                         pan,
                         chance,
                         speed,
+                        choose_sample,
                     }
                 },
             )
+    }
+
+    fn resolve_trigger_with<'a>(
+        &mut self,
+        declaration: &TrackDeclaration,
+        pattern: Option<&'a Pattern>,
+        rhythms: &'a [Rhythm],
+    ) -> Option<&'a Rhythm> {
+        let rhythm = declaration
+            .play
+            .trigger_with
+            .as_ref()
+            .and_then(|reference| {
+                let rhythm = rhythms.iter().find(|rhythm| rhythm.name == reference.text);
+                if rhythm.is_none() {
+                    self.error("trigger_with references an unknown rhythm", reference.span);
+                }
+                rhythm
+            });
+        if let (Some(pattern), Some(rhythm), Some(reference)) =
+            (pattern, rhythm, declaration.play.trigger_with.as_ref())
+        {
+            self.validate_trigger(pattern, rhythm, reference.span);
+        }
+        rhythm
+    }
+
+    fn choose_sample(
+        &mut self,
+        declaration: &TrackDeclaration,
+        instrument: Option<&InstrumentKind>,
+    ) -> Result<Option<SampleRange>, ()> {
+        let Some(expression) = declaration.play.choose_sample else {
+            return Ok(None);
+        };
+        if expression.start > expression.end {
+            self.error("choose_sample range must not be empty", expression.span);
+            return Err(());
+        }
+        if instrument
+            .is_some_and(|instrument| !matches!(instrument, InstrumentKind::Sampler { .. }))
+        {
+            self.error(
+                "choose_sample is only supported for sampler tracks",
+                expression.span,
+            );
+            return Err(());
+        }
+        Ok(Some(SampleRange {
+            start: expression.start,
+            end: expression.end,
+        }))
     }
 
     fn speed(

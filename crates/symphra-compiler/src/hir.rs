@@ -52,6 +52,13 @@ pub struct TrackDefinition {
     pub pan: Pan,
     pub chance: Option<Chance>,
     pub speed: Speed,
+    pub choose_sample: Option<SampleRange>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleRange {
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

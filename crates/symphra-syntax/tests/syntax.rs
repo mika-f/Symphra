@@ -599,6 +599,27 @@ fn parses_chance_speed() {
 }
 
 #[test]
+fn parses_choose_sample_range() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Track\" { track voice role melody { instrument voice play phrase |> choose_sample 0..3 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let choose_sample = track
+        .play
+        .choose_sample
+        .expect("choose_sample should be present");
+
+    assert_eq!((choose_sample.start, choose_sample.end), (0, 3));
+}
+
+#[test]
 fn parses_chord_pitches_and_duration() {
     let parsed = parse(
         SourceId(0),

@@ -1380,6 +1380,95 @@ song "Sampler" {
 }
 
 #[test]
+fn schedule_should_choose_sample_within_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 20260809 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 0 sample 0 sample 0 sample 0 }
+  track voice role melody {
+    instrument voice
+    play phrase |> choose_sample 0..3
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("choose_sample should compile");
+
+    let first = schedule(&program).expect("choose_sample should schedule");
+    let second = schedule(&program).expect("choose_sample should schedule again");
+
+    let first_indices = first.songs[0].tracks[0]
+        .samples
+        .iter()
+        .map(|sample| sample_index(&sample.selector))
+        .collect::<Vec<_>>();
+    let second_indices = second.songs[0].tracks[0]
+        .samples
+        .iter()
+        .map(|sample| sample_index(&sample.selector))
+        .collect::<Vec<_>>();
+
+    assert_eq!(first_indices, second_indices);
+    assert!(first_indices.iter().all(|index| (0..=3).contains(index)));
+}
+
+#[test]
+fn compile_should_reject_backwards_choose_sample_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 0 }
+  track voice role melody {
+    instrument voice
+    play phrase |> choose_sample 3..0
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("backwards range should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "choose_sample range must not be empty"
+    );
+}
+
+#[test]
+fn compile_should_reject_choose_sample_for_pitched_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Lead" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern phrase = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play phrase |> choose_sample 0..3
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("pitched choose_sample should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "choose_sample is only supported for sampler tracks"
+    );
+}
+
+#[test]
 fn compile_should_reject_speed_for_pitched_instruments() {
     let parsed = parse(
         SourceId(0),

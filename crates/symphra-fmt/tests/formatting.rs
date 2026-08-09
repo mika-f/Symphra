@@ -249,6 +249,27 @@ fn formats_chance_speed() {
 }
 
 #[test]
+fn formats_choose_sample_range() {
+    let input = r#"song "S" {
+  track voice role melody {
+    instrument voice
+    play phrase |> choose_sample 0..3
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track voice role melody {
+    instrument voice
+    play phrase |> choose_sample 0..3
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_drum_machine_instrument_and_drum_steps() {
     let input = r#"song "S" {
   instrument tr909 = drum_machine { bank "RolandTR909" }

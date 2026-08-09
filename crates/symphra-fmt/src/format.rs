@@ -556,6 +556,13 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
             }
         }
     }
+    if let Some(choose_sample) = &play.choose_sample {
+        let _ = write!(
+            line,
+            " |> choose_sample {}..{}",
+            choose_sample.start, choose_sample.end
+        );
+    }
     ctx.printer.line(line);
 }
 

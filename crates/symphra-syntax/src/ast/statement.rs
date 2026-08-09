@@ -38,6 +38,14 @@ pub struct PlayStatement {
     pub pan: Option<PanExpression>,
     pub chance: Option<ChanceExpression>,
     pub speed: Option<SpeedExpression>,
+    pub choose_sample: Option<ChooseSampleExpression>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChooseSampleExpression {
+    pub start: u32,
+    pub end: u32,
     pub span: SourceSpan,
 }
 

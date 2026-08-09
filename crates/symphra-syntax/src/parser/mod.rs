@@ -1,14 +1,14 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChanceExpression, ChanceTransformExpression, ChordExpression,
-    Declaration, DegreeChoiceAlternative, GainExpression, GateExpression, Identifier,
-    InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PanExpression,
-    PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    SpeedExpression, StepItem, TrackDeclaration, TransposeExpression, VelocityExpression,
-    VolumeExpression,
+    ArrangementOccurrence, ChanceExpression, ChanceTransformExpression, ChooseSampleExpression,
+    ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression, GateExpression,
+    Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral,
+    PanExpression, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration, TransposeExpression,
+    VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -435,22 +435,12 @@ impl Parser {
         let mut pan = None;
         let mut chance = None;
         let mut speed = None;
+        let mut choose_sample = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
             match self.current().kind {
-                TokenKind::TriggerWith => {
-                    self.bump();
-                    let reference =
-                        self.identifier("expected a rhythm name after `trigger_with`")?;
-                    play_end = reference.span;
-                    if trigger_with.replace(reference).is_some() {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "`trigger_with` may only appear once in a play pipeline",
-                            play_end,
-                        ));
-                    }
-                }
+                TokenKind::TriggerWith => play_end = self.trigger_with(&mut trigger_with)?,
                 TokenKind::Gate => play_end = self.gate(&mut gate)?,
                 TokenKind::Transpose => {
                     let expression = self.transpose()?;
@@ -499,9 +489,12 @@ impl Parser {
                 TokenKind::Chance => play_end = self.chance(&mut chance)?,
                 TokenKind::Speed => play_end = self.speed(&mut speed)?,
                 TokenKind::Alternate => play_end = self.alternate_speed(&mut speed)?,
+                TokenKind::ChooseSample => {
+                    play_end = self.choose_sample(&mut choose_sample)?;
+                }
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, `chance`, `speed`, or `alternate` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, `chance`, `speed`, `alternate`, or `choose_sample` after `|>`",
                     );
                     return None;
                 }
@@ -518,6 +511,7 @@ impl Parser {
             pan,
             chance,
             speed,
+            choose_sample,
             span: play_start.cover(play_end),
         })
     }
@@ -615,6 +609,30 @@ impl Parser {
         Some(span)
     }
 
+    fn choose_sample(
+        &mut self,
+        choose_sample: &mut Option<ChooseSampleExpression>,
+    ) -> Option<SourceSpan> {
+        let start_span = self.bump().span;
+        let start_token = self.required(
+            TokenKind::Integer,
+            "expected a sample index after `choose_sample`",
+        )?;
+        let start = self.parse_u32(&start_token)?;
+        self.required(TokenKind::DotDot, "expected `..` in choose_sample range")?;
+        let end_token = self.required(TokenKind::Integer, "expected a sample index after `..`")?;
+        let end = self.parse_u32(&end_token)?;
+        let span = start_span.cover(end_token.span);
+        let expression = ChooseSampleExpression { start, end, span };
+        if choose_sample.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`choose_sample` may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
+    }
+
     fn retrigger_count(&mut self) -> Option<(u32, SourceSpan)> {
         let start = self.bump().span;
         let value = self.required(
@@ -623,6 +641,19 @@ impl Parser {
         )?;
         let count = self.parse_u32(&value)?;
         Some((count, start.cover(value.span)))
+    }
+
+    fn trigger_with(&mut self, trigger_with: &mut Option<Identifier>) -> Option<SourceSpan> {
+        self.bump();
+        let reference = self.identifier("expected a rhythm name after `trigger_with`")?;
+        let span = reference.span;
+        if trigger_with.replace(reference).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`trigger_with` may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
     }
 
     fn gate(&mut self, gate: &mut Option<GateExpression>) -> Option<SourceSpan> {

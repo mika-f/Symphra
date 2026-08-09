@@ -86,6 +86,10 @@ impl Lexer<'_> {
                 self.bump();
                 self.push(TokenKind::PipeGreater, start);
             }
+            '.' if self.peek() == Some('.') => {
+                self.bump();
+                self.push(TokenKind::DotDot, start);
+            }
             '"' => self.string(start),
             c if c.is_ascii_digit() => self.number(start),
             c if is_identifier_start(c) => {

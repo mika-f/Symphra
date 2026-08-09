@@ -152,6 +152,9 @@ fn schedule_declared_track(
     if let Some(chance) = track.chance {
         apply_chance(&mut scheduled, chance, seed)?;
     }
+    if let Some(range) = track.choose_sample {
+        apply_choose_sample(&mut scheduled, range, seed);
+    }
     if track.reverse {
         apply_reverse(&mut scheduled)?;
     }
@@ -160,6 +163,15 @@ fn schedule_declared_track(
         apply_chance_speed(&mut scheduled, chance, seed);
     }
     Ok(scheduled)
+}
+
+fn apply_choose_sample(track: &mut Track, range: hir::SampleRange, seed: u64) {
+    let span = u64::from(range.end - range.start) + 1;
+    for sample in &mut track.samples {
+        let offset = mix(seed ^ sample.id.0) % span;
+        let index = u32::try_from(offset).expect("offset is bounded by a u32 span") + range.start;
+        sample.selector = SampleSelector::Index(index);
+    }
 }
 
 fn apply_speed(track: &mut Track, speed: hir::Speed) {

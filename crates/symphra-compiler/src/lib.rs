@@ -157,7 +157,7 @@ impl Compiler {
         let mut tempo_seen = false;
         let mut meter_seen = false;
         let mut key_seen = false;
-        let mut patterns = Vec::new();
+        let mut pattern_declarations = Vec::new();
         let mut pattern_names = HashSet::new();
         let mut instruments = Vec::new();
         let mut instrument_names = HashSet::new();
@@ -213,7 +213,7 @@ impl Compiler {
                 }
                 SongStatement::Pattern(pattern) => {
                     if pattern_names.insert(pattern.name.text.as_str()) {
-                        patterns.push(self.pattern(pattern));
+                        pattern_declarations.push(pattern);
                     } else {
                         self.error("pattern name is declared more than once", pattern.name.span);
                     }
@@ -230,6 +230,10 @@ impl Compiler {
         if !key_seen {
             self.error("key is required", declaration.span);
         }
+        let patterns = pattern_declarations
+            .iter()
+            .map(|pattern| self.pattern(pattern, key.as_ref()))
+            .collect::<Vec<_>>();
         let arrangement = arrangement.and_then(|(references, span)| {
             self.arrangement(references, span, &patterns, &instruments)
         });
@@ -335,7 +339,7 @@ impl Compiler {
         }
     }
 
-    fn pattern(&mut self, declaration: &PatternDeclaration) -> Pattern {
+    fn pattern(&mut self, declaration: &PatternDeclaration, key: Option<&Key>) -> Pattern {
         let id = self.id();
         let steps = match &declaration.body {
             PatternBody::Sequence { items, .. } => self.sequence_steps(items),
@@ -344,7 +348,13 @@ impl Compiler {
                 resolution_denominator,
                 items,
                 span,
-            } => self.steps(*resolution_numerator, *resolution_denominator, items, *span),
+            } => self.steps(
+                *resolution_numerator,
+                *resolution_denominator,
+                items,
+                *span,
+                key,
+            ),
         };
         Pattern {
             id,
@@ -431,23 +441,38 @@ impl Compiler {
         denominator: u32,
         items: &[StepItem],
         span: SourceSpan,
+        key: Option<&Key>,
     ) -> Vec<PatternStep> {
         let Some(duration) = self.duration(numerator, denominator, span, "step") else {
             return Vec::new();
         };
         items
             .iter()
-            .map(|item| match item {
-                StepItem::Sample { index, .. } => PatternStep::Sample(SampleTrigger {
+            .filter_map(|item| match item {
+                StepItem::Degree {
+                    degree,
+                    octave,
+                    span,
+                } => key
+                    .and_then(|key| self.degree_pitch(key.tonic, *degree, *octave, *span))
+                    .map(|midi_pitch| {
+                        PatternStep::Note(Note {
+                            id: self.id(),
+                            midi_pitch,
+                            duration,
+                            velocity: DEFAULT_VELOCITY,
+                        })
+                    }),
+                StepItem::Sample { index, .. } => Some(PatternStep::Sample(SampleTrigger {
                     id: self.id(),
                     index: *index,
                     duration,
                     velocity: DEFAULT_VELOCITY,
-                }),
-                StepItem::Rest { .. } => PatternStep::Rest(Rest {
+                })),
+                StepItem::Rest { .. } => Some(PatternStep::Rest(Rest {
                     id: self.id(),
                     duration,
-                }),
+                })),
                 StepItem::Choose { alternatives, span } => {
                     if alternatives.is_empty() {
                         self.error("choose must contain at least one sample", *span);
@@ -485,13 +510,48 @@ impl Compiler {
                             }
                         })
                         .collect();
-                    PatternStep::Choice(SampleChoice {
+                    Some(PatternStep::Choice(SampleChoice {
                         id: self.id(),
                         alternatives,
-                    })
+                    }))
                 }
             })
             .collect()
+    }
+
+    fn degree_pitch(
+        &mut self,
+        tonic: PitchClass,
+        degree: u32,
+        octave: u32,
+        span: SourceSpan,
+    ) -> Option<u8> {
+        let tonic = match tonic {
+            PitchClass::C => 0,
+            PitchClass::D => 2,
+            PitchClass::E => 4,
+            PitchClass::F => 5,
+            PitchClass::G => 7,
+            PitchClass::A => 9,
+            PitchClass::B => 11,
+        };
+        let midi = octave
+            .checked_add(1)
+            .and_then(|octave| octave.checked_mul(12))
+            .and_then(|midi| midi.checked_add(tonic))
+            .and_then(|midi| midi.checked_add(degree));
+        if let Some(midi) = midi
+            .and_then(|midi| u8::try_from(midi).ok())
+            .filter(|midi| *midi <= 127)
+        {
+            Some(midi)
+        } else {
+            self.error(
+                "degree and octave must resolve to a MIDI pitch from 0 to 127",
+                span,
+            );
+            None
+        }
     }
 
     fn duration(

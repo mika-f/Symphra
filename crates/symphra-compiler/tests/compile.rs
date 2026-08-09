@@ -515,6 +515,71 @@ song "Sampler" {
 }
 
 #[test]
+fn schedule_should_resolve_degree_steps_from_the_song_key() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Degrees" {
+  tempo 120bpm meter 4/4
+  pattern phrase = steps 1/8 {
+    degree 0 octave 4
+    degree 2 octave 4
+    degree 12 octave 4
+  }
+  key D major
+  arrangement { phrase }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("degree steps should compile");
+    let score = schedule(&program).expect("degree steps should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .notes
+            .iter()
+            .map(|event| (event.midi_pitch, event.start))
+            .collect::<Vec<_>>(),
+        [
+            (62, MusicalTime::ZERO),
+            (
+                64,
+                MusicalTime::new(1, 8).expect("eighth note should be valid")
+            ),
+            (
+                74,
+                MusicalTime::new(1, 4).expect("quarter note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_degree_steps_outside_the_midi_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Invalid degree" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = steps 1/8 { degree 12 octave 10 }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("invalid degree should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["degree and octave must resolve to a MIDI pitch from 0 to 127"]
+    );
+}
+
+#[test]
 fn schedule_should_choose_weighted_samples_deterministically() {
     let parsed = parse(
         SourceId(0),

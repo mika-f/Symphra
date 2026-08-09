@@ -40,7 +40,8 @@ object SymphraTokenTypes {
     @JvmField
     val KEYWORDS = setOf(
         "project", "song", "seed", "sample_rate", "output", "tempo", "meter", "key",
-        "pattern", "arrangement", "sequence", "note", "chord", "rest", "for", "velocity"
+        "pattern", "arrangement", "sequence", "degree", "octave", "note", "chord", "rest",
+        "for", "velocity"
     )
 
     // Natural (C4), sharp (C#4), flat (Cb4), and negative-octave (C-1, C#-1, Cb-1) pitches.

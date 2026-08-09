@@ -24,6 +24,11 @@ pub enum PatternBody {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepItem {
+    Degree {
+        degree: u32,
+        octave: u32,
+        span: SourceSpan,
+    },
     Sample {
         index: u32,
         span: SourceSpan,

@@ -346,6 +346,20 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         }
     } else if duration_keyword_follows(line_tokens) {
         &["for"]
+    } else if matches!(
+        line_tokens,
+        [
+            Token {
+                kind: TokenKind::Degree,
+                ..
+            },
+            Token {
+                kind: TokenKind::Integer,
+                ..
+            }
+        ]
+    ) {
+        &["octave"]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
     } else if matches!(block, Some(CompletionBlock::Arrangement))
@@ -366,7 +380,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
                 "arrangement",
             ],
             Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
-            Some(CompletionBlock::Steps) => &["sample", "rest", "choose"],
+            Some(CompletionBlock::Steps) => &["degree", "sample", "rest", "choose"],
             Some(CompletionBlock::Choice) => &["sample", "sequence"],
             Some(CompletionBlock::ChoiceSequence) => &["sample"],
             Some(CompletionBlock::Sampled) => &["source", "root"],
@@ -480,6 +494,8 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Instrument
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
+                    | TokenKind::Degree
+                    | TokenKind::Octave
                     | TokenKind::Note
                     | TokenKind::Chord
                     | TokenKind::Rest
@@ -640,6 +656,8 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Steps => "plays fixed-resolution steps in source order.",
+        TokenKind::Degree => "adds a pitch offset from the song key tonic.",
+        TokenKind::Octave => "sets the base octave for a degree step.",
         TokenKind::Note => "adds a written pitch to a sequence.",
         TokenKind::Chord => "adds pitches that start and end together.",
         TokenKind::Rest => "advances a sequence without producing sound.",
@@ -804,7 +822,7 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = steps 1/8 {\n  ", 2, 2),
-            ["sample", "rest", "choose"]
+            ["degree", "sample", "rest", "choose"]
         );
         assert_eq!(
             labels(
@@ -843,6 +861,21 @@ mod tests {
             ["velocity"]
         );
         assert!(labels("😀", 0, 1).is_empty());
+    }
+
+    #[test]
+    fn completes_octave_after_a_degree_value() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            "song \"Test\" {\npattern p = steps 1/8 {\n  degree 2 ",
+        );
+        let labels = completions(&source, Position::new(2, 11))
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, ["octave"]);
     }
 
     #[test]

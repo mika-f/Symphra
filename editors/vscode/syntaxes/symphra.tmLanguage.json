@@ -86,7 +86,7 @@
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|note|rest|chord|for|velocity)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|degree|octave|note|rest|chord|for|velocity)\\b"
         }
       ]
     },

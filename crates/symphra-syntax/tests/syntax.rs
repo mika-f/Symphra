@@ -237,12 +237,44 @@ fn parses_sample_steps() {
         .map(|item| match item {
             StepItem::Sample { index, .. } => Some(*index),
             StepItem::Rest { .. } => None,
+            StepItem::Degree { .. } => panic!("unexpected degree"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
         (*resolution_numerator, *resolution_denominator, indices),
         (1, 8, vec![Some(1), None, Some(3)])
+    );
+}
+
+#[test]
+fn parses_degree_steps() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Degree" {
+  pattern phrase = steps 1/8 { degree 2 octave 5 degree 12 octave 5 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| match item {
+                StepItem::Degree { degree, octave, .. } => (*degree, *octave),
+                _ => panic!("step should be a degree"),
+            })
+            .collect::<Vec<_>>(),
+        [(2, 5), (12, 5)]
     );
 }
 

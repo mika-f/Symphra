@@ -35,6 +35,7 @@ const SEQUENCE_ITEM_START: &[TokenKind] = &[
     TokenKind::Eof,
 ];
 const STEP_ITEM_START: &[TokenKind] = &[
+    TokenKind::Degree,
     TokenKind::Sample,
     TokenKind::Choose,
     TokenKind::Rest,
@@ -348,6 +349,7 @@ impl Parser {
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             let item = match self.current().kind {
+                TokenKind::Degree => self.degree_step(),
                 TokenKind::Sample => {
                     let sample = self.bump().span;
                     self.required(TokenKind::Integer, "expected sample index")
@@ -363,7 +365,7 @@ impl Parser {
                 }),
                 TokenKind::Choose => self.sample_choice(),
                 _ => {
-                    self.error("expected a sample, rest, or choose in steps");
+                    self.error("expected a degree, sample, rest, or choose in steps");
                     None
                 }
             };
@@ -385,6 +387,18 @@ impl Parser {
                 span: body_start.cover(end),
             },
             span: start.cover(end),
+        })
+    }
+
+    fn degree_step(&mut self) -> Option<StepItem> {
+        let start = self.bump().span;
+        let degree = self.required(TokenKind::Integer, "expected degree offset")?;
+        self.required(TokenKind::Octave, "expected `octave` after degree")?;
+        let octave = self.required(TokenKind::Integer, "expected octave number")?;
+        Some(StepItem::Degree {
+            degree: self.parse_u32(&degree)?,
+            octave: self.parse_u32(&octave)?,
+            span: start.cover(octave.span),
         })
     }
 

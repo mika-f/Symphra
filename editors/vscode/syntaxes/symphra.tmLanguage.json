@@ -2,16 +2,32 @@
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Symphra",
   "scopeName": "source.symphra",
-  "fileTypes": ["sym"],
+  "fileTypes": [
+    "sym"
+  ],
   "comment": "Tracks the Draft 0.1 grammar in docs/language/draft-0.1.md. Keep in sync as the grammar grows.",
   "patterns": [
-    { "include": "#comments" },
-    { "include": "#strings" },
-    { "include": "#rates" },
-    { "include": "#pitches" },
-    { "include": "#numbers" },
-    { "include": "#keywords" },
-    { "include": "#punctuation" }
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#rates"
+    },
+    {
+      "include": "#pitches"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#punctuation"
+    }
   ],
   "repository": {
     "comments": {
@@ -41,8 +57,12 @@
       "comment": "A number immediately followed by a unit identifier, e.g. 48khz, 150bpm.",
       "match": "\\b(\\d+(?:\\.\\d+)?)([A-Za-z_][A-Za-z0-9_]*)\\b",
       "captures": {
-        "1": { "name": "constant.numeric.symphra" },
-        "2": { "name": "keyword.other.unit.symphra" }
+        "1": {
+          "name": "constant.numeric.symphra"
+        },
+        "2": {
+          "name": "keyword.other.unit.symphra"
+        }
       }
     },
     "pitches": {
@@ -62,7 +82,7 @@
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|key|note|for)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|note|for)\\b"
         }
       ]
     },

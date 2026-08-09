@@ -9,7 +9,7 @@ import com.intellij.openapi.components.service
 @Service(Service.Level.APP)
 @State(name = "SymphraSettings", storages = [Storage("symphra.xml")])
 class SymphraSettingsState : PersistentStateComponent<SymphraSettingsState.State> {
-    data class State(var serverPath: String = "")
+    data class State(var serverPath: String = "", var formatterPath: String = "")
 
     private var myState = State()
 
@@ -23,6 +23,12 @@ class SymphraSettingsState : PersistentStateComponent<SymphraSettingsState.State
         get() = myState.serverPath
         set(value) {
             myState.serverPath = value
+        }
+
+    var formatterPath: String
+        get() = myState.formatterPath
+        set(value) {
+            myState.formatterPath = value
         }
 
     companion object {

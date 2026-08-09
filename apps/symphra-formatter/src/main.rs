@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,7 +10,11 @@ use symphra_fmt::FormatError;
 use symphra_syntax::{SourceId, SourceText};
 
 fn main() -> ExitCode {
-    let args = env::args_os().skip(1);
+    let args: Vec<OsString> = env::args_os().skip(1).collect();
+    if args.as_slice() == [OsString::from("-")] {
+        return run_stdin();
+    }
+
     match run(args) {
         Ok(Summary {
             reformatted,
@@ -29,6 +34,34 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Formats stdin and writes the result to stdout, for editor integrations
+/// that want to format an in-memory buffer without touching disk. Prints
+/// diagnostics to stderr and writes nothing to stdout on invalid source, so
+/// a caller piping stdout back into a buffer never applies a partial or
+/// garbled result.
+fn run_stdin() -> ExitCode {
+    let mut text = String::new();
+    if let Err(error) = io::stdin().read_to_string(&mut text) {
+        eprintln!("failed to read stdin: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    let source = SourceText::new(SourceId(0), "<stdin>", text.clone());
+    let formatted = match symphra_fmt::format_source(&text) {
+        Ok(formatted) => formatted,
+        Err(error) => {
+            print_diagnostics(&source, &error);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut stdout = io::stdout();
+    if stdout.write_all(formatted.as_bytes()).is_err() {
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
 }
 
 #[derive(Debug, Default)]

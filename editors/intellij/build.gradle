@@ -18,7 +18,7 @@ intellijPlatform {
         name = 'Symphra'
 
         ideaVersion {
-            sinceBuild = '242'
+            sinceBuild = '252'
         }
     }
 

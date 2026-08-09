@@ -19,6 +19,17 @@ class SymphraSettingsConfigurable : BoundConfigurable("Symphra") {
                     )
                     .resizableColumn()
             }
+            row("Formatter path:") {
+                textField()
+                    .bindText(settings::formatterPath)
+                    .comment(
+                        "Path to the symphra-formatter executable, used by \"Format Symphra Document\". " +
+                            "When empty, the plugin looks for target/debug/symphra-formatter or " +
+                            "target/release/symphra-formatter under the project, then falls back to " +
+                            "symphra-formatter on PATH.",
+                    )
+                    .resizableColumn()
+            }
         }
     }
 }

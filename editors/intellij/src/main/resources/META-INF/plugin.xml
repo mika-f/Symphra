@@ -11,7 +11,17 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.intellij.modules.lsp</depends>
+    <!--
+      Deliberately not depending on `com.intellij.modules.lsp`: it is not a
+      module ID any installed IntelliJ Platform build actually registers
+      (checked both 2024.2 and a fully licensed 2025.2 Ultimate), so that
+      requirement can never be satisfied and the whole plugin loads disabled
+      with "Requires plugin 'com.intellij.modules.lsp' to be installed". The
+      `com.intellij.platform.lsp.api` classes this plugin uses are simply
+      part of the platform classpath on LSP-capable (commercial) IDEs; on
+      Community Edition, class loading for `SymphraLspServerDescriptor` will
+      fail instead, since there is currently no verified module ID to gate on.
+    -->
 
     <extensions defaultExtensionNs="com.intellij">
         <fileType
@@ -24,6 +34,10 @@
         <lang.syntaxHighlighterFactory
             language="Symphra"
             implementationClass="dev.symphra.idea.highlighting.SymphraSyntaxHighlighterFactory"/>
+
+        <lang.parserDefinition
+            language="Symphra"
+            implementationClass="dev.symphra.idea.psi.SymphraParserDefinition"/>
 
         <colorSettingsPage
             implementation="dev.symphra.idea.highlighting.SymphraColorSettingsPage"/>
@@ -40,4 +54,13 @@
         <applicationService
             serviceImplementation="dev.symphra.idea.settings.SymphraSettingsState"/>
     </extensions>
+
+    <actions>
+        <action id="Symphra.FormatDocument"
+                class="dev.symphra.idea.actions.SymphraFormatDocumentAction"
+                text="Format Symphra Document"
+                description="Formats the current .sym file by piping it through symphra-formatter">
+            <add-to-group group-id="EditMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

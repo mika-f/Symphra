@@ -36,7 +36,13 @@ pub struct Song {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arrangement {
-    pub patterns: Vec<NodeId>,
+    pub occurrences: Vec<PatternOccurrence>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatternOccurrence {
+    pub id: NodeId,
+    pub pattern: NodeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

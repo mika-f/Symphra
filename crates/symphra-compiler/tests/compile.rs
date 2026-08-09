@@ -1,6 +1,6 @@
 use symphra_compiler::hir::{
-    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program,
-    Project, Song,
+    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PatternOccurrence,
+    PitchClass, Program, Project, Song,
 };
 use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::MusicalTime;
@@ -189,7 +189,7 @@ project { seed 1 sample_rate 48khz output stereo }
 song "Invalid arrangement" {
   tempo 120bpm meter 4/4 key C major
   pattern melody = sequence {}
-  arrangement { missing melody melody }
+  arrangement { missing melody }
 }
 "#,
     );
@@ -200,10 +200,7 @@ song "Invalid arrangement" {
             .iter()
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
-        [
-            "arrangement references an unknown pattern",
-            "pattern is arranged more than once",
-        ]
+        ["arrangement references an unknown pattern"]
     );
 }
 
@@ -212,11 +209,23 @@ fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
     let parsed = parse(SourceId(0), EXAMPLE);
     let mut program = compile(&parsed.file).expect("example should compile");
     program.songs[0].arrangement = Some(Arrangement {
-        patterns: vec![NodeId(u32::MAX)],
+        occurrences: vec![PatternOccurrence {
+            id: NodeId(99),
+            pattern: NodeId(u32::MAX),
+        }],
     });
     let unknown = schedule(&program);
     program.songs[0].arrangement = Some(Arrangement {
-        patterns: vec![NodeId(1), NodeId(1)],
+        occurrences: vec![
+            PatternOccurrence {
+                id: NodeId(99),
+                pattern: NodeId(1),
+            },
+            PatternOccurrence {
+                id: NodeId(99),
+                pattern: NodeId(1),
+            },
+        ],
     });
     let duplicate = schedule(&program);
 
@@ -224,7 +233,40 @@ fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
         (unknown, duplicate),
         (
             Err(ScheduleError::UnknownPattern(NodeId(u32::MAX))),
-            Err(ScheduleError::DuplicatePattern(NodeId(1))),
+            Err(ScheduleError::DuplicateOccurrence(NodeId(99))),
+        )
+    );
+}
+
+#[test]
+fn schedule_should_give_repeated_patterns_unique_occurrence_ids() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Repeated" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = sequence { note C4 for 1/4 }
+  arrangement { phrase phrase }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("repeated pattern should compile");
+
+    let score = schedule(&program).expect("repeated pattern should schedule");
+    let tracks = &score.songs[0].tracks;
+    assert_eq!(
+        (
+            tracks[0].notes[0].start,
+            tracks[1].notes[0].start,
+            tracks[0].id != tracks[1].id,
+            tracks[0].notes[0].id != tracks[1].notes[0].id,
+        ),
+        (
+            MusicalTime::ZERO,
+            MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            true,
+            true,
         )
     );
 }

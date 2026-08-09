@@ -94,13 +94,13 @@ song "Arranged" {
   tempo 120bpm meter 4/4 key C major
   pattern first = sequence { note C4 for 1/4 }
   pattern second = sequence { note G4 for 1/4 }
-  arrangement { second first }
+  arrangement { second first second }
 }
 "#,
         );
 
         let audio = render_source(&source, 0).expect("arranged source should render");
 
-        assert_eq!(audio.frames(), 8_000);
+        assert_eq!(audio.frames(), 12_000);
     }
 }

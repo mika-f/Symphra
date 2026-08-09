@@ -9,8 +9,8 @@ use symphra_syntax::ast::{
 };
 
 use crate::hir::{
-    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program,
-    Project, Song,
+    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PatternOccurrence,
+    PitchClass, Program, Project, Song,
 };
 
 pub mod hir;
@@ -240,24 +240,22 @@ impl Compiler {
             self.error("arrangement must contain at least one pattern", span);
             return None;
         }
-        let mut names = HashSet::new();
-        let patterns = references
+        let occurrences = references
             .iter()
             .filter_map(|reference| {
-                if !names.insert(reference.text.as_str()) {
-                    self.error("pattern is arranged more than once", reference.span);
-                    return None;
-                }
                 let pattern = patterns
                     .iter()
                     .find(|pattern| pattern.name == reference.text);
                 if pattern.is_none() {
                     self.error("arrangement references an unknown pattern", reference.span);
                 }
-                pattern.map(|pattern| pattern.id)
+                pattern.map(|pattern| PatternOccurrence {
+                    id: self.id(),
+                    pattern: pattern.id,
+                })
             })
             .collect();
-        Some(Arrangement { patterns })
+        Some(Arrangement { occurrences })
     }
 
     fn pattern(&mut self, declaration: &PatternDeclaration) -> Pattern {

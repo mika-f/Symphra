@@ -60,25 +60,28 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
         return song
             .patterns
             .iter()
-            .map(|pattern| schedule_track(pattern, MusicalTime::ZERO).map(|(track, _)| track))
+            .map(|pattern| schedule_track(pattern, MusicalTime::ZERO, None).map(|(track, _)| track))
             .collect();
     };
-    if arrangement.patterns.is_empty() {
+    if arrangement.occurrences.is_empty() {
         return Err(ScheduleError::EmptyArrangement);
     }
 
     let mut cursor = MusicalTime::ZERO;
-    let mut tracks = Vec::with_capacity(arrangement.patterns.len());
-    for (index, pattern_id) in arrangement.patterns.iter().enumerate() {
-        if arrangement.patterns[..index].contains(pattern_id) {
-            return Err(ScheduleError::DuplicatePattern(*pattern_id));
+    let mut tracks = Vec::with_capacity(arrangement.occurrences.len());
+    for (index, occurrence) in arrangement.occurrences.iter().enumerate() {
+        if arrangement.occurrences[..index]
+            .iter()
+            .any(|previous| previous.id == occurrence.id)
+        {
+            return Err(ScheduleError::DuplicateOccurrence(occurrence.id));
         }
         let pattern = song
             .patterns
             .iter()
-            .find(|pattern| pattern.id == *pattern_id)
-            .ok_or(ScheduleError::UnknownPattern(*pattern_id))?;
-        let (track, end) = schedule_track(pattern, cursor)?;
+            .find(|pattern| pattern.id == occurrence.pattern)
+            .ok_or(ScheduleError::UnknownPattern(occurrence.pattern))?;
+        let (track, end) = schedule_track(pattern, cursor, Some(occurrence.id))?;
         tracks.push(track);
         cursor = end;
     }
@@ -88,6 +91,7 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
 fn schedule_track(
     pattern: &hir::Pattern,
     mut cursor: MusicalTime,
+    occurrence: Option<hir::NodeId>,
 ) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::with_capacity(pattern.notes.len());
     for note in &pattern.notes {
@@ -96,7 +100,10 @@ fn schedule_track(
             u64::from(note.duration.denominator),
         )?;
         notes.push(NoteEvent {
-            id: id(note.id),
+            id: occurrence.map_or_else(
+                || id(note.id),
+                |occurrence| occurrence_note_id(occurrence, note.id),
+            ),
             start: cursor,
             duration,
             midi_pitch: note.midi_pitch,
@@ -105,7 +112,7 @@ fn schedule_track(
     }
     Ok((
         Track {
-            id: id(pattern.id),
+            id: id(occurrence.unwrap_or(pattern.id)),
             name: pattern.name.clone(),
             notes,
         },
@@ -117,8 +124,8 @@ fn schedule_track(
 pub enum ScheduleError {
     #[error("arrangement must contain at least one pattern")]
     EmptyArrangement,
-    #[error("pattern ID {0:?} is arranged more than once")]
-    DuplicatePattern(hir::NodeId),
+    #[error("arrangement occurrence ID {0:?} is used more than once")]
+    DuplicateOccurrence(hir::NodeId),
     #[error("arrangement references unknown pattern ID {0:?}")]
     UnknownPattern(hir::NodeId),
     #[error(transparent)]
@@ -127,4 +134,8 @@ pub enum ScheduleError {
 
 fn id(id: hir::NodeId) -> EntityId {
     EntityId(u64::from(id.0))
+}
+
+fn occurrence_note_id(occurrence: hir::NodeId, note: hir::NodeId) -> EntityId {
+    EntityId((u64::from(occurrence.0) << 32) | u64::from(note.0))
 }

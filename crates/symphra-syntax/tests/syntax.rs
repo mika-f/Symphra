@@ -18,6 +18,7 @@ song "First Song" {
     note E4 for 1/4
     note G4 for 1/2
   }
+  arrangement { melody }
 }
 "#;
 
@@ -86,6 +87,10 @@ fn parses_the_draft_example() {
         (notes[2].duration_numerator, notes[2].duration_denominator),
         (1, 2)
     );
+    let SongStatement::Arrangement { patterns, .. } = &song.statements[4] else {
+        panic!("fifth song statement should be an arrangement");
+    };
+    assert_eq!(patterns[0].text, "melody");
 }
 
 #[test]

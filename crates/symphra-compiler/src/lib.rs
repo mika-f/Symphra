@@ -4,18 +4,19 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    Declaration, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
+    Declaration, Identifier, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
     SongDeclaration, SongStatement, SourceFile,
 };
 
 use crate::hir::{
-    Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program, Project, Song,
+    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program,
+    Project, Song,
 };
 
 pub mod hir;
 mod schedule;
 
-pub use schedule::schedule;
+pub use schedule::{ScheduleError, schedule};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileDiagnostic {
@@ -154,6 +155,7 @@ impl Compiler {
         let mut key_seen = false;
         let mut patterns = Vec::new();
         let mut pattern_names = HashSet::new();
+        let mut arrangement = None;
 
         for statement in &declaration.statements {
             match statement {
@@ -185,6 +187,14 @@ impl Compiler {
                         key = self.key(&tonic.text, &mode.text, *span);
                     }
                 }
+                SongStatement::Arrangement {
+                    patterns: references,
+                    span,
+                } => {
+                    if arrangement.replace((references, *span)).is_some() {
+                        self.error("arrangement is declared more than once", *span);
+                    }
+                }
                 SongStatement::Pattern(pattern) => {
                     if pattern_names.insert(pattern.name.text.as_str()) {
                         patterns.push(self.pattern(pattern));
@@ -204,6 +214,8 @@ impl Compiler {
         if !key_seen {
             self.error("key is required", declaration.span);
         }
+        let arrangement = arrangement
+            .and_then(|(references, span)| self.arrangement(references, span, &patterns));
         match (tempo_bpm, meter, key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
                 id,
@@ -212,9 +224,40 @@ impl Compiler {
                 meter,
                 key,
                 patterns,
+                arrangement,
             }),
             _ => None,
         }
+    }
+
+    fn arrangement(
+        &mut self,
+        references: &[Identifier],
+        span: SourceSpan,
+        patterns: &[Pattern],
+    ) -> Option<Arrangement> {
+        if references.is_empty() {
+            self.error("arrangement must contain at least one pattern", span);
+            return None;
+        }
+        let mut names = HashSet::new();
+        let patterns = references
+            .iter()
+            .filter_map(|reference| {
+                if !names.insert(reference.text.as_str()) {
+                    self.error("pattern is arranged more than once", reference.span);
+                    return None;
+                }
+                let pattern = patterns
+                    .iter()
+                    .find(|pattern| pattern.name == reference.text);
+                if pattern.is_none() {
+                    self.error("arrangement references an unknown pattern", reference.span);
+                }
+                pattern.map(|pattern| pattern.id)
+            })
+            .collect();
+        Some(Arrangement { patterns })
     }
 
     fn pattern(&mut self, declaration: &PatternDeclaration) -> Pattern {

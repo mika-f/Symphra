@@ -1,8 +1,7 @@
 //! Source-to-audio orchestration for Symphra.
 
-use symphra_compiler::{CompileDiagnostic, compile, schedule};
+use symphra_compiler::{CompileDiagnostic, ScheduleError, compile, schedule};
 use symphra_render::{RenderError, render_song};
-use symphra_score::TimeError;
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
@@ -15,7 +14,7 @@ pub enum EngineError {
     #[error("source contains semantic errors")]
     Compile(Vec<CompileDiagnostic>),
     #[error(transparent)]
-    Schedule(#[from] TimeError),
+    Schedule(#[from] ScheduleError),
     #[error(transparent)]
     Render(#[from] RenderError),
 }
@@ -82,5 +81,26 @@ song "Test" {
                 .iter()
                 .all(|diagnostic| diagnostic.span.source == SourceId(7))
         );
+    }
+
+    #[test]
+    fn render_source_should_follow_explicit_arrangement() {
+        let source = SourceText::new(
+            SourceId(0),
+            "arranged.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Arranged" {
+  tempo 120bpm meter 4/4 key C major
+  pattern first = sequence { note C4 for 1/4 }
+  pattern second = sequence { note G4 for 1/4 }
+  arrangement { second first }
+}
+"#,
+        );
+
+        let audio = render_source(&source, 0).expect("arranged source should render");
+
+        assert_eq!(audio.frames(), 8_000);
     }
 }

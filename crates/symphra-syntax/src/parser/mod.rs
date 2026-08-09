@@ -20,6 +20,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Meter,
     TokenKind::Key,
     TokenKind::Pattern,
+    TokenKind::Arrangement,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -140,6 +141,7 @@ impl Parser {
                 TokenKind::Tempo => self.tempo(),
                 TokenKind::Meter => self.meter(),
                 TokenKind::Key => self.key(),
+                TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
                     self.error("expected a song setting or pattern");
@@ -189,6 +191,29 @@ impl Parser {
         let mode = self.identifier("expected key mode")?;
         let span = start.cover(mode.span);
         Some(SongStatement::Key { tonic, mode, span })
+    }
+
+    fn arrangement(&mut self) -> Option<SongStatement> {
+        let start = self.bump().span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `arrangement`")?;
+        let mut patterns = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            if self.at(TokenKind::Identifier) {
+                patterns.push(self.identifier("expected a pattern name in arrangement")?);
+            } else {
+                self.error("expected a pattern name in arrangement");
+                while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+                    self.bump();
+                }
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close arrangement")?
+            .span;
+        Some(SongStatement::Arrangement {
+            patterns,
+            span: start.cover(end),
+        })
     }
 
     fn pattern(&mut self) -> Option<PatternDeclaration> {

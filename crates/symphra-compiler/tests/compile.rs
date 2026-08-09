@@ -1,7 +1,8 @@
 use symphra_compiler::hir::{
-    Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program, Project, Song,
+    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PitchClass, Program,
+    Project, Song,
 };
-use symphra_compiler::{compile, schedule};
+use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::MusicalTime;
 use symphra_syntax::{SourceId, parse};
 
@@ -81,6 +82,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                         },
                     ],
                 }],
+                arrangement: None,
             }],
         }
     );
@@ -141,5 +143,88 @@ fn schedule_should_place_sequence_notes_back_to_back() {
             MusicalTime::new(1, 4).expect("quarter note should be valid"),
             MusicalTime::new(1, 2).expect("half note should be valid"),
         ]
+    );
+}
+
+#[test]
+fn schedule_should_place_arranged_patterns_back_to_back() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Arranged" {
+  tempo 120bpm meter 4/4 key C major
+  pattern intro = sequence { note C4 for 1/4 }
+  pattern outro = sequence { note G4 for 1/2 }
+  arrangement { outro intro }
+}
+"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let program = compile(&parsed.file).expect("arrangement should resolve");
+
+    let score = schedule(&program).expect("arrangement times should fit");
+    assert_eq!(
+        score.songs[0]
+            .tracks
+            .iter()
+            .map(|track| (track.name.as_str(), track.notes[0].start))
+            .collect::<Vec<_>>(),
+        [
+            ("outro", MusicalTime::ZERO),
+            (
+                "intro",
+                MusicalTime::new(1, 2).expect("half note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_invalid_arrangement_references() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Invalid arrangement" {
+  tempo 120bpm meter 4/4 key C major
+  pattern melody = sequence {}
+  arrangement { missing melody melody }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("invalid arrangement should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "arrangement references an unknown pattern",
+            "pattern is arranged more than once",
+        ]
+    );
+}
+
+#[test]
+fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
+    let parsed = parse(SourceId(0), EXAMPLE);
+    let mut program = compile(&parsed.file).expect("example should compile");
+    program.songs[0].arrangement = Some(Arrangement {
+        patterns: vec![NodeId(u32::MAX)],
+    });
+    let unknown = schedule(&program);
+    program.songs[0].arrangement = Some(Arrangement {
+        patterns: vec![NodeId(1), NodeId(1)],
+    });
+    let duplicate = schedule(&program);
+
+    assert_eq!(
+        (unknown, duplicate),
+        (
+            Err(ScheduleError::UnknownPattern(NodeId(u32::MAX))),
+            Err(ScheduleError::DuplicatePattern(NodeId(1))),
+        )
     );
 }

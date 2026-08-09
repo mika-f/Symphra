@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 symphra-score.workspace = true
 symphra-syntax.workspace = true
+thiserror.workspace = true

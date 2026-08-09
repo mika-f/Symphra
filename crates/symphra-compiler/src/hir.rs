@@ -31,6 +31,12 @@ pub struct Song {
     pub meter: Meter,
     pub key: Key,
     pub patterns: Vec<Pattern>,
+    pub arrangement: Option<Arrangement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arrangement {
+    pub patterns: Vec<NodeId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

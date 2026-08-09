@@ -333,7 +333,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         match block {
             None => &["project", "song"],
             Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
-            Some(CompletionBlock::Song) => &["tempo", "meter", "key", "pattern"],
+            Some(CompletionBlock::Song) => &["tempo", "meter", "key", "pattern", "arrangement"],
             Some(CompletionBlock::Sequence) => &["note"],
             Some(CompletionBlock::Other) => &[],
         }
@@ -385,6 +385,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Meter
                     | TokenKind::Key
                     | TokenKind::Pattern
+                    | TokenKind::Arrangement
                     | TokenKind::Note,
                 ..
             }]
@@ -458,6 +459,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Meter => "sets the song time signature, such as `4/4`.",
         TokenKind::Key => "sets the song tonic and mode, such as `C major`.",
         TokenKind::Pattern => "declares a named musical pattern.",
+        TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Note => "adds a written pitch to a sequence.",
         TokenKind::For => "introduces a note duration, such as `1/4`.",
@@ -569,7 +571,7 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\n  pat", 1, 5),
-            ["tempo", "meter", "key", "pattern"]
+            ["tempo", "meter", "key", "pattern", "arrangement"]
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  no", 2, 4),

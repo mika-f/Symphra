@@ -33,5 +33,9 @@ pub enum SongStatement {
         mode: Identifier,
         span: SourceSpan,
     },
+    Arrangement {
+        patterns: Vec<Identifier>,
+        span: SourceSpan,
+    },
     Pattern(PatternDeclaration),
 }

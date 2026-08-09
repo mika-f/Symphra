@@ -9,8 +9,9 @@ use crate::hir;
 ///
 /// # Errors
 ///
-/// Returns [`TimeError`] if accumulated musical time exceeds its supported range.
-pub fn schedule(program: &hir::Program) -> Result<Score, TimeError> {
+/// Returns [`ScheduleError`] if the HIR contains an invalid pattern reference or
+/// accumulated musical time exceeds its supported range.
+pub fn schedule(program: &hir::Program) -> Result<Score, ScheduleError> {
     Ok(Score {
         seed: program.project.seed,
         sample_rate_hz: program.project.sample_rate_hz,
@@ -26,7 +27,7 @@ pub fn schedule(program: &hir::Program) -> Result<Score, TimeError> {
     })
 }
 
-fn schedule_song(song: &hir::Song) -> Result<Song, TimeError> {
+fn schedule_song(song: &hir::Song) -> Result<Song, ScheduleError> {
     Ok(Song {
         id: id(song.id),
         name: song.name.clone(),
@@ -50,16 +51,44 @@ fn schedule_song(song: &hir::Song) -> Result<Song, TimeError> {
                 hir::Mode::Minor => Mode::Minor,
             },
         },
-        tracks: song
-            .patterns
-            .iter()
-            .map(schedule_track)
-            .collect::<Result<_, _>>()?,
+        tracks: schedule_tracks(song)?,
     })
 }
 
-fn schedule_track(pattern: &hir::Pattern) -> Result<Track, TimeError> {
+fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
+    let Some(arrangement) = &song.arrangement else {
+        return song
+            .patterns
+            .iter()
+            .map(|pattern| schedule_track(pattern, MusicalTime::ZERO).map(|(track, _)| track))
+            .collect();
+    };
+    if arrangement.patterns.is_empty() {
+        return Err(ScheduleError::EmptyArrangement);
+    }
+
     let mut cursor = MusicalTime::ZERO;
+    let mut tracks = Vec::with_capacity(arrangement.patterns.len());
+    for (index, pattern_id) in arrangement.patterns.iter().enumerate() {
+        if arrangement.patterns[..index].contains(pattern_id) {
+            return Err(ScheduleError::DuplicatePattern(*pattern_id));
+        }
+        let pattern = song
+            .patterns
+            .iter()
+            .find(|pattern| pattern.id == *pattern_id)
+            .ok_or(ScheduleError::UnknownPattern(*pattern_id))?;
+        let (track, end) = schedule_track(pattern, cursor)?;
+        tracks.push(track);
+        cursor = end;
+    }
+    Ok(tracks)
+}
+
+fn schedule_track(
+    pattern: &hir::Pattern,
+    mut cursor: MusicalTime,
+) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::with_capacity(pattern.notes.len());
     for note in &pattern.notes {
         let duration = MusicalTime::new(
@@ -74,11 +103,26 @@ fn schedule_track(pattern: &hir::Pattern) -> Result<Track, TimeError> {
         });
         cursor = cursor.checked_add(duration)?;
     }
-    Ok(Track {
-        id: id(pattern.id),
-        name: pattern.name.clone(),
-        notes,
-    })
+    Ok((
+        Track {
+            id: id(pattern.id),
+            name: pattern.name.clone(),
+            notes,
+        },
+        cursor,
+    ))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ScheduleError {
+    #[error("arrangement must contain at least one pattern")]
+    EmptyArrangement,
+    #[error("pattern ID {0:?} is arranged more than once")]
+    DuplicatePattern(hir::NodeId),
+    #[error("arrangement references unknown pattern ID {0:?}")]
+    UnknownPattern(hir::NodeId),
+    #[error(transparent)]
+    Time(#[from] TimeError),
 }
 
 fn id(id: hir::NodeId) -> EntityId {

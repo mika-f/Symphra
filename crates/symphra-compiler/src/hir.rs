@@ -81,9 +81,10 @@ pub struct Pattern {
     pub steps: Vec<PatternStep>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatternStep {
     Note(Note),
+    Chord(Chord),
     Rest(Rest),
 }
 
@@ -92,6 +93,18 @@ pub struct Note {
     pub id: NodeId,
     pub midi_pitch: u8,
     pub duration: Duration,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chord {
+    pub notes: Vec<ChordNote>,
+    pub duration: Duration,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChordNote {
+    pub id: NodeId,
+    pub midi_pitch: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

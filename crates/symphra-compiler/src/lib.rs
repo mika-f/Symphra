@@ -9,8 +9,8 @@ use symphra_syntax::ast::{
 };
 
 use crate::hir::{
-    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PatternOccurrence,
-    PatternStep, PitchClass, Program, Project, Rest, Song,
+    Arrangement, Channels, Chord, ChordNote, Duration, Key, Meter, Mode, NodeId, Note, Pattern,
+    PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Song,
 };
 
 pub mod hir;
@@ -278,6 +278,32 @@ impl Compiler {
                     Some(PatternStep::Note(Note {
                         id: self.id(),
                         midi_pitch,
+                        duration,
+                    }))
+                }
+                SequenceItem::Chord(chord) => {
+                    let midi_pitches = chord
+                        .pitches
+                        .iter()
+                        .map(|pitch| self.pitch(&pitch.text, pitch.span))
+                        .collect::<Option<Vec<_>>>();
+                    let duration = self.duration(
+                        chord.duration_numerator,
+                        chord.duration_denominator,
+                        chord.span,
+                        "chord",
+                    );
+                    let (Some(midi_pitches), Some(duration)) = (midi_pitches, duration) else {
+                        return None;
+                    };
+                    Some(PatternStep::Chord(Chord {
+                        notes: midi_pitches
+                            .into_iter()
+                            .map(|midi_pitch| ChordNote {
+                                id: self.id(),
+                                midi_pitch,
+                            })
+                            .collect(),
                         duration,
                     }))
                 }

@@ -1,9 +1,9 @@
 mod literal;
 
 use crate::ast::{
-    Declaration, Identifier, NoteExpression, NumberLiteral, PatternBody, PatternDeclaration,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile,
+    ChordExpression, Declaration, Identifier, NoteExpression, NumberLiteral, PatternBody,
+    PatternDeclaration, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RestExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -26,6 +26,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
 ];
 const SEQUENCE_ITEM_START: &[TokenKind] = &[
     TokenKind::Note,
+    TokenKind::Chord,
     TokenKind::Rest,
     TokenKind::RightBrace,
     TokenKind::Eof,
@@ -233,9 +234,10 @@ impl Parser {
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             let item = match self.current().kind {
                 TokenKind::Note => self.note().map(SequenceItem::Note),
+                TokenKind::Chord => self.chord().map(SequenceItem::Chord),
                 TokenKind::Rest => self.rest().map(SequenceItem::Rest),
                 _ => {
-                    self.error("expected a note or rest in sequence");
+                    self.error("expected a note, chord, or rest in sequence");
                     None
                 }
             };
@@ -282,6 +284,26 @@ impl Parser {
         let denominator_token =
             self.required(TokenKind::Integer, "expected duration denominator")?;
         Some(RestExpression {
+            duration_numerator: self.parse_u32(&numerator_token)?,
+            duration_denominator: self.parse_u32(&denominator_token)?,
+            span: start.cover(denominator_token.span),
+        })
+    }
+
+    fn chord(&mut self) -> Option<ChordExpression> {
+        let start = self.bump().span;
+        let mut pitches = vec![self.identifier("expected first chord pitch")?];
+        pitches.push(self.identifier("expected second chord pitch")?);
+        while self.at(TokenKind::Identifier) {
+            pitches.push(self.identifier("expected chord pitch")?);
+        }
+        self.required(TokenKind::For, "expected `for` after chord pitches")?;
+        let numerator_token = self.required(TokenKind::Integer, "expected duration numerator")?;
+        self.required(TokenKind::Slash, "expected `/` in chord duration")?;
+        let denominator_token =
+            self.required(TokenKind::Integer, "expected duration denominator")?;
+        Some(ChordExpression {
+            pitches,
             duration_numerator: self.parse_u32(&numerator_token)?,
             duration_denominator: self.parse_u32(&denominator_token)?,
             span: start.cover(denominator_token.span),

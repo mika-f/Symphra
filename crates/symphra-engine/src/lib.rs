@@ -128,4 +128,36 @@ song "Rest" {
             (8_000, true)
         );
     }
+
+    #[test]
+    fn render_source_should_mix_chord_pitches() {
+        let chord = SourceText::new(
+            SourceId(0),
+            "chord.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Chord" {
+  tempo 120bpm meter 4/4 key C major
+  pattern harmony = sequence { chord C4 E4 G4 for 1/4 }
+}
+"#,
+        );
+        let note = SourceText::new(
+            SourceId(1),
+            "note.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Note" {
+  tempo 120bpm meter 4/4 key C major
+  pattern melody = sequence { note C4 for 1/4 }
+}
+"#,
+        );
+
+        let chord_audio = render_source(&chord, 0).expect("chord should render");
+        let note_audio = render_source(&note, 0).expect("note should render");
+
+        assert_eq!(chord_audio.frames(), 4_000);
+        assert_ne!(chord_audio.samples, note_audio.samples);
+    }
 }

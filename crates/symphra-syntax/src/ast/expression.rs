@@ -19,12 +19,21 @@ pub enum PatternBody {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SequenceItem {
     Note(NoteExpression),
+    Chord(ChordExpression),
     Rest(RestExpression),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteExpression {
     pub pitch: Identifier,
+    pub duration_numerator: u32,
+    pub duration_denominator: u32,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChordExpression {
+    pub pitches: Vec<Identifier>,
     pub duration_numerator: u32,
     pub duration_denominator: u32,
     pub span: SourceSpan,

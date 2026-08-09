@@ -315,26 +315,14 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
     let labels: &[&str] = if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal)
     {
         &["sequence"]
-    } else if matches!(
-        line_tokens,
-        [
-            Token {
-                kind: TokenKind::Note,
-                ..
-            },
-            Token {
-                kind: TokenKind::Identifier,
-                ..
-            }
-        ]
-    ) {
+    } else if duration_keyword_follows(line_tokens) {
         &["for"]
     } else if completion_statement_start(line_tokens) {
         match block {
             None => &["project", "song"],
             Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
             Some(CompletionBlock::Song) => &["tempo", "meter", "key", "pattern", "arrangement"],
-            Some(CompletionBlock::Sequence) => &["note", "rest"],
+            Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
             Some(CompletionBlock::Other) => &[],
         }
     } else {
@@ -350,6 +338,28 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
             ..CompletionItem::default()
         })
         .collect()
+}
+
+fn duration_keyword_follows(tokens: &[Token]) -> bool {
+    matches!(
+        tokens,
+        [
+            Token {
+                kind: TokenKind::Note,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            }
+        ]
+    ) || (tokens.len() >= 3
+        && tokens
+            .first()
+            .is_some_and(|token| token.kind == TokenKind::Chord)
+        && tokens[1..]
+            .iter()
+            .all(|token| token.kind == TokenKind::Identifier))
 }
 
 fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
@@ -387,6 +397,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
                     | TokenKind::Note
+                    | TokenKind::Chord
                     | TokenKind::Rest,
                 ..
             }]
@@ -439,17 +450,27 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
             });
         for (source_pattern, pattern) in patterns.zip(&song.patterns) {
             let PatternBody::Sequence { items, .. } = &source_pattern.body;
-            let source_notes = items.iter().filter_map(|item| match item {
-                SequenceItem::Note(note) => Some(note),
-                SequenceItem::Rest(_) => None,
-            });
-            let notes = pattern.steps.iter().filter_map(|step| match step {
-                symphra_compiler::hir::PatternStep::Note(note) => Some(note),
-                symphra_compiler::hir::PatternStep::Rest(_) => None,
-            });
-            for (source_note, note) in source_notes.zip(notes) {
-                if source_note.pitch.span == span {
-                    return Some(format!("MIDI note {}.", note.midi_pitch));
+            for (item, step) in items.iter().zip(&pattern.steps) {
+                match (item, step) {
+                    (
+                        SequenceItem::Note(source),
+                        symphra_compiler::hir::PatternStep::Note(note),
+                    ) => {
+                        if source.pitch.span == span {
+                            return Some(format!("MIDI note {}.", note.midi_pitch));
+                        }
+                    }
+                    (
+                        SequenceItem::Chord(source),
+                        symphra_compiler::hir::PatternStep::Chord(chord),
+                    ) => {
+                        for (source, note) in source.pitches.iter().zip(&chord.notes) {
+                            if source.span == span {
+                                return Some(format!("MIDI note {}.", note.midi_pitch));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -471,8 +492,9 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Note => "adds a written pitch to a sequence.",
+        TokenKind::Chord => "adds pitches that start and end together.",
         TokenKind::Rest => "advances a sequence without producing sound.",
-        TokenKind::For => "introduces a note duration, such as `1/4`.",
+        TokenKind::For => "introduces a duration, such as `1/4`.",
         _ => return None,
     })
 }
@@ -585,7 +607,7 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  no", 2, 4),
-            ["note", "rest"]
+            ["note", "chord", "rest"]
         );
         assert_eq!(
             labels("song \"Test\" {\n  pattern p = ", 1, 14),
@@ -593,6 +615,14 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  note C4 ", 2, 10),
+            ["for"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\npattern p = sequence {\n  chord C4 E4 ",
+                2,
+                14
+            ),
             ["for"]
         );
         assert!(labels("😀", 0, 1).is_empty());
@@ -631,5 +661,20 @@ mod tests {
             panic!("hover should use markup content");
         };
         assert_eq!(contents.value, "`C4` — MIDI note 60.");
+
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 48khz output stereo }\n",
+                "song \"Test\" { tempo 120bpm meter 4/4 key C major\n",
+                "pattern harmony = sequence { chord C4 E4 G4 for 1/4 } }",
+            ),
+        );
+        let result = hover(&source, Position::new(2, 38)).expect("E4 should have pitch help");
+        let super::HoverContents::Markup(contents) = result.contents else {
+            panic!("hover should use markup content");
+        };
+        assert_eq!(contents.value, "`E4` — MIDI note 64.");
     }
 }

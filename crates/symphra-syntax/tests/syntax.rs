@@ -97,6 +97,37 @@ fn parses_the_draft_example() {
 }
 
 #[test]
+fn parses_chord_pitches_and_duration() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Chord\" { pattern harmony = sequence { chord C4 E4 G4 for 1/2 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { items, .. } = &pattern.body;
+    let SequenceItem::Chord(chord) = &items[0] else {
+        panic!("sequence item should be a chord");
+    };
+    assert_eq!(
+        (
+            chord
+                .pitches
+                .iter()
+                .map(|pitch| pitch.text.as_str())
+                .collect::<Vec<_>>(),
+            chord.duration_numerator,
+            chord.duration_denominator,
+        ),
+        (vec!["C4", "E4", "G4"], 1, 2)
+    );
+}
+
+#[test]
 fn reports_lexical_and_syntax_errors_without_panicking() {
     let parsed = parse(SourceId(0), "@ project { seed nope } song \"unfinished");
     assert!(

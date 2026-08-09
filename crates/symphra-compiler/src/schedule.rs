@@ -95,24 +95,29 @@ fn schedule_track(
 ) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::new();
     for step in &pattern.steps {
-        let (duration, note) = match step {
-            hir::PatternStep::Note(note) => (note.duration, Some((note.id, note.midi_pitch))),
-            hir::PatternStep::Rest(rest) => (rest.duration, None),
+        let written_duration = match step {
+            hir::PatternStep::Note(note) => note.duration,
+            hir::PatternStep::Chord(chord) => chord.duration,
+            hir::PatternStep::Rest(rest) => rest.duration,
         };
         let duration = MusicalTime::new(
-            u64::from(duration.numerator),
-            u64::from(duration.denominator),
+            u64::from(written_duration.numerator),
+            u64::from(written_duration.denominator),
         )?;
-        if let Some((note_id, midi_pitch)) = note {
-            notes.push(NoteEvent {
-                id: occurrence.map_or_else(
-                    || id(note_id),
-                    |occurrence| occurrence_note_id(occurrence, note_id),
-                ),
-                start: cursor,
+        match step {
+            hir::PatternStep::Note(note) => notes.push(note_event(
+                note.id,
+                note.midi_pitch,
                 duration,
-                midi_pitch,
-            });
+                cursor,
+                occurrence,
+            )),
+            hir::PatternStep::Chord(chord) => {
+                notes.extend(chord.notes.iter().map(|note| {
+                    note_event(note.id, note.midi_pitch, duration, cursor, occurrence)
+                }));
+            }
+            hir::PatternStep::Rest(_) => {}
         }
         cursor = cursor.checked_add(duration)?;
     }
@@ -125,6 +130,24 @@ fn schedule_track(
         },
         cursor,
     ))
+}
+
+fn note_event(
+    note: hir::NodeId,
+    midi_pitch: u8,
+    duration: MusicalTime,
+    start: MusicalTime,
+    occurrence: Option<hir::NodeId>,
+) -> NoteEvent {
+    NoteEvent {
+        id: occurrence.map_or_else(
+            || id(note),
+            |occurrence| occurrence_note_id(occurrence, note),
+        ),
+        start,
+        duration,
+        midi_pitch,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

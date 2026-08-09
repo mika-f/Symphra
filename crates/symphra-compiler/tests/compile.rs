@@ -98,7 +98,11 @@ song "Bad" {
   tempo 0bpm
   meter 4/0
   key H dorian
-  pattern bad = sequence { note H4 for 0/4 rest for 1/0 }
+  pattern bad = sequence {
+    note H4 for 0/4
+    rest for 1/0
+    chord C4 H4 for 0/4
+  }
 }
 "#,
     );
@@ -121,6 +125,8 @@ song "Bad" {
             "pitch must be a natural note followed by an octave",
             "note duration must be greater than zero",
             "rest duration must be greater than zero",
+            "pitch must be a natural note followed by an octave",
+            "chord duration must be greater than zero",
         ]
     );
 }
@@ -175,6 +181,42 @@ song "Rests" {
             MusicalTime::new(1, 2).expect("half note should be valid"),
             MusicalTime::new(1, 1).expect("whole note should be valid"),
         )
+    );
+}
+
+#[test]
+fn schedule_should_start_chord_notes_together() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Chords" {
+  tempo 120bpm meter 4/4 key C major
+  pattern harmony = sequence {
+    chord C4 E4 G4 for 1/4
+    note C5 for 1/4
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("chord should compile");
+
+    let score = schedule(&program).expect("chord should schedule");
+    let notes = &score.songs[0].tracks[0].notes;
+    assert_eq!(
+        notes
+            .iter()
+            .map(|note| (note.midi_pitch, note.start))
+            .collect::<Vec<_>>(),
+        vec![
+            (60, MusicalTime::ZERO),
+            (64, MusicalTime::ZERO),
+            (67, MusicalTime::ZERO),
+            (
+                72,
+                MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            ),
+        ]
     );
 }
 

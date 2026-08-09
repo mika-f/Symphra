@@ -1,0 +1,43 @@
+<idea-plugin>
+    <id>dev.symphra.idea</id>
+    <name>Symphra</name>
+    <vendor url="https://github.com/mika-f/Symphra">Symphra</vendor>
+
+    <description><![CDATA[
+        Syntax highlighting and language server integration for Symphra (.sym) files.
+        Launches the symphra-lsp language server for diagnostics, completion, hover, and
+        document symbols. Requires an LSP-capable IntelliJ Platform IDE (e.g. IntelliJ IDEA
+        Ultimate); the bundled language server support is not available in Community editions.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lsp</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileType
+            name="Symphra"
+            implementationClass="dev.symphra.idea.SymphraFileType"
+            fieldName="INSTANCE"
+            language="Symphra"
+            extensions="sym"/>
+
+        <lang.syntaxHighlighterFactory
+            language="Symphra"
+            implementationClass="dev.symphra.idea.highlighting.SymphraSyntaxHighlighterFactory"/>
+
+        <colorSettingsPage
+            implementation="dev.symphra.idea.highlighting.SymphraColorSettingsPage"/>
+
+        <platform.lsp.serverSupportProvider
+            implementation="dev.symphra.idea.lsp.SymphraLspServerSupportProvider"/>
+
+        <applicationConfigurable
+            parentId="tools"
+            instance="dev.symphra.idea.settings.SymphraSettingsConfigurable"
+            id="dev.symphra.idea.settings.SymphraSettingsConfigurable"
+            displayName="Symphra"/>
+
+        <applicationService
+            serviceImplementation="dev.symphra.idea.settings.SymphraSettingsState"/>
+    </extensions>
+</idea-plugin>

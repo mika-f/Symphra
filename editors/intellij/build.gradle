@@ -1,0 +1,36 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'org.jetbrains.intellij.platform'
+}
+
+dependencies {
+    intellijPlatform {
+        create providers.gradleProperty('platformType'), providers.gradleProperty('platformVersion')
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+intellijPlatform {
+    pluginConfiguration {
+        name = 'Symphra'
+
+        ideaVersion {
+            sinceBuild = '242'
+        }
+    }
+
+    pluginVerification {
+        ides {
+            recommended()
+        }
+    }
+
+    buildSearchableOptions = false
+}
+
+tasks.named('wrapper') {
+    gradleVersion = '9.3.1'
+}

@@ -39,6 +39,13 @@ version = "0.1.0"
 [[package]]
 name = "symphra-engine"
 version = "0.1.0"
+dependencies = [
+ "symphra-compiler",
+ "symphra-render",
+ "symphra-score",
+ "symphra-syntax",
+ "thiserror",
+]
 
 [[package]]
 name = "symphra-export"

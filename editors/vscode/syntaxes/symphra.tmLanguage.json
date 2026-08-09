@@ -82,7 +82,7 @@
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|note|for)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|note|rest|for)\\b"
         }
       ]
     },

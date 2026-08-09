@@ -108,13 +108,21 @@ fn schedule_track(
             hir::PatternStep::Note(note) => notes.push(note_event(
                 note.id,
                 note.midi_pitch,
+                note.velocity,
                 duration,
                 cursor,
                 occurrence,
             )),
             hir::PatternStep::Chord(chord) => {
                 notes.extend(chord.notes.iter().map(|note| {
-                    note_event(note.id, note.midi_pitch, duration, cursor, occurrence)
+                    note_event(
+                        note.id,
+                        note.midi_pitch,
+                        chord.velocity,
+                        duration,
+                        cursor,
+                        occurrence,
+                    )
                 }));
             }
             hir::PatternStep::Rest(_) => {}
@@ -135,6 +143,7 @@ fn schedule_track(
 fn note_event(
     note: hir::NodeId,
     midi_pitch: u8,
+    velocity: u8,
     duration: MusicalTime,
     start: MusicalTime,
     occurrence: Option<hir::NodeId>,
@@ -147,6 +156,7 @@ fn note_event(
         start,
         duration,
         midi_pitch,
+        velocity,
     }
 }
 

@@ -18,6 +18,8 @@ mod schedule;
 
 pub use schedule::{ScheduleError, schedule};
 
+const DEFAULT_VELOCITY: u8 = 127;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileDiagnostic {
     pub message: String,
@@ -272,13 +274,17 @@ impl Compiler {
                         note.span,
                         "note",
                     );
-                    let (Some(midi_pitch), Some(duration)) = (midi_pitch, duration) else {
+                    let velocity = self.velocity(note.velocity.as_ref());
+                    let (Some(midi_pitch), Some(duration), Some(velocity)) =
+                        (midi_pitch, duration, velocity)
+                    else {
                         return None;
                     };
                     Some(PatternStep::Note(Note {
                         id: self.id(),
                         midi_pitch,
                         duration,
+                        velocity,
                     }))
                 }
                 SequenceItem::Chord(chord) => {
@@ -293,7 +299,10 @@ impl Compiler {
                         chord.span,
                         "chord",
                     );
-                    let (Some(midi_pitches), Some(duration)) = (midi_pitches, duration) else {
+                    let velocity = self.velocity(chord.velocity.as_ref());
+                    let (Some(midi_pitches), Some(duration), Some(velocity)) =
+                        (midi_pitches, duration, velocity)
+                    else {
                         return None;
                     };
                     Some(PatternStep::Chord(Chord {
@@ -305,6 +314,7 @@ impl Compiler {
                             })
                             .collect(),
                         duration,
+                        velocity,
                     }))
                 }
                 SequenceItem::Rest(rest) => self
@@ -344,6 +354,24 @@ impl Compiler {
                 numerator,
                 denominator,
             })
+        }
+    }
+
+    fn velocity(
+        &mut self,
+        velocity: Option<&symphra_syntax::ast::VelocityExpression>,
+    ) -> Option<u8> {
+        let Some(velocity) = velocity else {
+            return Some(DEFAULT_VELOCITY);
+        };
+        if let Some(value) = u8::try_from(velocity.value)
+            .ok()
+            .filter(|value| *value <= 127)
+        {
+            Some(value)
+        } else {
+            self.error("velocity must be from 0 to 127", velocity.span);
+            None
         }
     }
 

@@ -93,12 +93,14 @@ pub struct Note {
     pub id: NodeId,
     pub midi_pitch: u8,
     pub duration: Duration,
+    pub velocity: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chord {
     pub notes: Vec<ChordNote>,
     pub duration: Duration,
+    pub velocity: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

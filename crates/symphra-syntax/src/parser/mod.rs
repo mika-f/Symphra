@@ -3,7 +3,7 @@ mod literal;
 use crate::ast::{
     ChordExpression, Declaration, Identifier, NoteExpression, NumberLiteral, PatternBody,
     PatternDeclaration, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RestExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    RestExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -268,11 +268,14 @@ impl Parser {
         self.required(TokenKind::Slash, "expected `/` in note duration")?;
         let denominator_token =
             self.required(TokenKind::Integer, "expected duration denominator")?;
+        let velocity = self.velocity();
+        let end = velocity.map_or(denominator_token.span, |velocity| velocity.span);
         Some(NoteExpression {
             pitch,
             duration_numerator: self.parse_u32(&numerator_token)?,
             duration_denominator: self.parse_u32(&denominator_token)?,
-            span: start.cover(denominator_token.span),
+            velocity,
+            span: start.cover(end),
         })
     }
 
@@ -302,11 +305,26 @@ impl Parser {
         self.required(TokenKind::Slash, "expected `/` in chord duration")?;
         let denominator_token =
             self.required(TokenKind::Integer, "expected duration denominator")?;
+        let velocity = self.velocity();
+        let end = velocity.map_or(denominator_token.span, |velocity| velocity.span);
         Some(ChordExpression {
             pitches,
             duration_numerator: self.parse_u32(&numerator_token)?,
             duration_denominator: self.parse_u32(&denominator_token)?,
-            span: start.cover(denominator_token.span),
+            velocity,
+            span: start.cover(end),
+        })
+    }
+
+    fn velocity(&mut self) -> Option<VelocityExpression> {
+        if !self.at(TokenKind::Velocity) {
+            return None;
+        }
+        let start = self.bump().span;
+        let value = self.required(TokenKind::Integer, "expected velocity from 0 to 127")?;
+        Some(VelocityExpression {
+            value: self.parse_u32(&value)?,
+            span: start.cover(value.span),
         })
     }
 

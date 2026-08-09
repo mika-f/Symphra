@@ -317,6 +317,8 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         &["sequence"]
     } else if duration_keyword_follows(line_tokens) {
         &["for"]
+    } else if velocity_keyword_follows(line_tokens) {
+        &["velocity"]
     } else if completion_statement_start(line_tokens) {
         match block {
             None => &["project", "song"],
@@ -360,6 +362,30 @@ fn duration_keyword_follows(tokens: &[Token]) -> bool {
         && tokens[1..]
             .iter()
             .all(|token| token.kind == TokenKind::Identifier))
+}
+
+fn velocity_keyword_follows(tokens: &[Token]) -> bool {
+    matches!(
+        (
+            tokens.first(),
+            tokens.get(tokens.len().saturating_sub(2)),
+            tokens.last()
+        ),
+        (
+            Some(Token {
+                kind: TokenKind::Note | TokenKind::Chord,
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Slash,
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Integer,
+                ..
+            })
+        )
+    ) && tokens.iter().any(|token| token.kind == TokenKind::For)
 }
 
 fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
@@ -495,6 +521,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Chord => "adds pitches that start and end together.",
         TokenKind::Rest => "advances a sequence without producing sound.",
         TokenKind::For => "introduces a duration, such as `1/4`.",
+        TokenKind::Velocity => "sets note intensity from 0 to 127.",
         _ => return None,
     })
 }
@@ -624,6 +651,14 @@ mod tests {
                 14
             ),
             ["for"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\npattern p = sequence {\n  note C4 for 1/4 ",
+                2,
+                18
+            ),
+            ["velocity"]
         );
         assert!(labels("😀", 0, 1).is_empty());
     }

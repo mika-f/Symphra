@@ -160,4 +160,29 @@ song "Note" {
         assert_eq!(chord_audio.frames(), 4_000);
         assert_ne!(chord_audio.samples, note_audio.samples);
     }
+
+    #[test]
+    fn render_source_should_apply_velocity() {
+        let source = SourceText::new(
+            SourceId(0),
+            "velocity.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Velocity" {
+  tempo 120bpm meter 4/4 key C major
+  pattern silent = sequence { note C4 for 1/4 velocity 0 }
+}
+"#,
+        );
+
+        let audio = render_source(&source, 0).expect("velocity should render");
+
+        assert_eq!(
+            (
+                audio.frames(),
+                audio.samples.iter().all(|sample| *sample == 0.0)
+            ),
+            (4_000, true)
+        );
+    }
 }

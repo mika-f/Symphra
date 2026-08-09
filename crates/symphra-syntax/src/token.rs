@@ -21,6 +21,7 @@ pub enum TokenKind {
     Chord,
     Rest,
     For,
+    Velocity,
     LeftBrace,
     RightBrace,
     Equal,
@@ -46,6 +47,7 @@ impl TokenKind {
             "chord" => Self::Chord,
             "rest" => Self::Rest,
             "for" => Self::For,
+            "velocity" => Self::Velocity,
             _ => return None,
         })
     }

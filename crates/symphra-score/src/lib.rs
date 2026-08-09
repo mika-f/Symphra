@@ -70,6 +70,7 @@ pub struct NoteEvent {
     pub start: MusicalTime,
     pub duration: MusicalTime,
     pub midi_pitch: u8,
+    pub velocity: u8,
 }
 
 /// An exact fraction of a whole note.

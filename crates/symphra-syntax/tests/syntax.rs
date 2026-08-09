@@ -122,7 +122,7 @@ fn parses_the_draft_example() {
 fn parses_chord_pitches_and_duration() {
     let parsed = parse(
         SourceId(0),
-        "song \"Chord\" { pattern harmony = sequence { chord C4 E4 G4 for 1/2 } }",
+        "song \"Chord\" { pattern harmony = sequence { chord C4 E4 G4 for 1/2 velocity 96 } }",
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
     let Declaration::Song(song) = &parsed.file.declarations[0] else {
@@ -144,8 +144,9 @@ fn parses_chord_pitches_and_duration() {
                 .collect::<Vec<_>>(),
             chord.duration_numerator,
             chord.duration_denominator,
+            chord.velocity.map(|velocity| velocity.value),
         ),
-        (vec!["C4", "E4", "G4"], 1, 2)
+        (vec!["C4", "E4", "G4"], 1, 2, Some(96))
     );
 }
 

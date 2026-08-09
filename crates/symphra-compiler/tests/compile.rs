@@ -59,6 +59,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                         PatternStep::Note(Note {
                             id: NodeId(2),
                             midi_pitch: 60,
+                            velocity: 127,
                             duration: Duration {
                                 numerator: 1,
                                 denominator: 4,
@@ -67,6 +68,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                         PatternStep::Note(Note {
                             id: NodeId(3),
                             midi_pitch: 64,
+                            velocity: 127,
                             duration: Duration {
                                 numerator: 1,
                                 denominator: 4,
@@ -75,6 +77,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                         PatternStep::Note(Note {
                             id: NodeId(4),
                             midi_pitch: 67,
+                            velocity: 127,
                             duration: Duration {
                                 numerator: 1,
                                 denominator: 2,
@@ -102,7 +105,7 @@ song "Bad" {
     note H4 for 0/4
     rest for 1/0
     chord C4 H4 for 0/4
-    note C-2 for 1/4
+    note C-2 for 1/4 velocity 128
   }
 }
 "#,
@@ -129,6 +132,7 @@ song "Bad" {
             "pitch must be a natural note followed by an octave",
             "chord duration must be greater than zero",
             "pitch must be within the MIDI range C-1 to G9",
+            "velocity must be from 0 to 127",
         ]
     );
 }
@@ -195,7 +199,7 @@ project { seed 1 sample_rate 48khz output stereo }
 song "Chords" {
   tempo 120bpm meter 4/4 key C major
   pattern harmony = sequence {
-    chord C#4 Eb4 G4 for 1/4
+    chord C#4 Eb4 G4 for 1/4 velocity 96
     note C5 for 1/4
   }
 }
@@ -208,15 +212,16 @@ song "Chords" {
     assert_eq!(
         notes
             .iter()
-            .map(|note| (note.midi_pitch, note.start))
+            .map(|note| (note.midi_pitch, note.start, note.velocity))
             .collect::<Vec<_>>(),
         vec![
-            (61, MusicalTime::ZERO),
-            (63, MusicalTime::ZERO),
-            (67, MusicalTime::ZERO),
+            (61, MusicalTime::ZERO, 96),
+            (63, MusicalTime::ZERO, 96),
+            (67, MusicalTime::ZERO, 96),
             (
                 72,
                 MusicalTime::new(1, 4).expect("quarter note should be valid"),
+                127,
             ),
         ]
     );

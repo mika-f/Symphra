@@ -28,6 +28,7 @@ pub struct NoteExpression {
     pub pitch: Identifier,
     pub duration_numerator: u32,
     pub duration_denominator: u32,
+    pub velocity: Option<VelocityExpression>,
     pub span: SourceSpan,
 }
 
@@ -36,6 +37,13 @@ pub struct ChordExpression {
     pub pitches: Vec<Identifier>,
     pub duration_numerator: u32,
     pub duration_denominator: u32,
+    pub velocity: Option<VelocityExpression>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VelocityExpression {
+    pub value: u32,
     pub span: SourceSpan,
 }
 

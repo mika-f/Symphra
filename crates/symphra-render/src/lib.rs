@@ -5,7 +5,7 @@ use std::num::NonZeroU32;
 use symphra_dsp::{SineOscillator, fade_gain};
 use symphra_score::{Channels, MusicalTime, Score, Song, TimeError};
 
-const NOTE_GAIN: f32 = 0.2;
+const MAX_NOTE_GAIN: f32 = 0.2;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioBuffer {
@@ -110,7 +110,8 @@ fn render_notes(
         for frame in start..end {
             let value = oscillator.next_sample()
                 * fade_gain(frame - start, note_frames, fade_samples)
-                * NOTE_GAIN;
+                * MAX_NOTE_GAIN
+                * (f32::from(note.velocity) / 127.0);
             let first_sample = frame
                 .checked_mul(u64::from(channels))
                 .and_then(|offset| usize::try_from(offset).ok())
@@ -179,6 +180,7 @@ mod tests {
                         start: MusicalTime::ZERO,
                         duration: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                         midi_pitch: 69,
+                        velocity: 127,
                     }],
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],

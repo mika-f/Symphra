@@ -362,6 +362,7 @@ enum CompletionBlock {
     ChoiceSequence,
     Sampled,
     Sampler,
+    Chance,
     Other,
 }
 
@@ -494,6 +495,7 @@ fn completion_labels(
             Some(CompletionBlock::ChoiceSequence) => &["sample"],
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
+            Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
             Some(CompletionBlock::Rhythm) => &["hit", "rest"],
             Some(CompletionBlock::Track) => &["instrument", "volume", "play"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
@@ -570,6 +572,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Choose => pending = Some(CompletionBlock::Choice),
             TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
+            TokenKind::Chance => pending = Some(CompletionBlock::Chance),
             TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
             TokenKind::RightBrace => {
                 blocks.pop();
@@ -609,6 +612,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Repeat
                     | TokenKind::Reverse
                     | TokenKind::Speed
+                    | TokenKind::Retrigger
                     | TokenKind::Pan
                     | TokenKind::Alternate
                     | TokenKind::Chance
@@ -792,6 +796,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Repeat => "repeats a played pattern a fixed number of times.",
         TokenKind::Reverse => "mirrors a played pattern across its end time.",
         TokenKind::Speed => "changes sampler playback speed without moving events.",
+        TokenKind::Retrigger => "splits a chance-selected sample into evenly spaced attacks.",
         TokenKind::Pan => "places a track from `-100%` left to `100%` right.",
         TokenKind::Alternate => "alternates successive pan positions or sampler speeds.",
         TokenKind::Chance => "applies a transform to a deterministic percentage of events.",
@@ -1078,6 +1083,14 @@ mod tests {
                 21
             ),
             ["alternate"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  play melody |> chance 40% { ",
+                2,
+                30
+            ),
+            ["transpose", "retrigger", "speed"]
         );
     }
 

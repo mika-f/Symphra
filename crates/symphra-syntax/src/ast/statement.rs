@@ -88,11 +88,18 @@ impl PanExpression {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChanceExpression {
     pub percent: u32,
-    pub transpose: TransposeExpression,
+    pub transform: ChanceTransformExpression,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChanceTransformExpression {
+    Transpose(TransposeExpression),
+    Retrigger { count: u32, span: SourceSpan },
+    Speed { factor: f32, span: SourceSpan },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

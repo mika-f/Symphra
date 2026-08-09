@@ -449,11 +449,14 @@ fn parses_tracks_with_rhythm_triggers() {
                 symphra_syntax::ast::SpeedExpression::Fixed { factor, .. } => Some(factor),
                 symphra_syntax::ast::SpeedExpression::Alternate { .. } => None,
             }),
-            track.play.chance.as_ref().map(|chance| (
-                chance.percent,
-                chance.transpose.semitones,
-                chance.transpose.unit.text.as_str(),
-            )),
+            track.play.chance.as_ref().map(|chance| {
+                let symphra_syntax::ast::ChanceTransformExpression::Transpose(transpose) =
+                    &chance.transform
+                else {
+                    panic!("chance transform should be a transpose");
+                };
+                (chance.percent, transpose.semitones, transpose.unit.text.as_str())
+            }),
         ),
         (Some(1.50), Some((15, 12, "st")))
     );
@@ -480,6 +483,50 @@ fn parses_alternating_sampler_speed() {
             second_factor: 1.8,
             ..
         })
+    ));
+}
+
+#[test]
+fn parses_chance_retrigger() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Track\" { track voice role melody { instrument voice play phrase |> chance 40% { retrigger 2 } } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let chance = track.play.chance.as_ref().expect("chance should be present");
+
+    assert_eq!(chance.percent, 40);
+    assert!(matches!(
+        chance.transform,
+        symphra_syntax::ast::ChanceTransformExpression::Retrigger { count: 2, .. }
+    ));
+}
+
+#[test]
+fn parses_chance_speed() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Track\" { track voice role melody { instrument voice play phrase |> chance 15% { speed 1.50 } } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let chance = track.play.chance.as_ref().expect("chance should be present");
+
+    assert_eq!(chance.percent, 15);
+    assert!(matches!(
+        chance.transform,
+        symphra_syntax::ast::ChanceTransformExpression::Speed { factor, .. } if (factor - 1.5).abs() < f32::EPSILON
     ));
 }
 

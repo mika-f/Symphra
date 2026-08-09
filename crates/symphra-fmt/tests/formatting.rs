@@ -207,6 +207,48 @@ fn formats_alternating_sampler_speed() {
 }
 
 #[test]
+fn formats_chance_retrigger() {
+    let input = r#"song "S" {
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 40% { retrigger 2 }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 40% { retrigger 2 }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_chance_speed() {
+    let input = r#"song "S" {
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 15% { speed 1.50 }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 15% { speed 1.5 }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_steps_patterns_with_degree_and_sample_choices() {
     let input = r#"project { seed 1 sample_rate 8khz output mono }
 song "S" {

@@ -4,17 +4,17 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, Declaration, DegreeChoiceAlternative, Identifier, InstrumentBody,
-    PanExpression, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
-    RhythmDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
-    StepItem, TrackDeclaration,
+    ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
+    Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration,
+    ProjectDeclaration, ProjectStatement, RhythmDeclaration, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
 };
 
 use crate::hir::{
-    Arrangement, Chance, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key,
-    Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program,
-    Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, Speed, TrackDefinition,
-    WeightedNote, WeightedSampleSequence,
+    Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, Duration,
+    InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
+    PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song,
+    Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -409,7 +409,7 @@ impl Compiler {
         let gain = self.track_gain(declaration);
         let repeat_count = self.repeat_count(declaration);
         let pan = self.pan(declaration);
-        let chance = self.chance(declaration, pattern).ok();
+        let chance = self.chance(declaration, pattern, instrument.as_ref()).ok();
         let speed = self.speed(declaration, instrument.as_ref());
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
@@ -542,17 +542,11 @@ impl Compiler {
         &mut self,
         declaration: &TrackDeclaration,
         pattern: Option<&Pattern>,
+        instrument: Option<&InstrumentKind>,
     ) -> Result<Option<Chance>, SourceSpan> {
         let Some(expression) = declaration.play.chance.as_ref() else {
             return Ok(None);
         };
-        if expression.transpose.unit.text != "st" {
-            self.error(
-                "chance transpose unit must be `st`",
-                expression.transpose.unit.span,
-            );
-            return Err(expression.transpose.unit.span);
-        }
         let Ok(percent) = u8::try_from(expression.percent) else {
             self.error("chance must be from 0% to 100%", expression.span);
             return Err(expression.span);
@@ -561,12 +555,46 @@ impl Compiler {
             self.error("chance must be from 0% to 100%", expression.span);
             return Err(expression.span);
         }
-        let chance = Chance {
-            percent,
-            transpose_semitones: expression.transpose.semitones,
+        let sampler_only = |compiler: &mut Self, span: SourceSpan, what: &str| {
+            if instrument.is_some_and(|instrument| !matches!(instrument, InstrumentKind::Sampler { .. }))
+            {
+                compiler.error(
+                    &format!("chance {what} is only supported for sampler tracks"),
+                    span,
+                );
+                return Err(span);
+            }
+            Ok(())
         };
-        if let Some(pattern) = pattern {
-            self.validate_transpose(pattern, chance.transpose_semitones, expression.span);
+        let transform = match &expression.transform {
+            ChanceTransformExpression::Transpose(transpose) => {
+                if transpose.unit.text != "st" {
+                    self.error("chance transpose unit must be `st`", transpose.unit.span);
+                    return Err(transpose.unit.span);
+                }
+                ChanceTransform::Transpose(transpose.semitones)
+            }
+            ChanceTransformExpression::Retrigger { count, span } => {
+                sampler_only(self, *span, "retrigger")?;
+                if *count < 2 {
+                    self.error("chance retrigger count must be at least 2", *span);
+                    return Err(*span);
+                }
+                ChanceTransform::Retrigger(*count)
+            }
+            ChanceTransformExpression::Speed { factor, span } => {
+                sampler_only(self, *span, "speed")?;
+                if !factor.is_finite() || *factor <= 0.0 {
+                    self.error("chance speed must be finite and greater than zero", *span);
+                    return Err(*span);
+                }
+                ChanceTransform::Speed(*factor)
+            }
+        };
+        let chance = Chance { percent, transform };
+        if let (ChanceTransform::Transpose(semitones), Some(pattern)) = (chance.transform, pattern)
+        {
+            self.validate_transpose(pattern, semitones, expression.span);
         }
         Ok(Some(chance))
     }

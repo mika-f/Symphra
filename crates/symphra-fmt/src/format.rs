@@ -2,12 +2,12 @@ use std::fmt::Write as _;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, Identifier,
-    InstrumentBody, InstrumentDeclaration, NoteExpression, PanExpression, PatternBody,
-    PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
-    RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
-    VolumeExpression,
+    ArrangementOccurrence, ChanceTransformExpression, ChordExpression, Declaration,
+    DegreeChoiceAlternative, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
+    PanExpression, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -492,13 +492,24 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
         line.push_str(" |> reverse");
     }
     if let Some(chance) = &play.chance {
-        let _ = write!(
-            line,
-            " |> chance {}% {{ transpose {} {} }}",
-            chance.percent,
-            chance.transpose.semitones,
-            ctx.text(chance.transpose.unit.span)
-        );
+        let _ = write!(line, " |> chance {}% {{", chance.percent);
+        match &chance.transform {
+            ChanceTransformExpression::Transpose(transpose) => {
+                let _ = write!(
+                    line,
+                    " transpose {} {}",
+                    transpose.semitones,
+                    ctx.text(transpose.unit.span)
+                );
+            }
+            ChanceTransformExpression::Retrigger { count, .. } => {
+                let _ = write!(line, " retrigger {count}");
+            }
+            ChanceTransformExpression::Speed { factor, .. } => {
+                let _ = write!(line, " speed {factor}");
+            }
+        }
+        line.push_str(" }");
     }
     if let Some(speed) = play.speed {
         match speed {

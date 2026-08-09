@@ -1,13 +1,14 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChanceExpression, ChordExpression, Declaration, DegreeChoiceAlternative,
-    GainExpression, GateExpression, Identifier, InstrumentBody, InstrumentDeclaration,
-    NoteExpression, NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
-    TransposeExpression, VelocityExpression, VolumeExpression,
+    ArrangementOccurrence, ChanceExpression, ChanceTransformExpression, ChordExpression,
+    Declaration, DegreeChoiceAlternative, GainExpression, GateExpression, Identifier,
+    InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PanExpression,
+    PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackDeclaration, TransposeExpression, VelocityExpression,
+    VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -564,18 +565,28 @@ impl Parser {
         let start = self.bump().span;
         let percent = self.unsigned_percentage("expected a percentage after `chance`")?;
         self.required(TokenKind::LeftBrace, "expected `{` after chance percentage")?;
-        if !self.at(TokenKind::Transpose) {
-            self.error("expected `transpose` in chance block");
-            return None;
-        }
-        let transpose = self.transpose()?;
+        let transform = match self.current().kind {
+            TokenKind::Transpose => ChanceTransformExpression::Transpose(self.transpose()?),
+            TokenKind::Retrigger => {
+                let (count, span) = self.retrigger_count()?;
+                ChanceTransformExpression::Retrigger { count, span }
+            }
+            TokenKind::Speed => {
+                let (factor, span) = self.speed_factor()?;
+                ChanceTransformExpression::Speed { factor, span }
+            }
+            _ => {
+                self.error("expected `transpose`, `retrigger`, or `speed` in chance block");
+                return None;
+            }
+        };
         let end = self
             .required(TokenKind::RightBrace, "expected `}` after chance block")?
             .span;
         let span = start.cover(end);
         let expression = ChanceExpression {
             percent,
-            transpose,
+            transform,
             span,
         };
         if chance.replace(expression).is_some() {
@@ -585,6 +596,16 @@ impl Parser {
             ));
         }
         Some(span)
+    }
+
+    fn retrigger_count(&mut self) -> Option<(u32, SourceSpan)> {
+        let start = self.bump().span;
+        let value = self.required(
+            TokenKind::Integer,
+            "expected an attack count after `retrigger`",
+        )?;
+        let count = self.parse_u32(&value)?;
+        Some((count, start.cover(value.span)))
     }
 
     fn gate(&mut self, gate: &mut Option<GateExpression>) -> Option<SourceSpan> {

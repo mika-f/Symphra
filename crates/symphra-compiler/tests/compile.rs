@@ -523,6 +523,173 @@ song "Chance" {
 }
 
 #[test]
+fn schedule_should_apply_certain_chance_retrigger() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/4 { sample 1 }
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 100% { retrigger 2 }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("chance retrigger should compile");
+    let score = schedule(&program).expect("chance retrigger should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .map(|event| (event.start, event.duration))
+            .collect::<Vec<_>>(),
+        [
+            (
+                MusicalTime::ZERO,
+                MusicalTime::new(1, 8).expect("eighth note should be valid")
+            ),
+            (
+                MusicalTime::new(1, 8).expect("eighth note should be valid"),
+                MusicalTime::new(1, 8).expect("eighth note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn schedule_should_apply_certain_chance_speed_after_base_speed() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 sample 3 }
+  track voice role melody {
+    instrument voice
+    play phrase |> speed 1.2 |> chance 100% { speed 1.8 }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("chance speed should compile");
+    let score = schedule(&program).expect("chance speed should schedule");
+
+    assert!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .all(|event| (event.speed - 1.8).abs() < f32::EPSILON)
+    );
+}
+
+#[test]
+fn compile_should_reject_chance_retrigger_below_two() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 }
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 40% { retrigger 1 }
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("retrigger below two should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "chance retrigger count must be at least 2"
+    );
+}
+
+#[test]
+fn compile_should_reject_chance_retrigger_for_pitched_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Lead" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern phrase = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play phrase |> chance 40% { retrigger 2 }
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("pitched retrigger should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "chance retrigger is only supported for sampler tracks"
+    );
+}
+
+#[test]
+fn compile_should_reject_chance_speed_for_pitched_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Lead" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern phrase = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play phrase |> chance 15% { speed 1.50 }
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("pitched chance speed should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "chance speed is only supported for sampler tracks"
+    );
+}
+
+#[test]
+fn compile_should_reject_non_positive_chance_speed() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 }
+  track voice role melody {
+    instrument voice
+    play phrase |> chance 15% { speed 0 }
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("zero chance speed should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "chance speed must be finite and greater than zero"
+    );
+}
+
+#[test]
 fn schedule_should_reverse_events_within_the_track_duration() {
     let parsed = parse(
         SourceId(0),

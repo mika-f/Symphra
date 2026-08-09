@@ -156,6 +156,9 @@ fn schedule_declared_track(
         apply_reverse(&mut scheduled)?;
     }
     apply_speed(&mut scheduled, track.speed);
+    if let Some(chance) = track.chance {
+        apply_chance_speed(&mut scheduled, chance, seed);
+    }
     Ok(scheduled)
 }
 
@@ -170,13 +173,93 @@ fn apply_speed(track: &mut Track, speed: hir::Speed) {
 }
 
 fn apply_chance(track: &mut Track, chance: hir::Chance, seed: u64) -> Result<(), ScheduleError> {
-    for note in &mut track.notes {
-        if mix(seed ^ note.id.0) % 100 < u64::from(chance.percent) {
-            note.midi_pitch = crate::transposed_pitch(note.midi_pitch, chance.transpose_semitones)
-                .ok_or(ScheduleError::TransposedPitchOutOfRange)?;
+    match chance.transform {
+        hir::ChanceTransform::Transpose(semitones) => {
+            for note in &mut track.notes {
+                if chance_selected(seed, note.id, chance.percent) {
+                    note.midi_pitch = crate::transposed_pitch(note.midi_pitch, semitones)
+                        .ok_or(ScheduleError::TransposedPitchOutOfRange)?;
+                }
+            }
         }
+        hir::ChanceTransform::Retrigger(count) => {
+            apply_chance_retrigger(track, count, chance.percent, seed)?;
+        }
+        hir::ChanceTransform::Speed(_) => {}
     }
     Ok(())
+}
+
+/// Applies `chance { speed F }` after the track's base playback speed so the
+/// chance-selected events consistently win over the unconditional `speed`/
+/// `alternate { speed }` pipeline stage.
+fn apply_chance_speed(track: &mut Track, chance: hir::Chance, seed: u64) {
+    if let hir::ChanceTransform::Speed(factor) = chance.transform {
+        for sample in &mut track.samples {
+            if chance_selected(seed, sample.id, chance.percent) {
+                sample.speed = factor;
+            }
+        }
+    }
+}
+
+fn apply_chance_retrigger(
+    track: &mut Track,
+    count: u32,
+    percent: u8,
+    seed: u64,
+) -> Result<(), ScheduleError> {
+    let track_id = track.id;
+    let mut next_event = track
+        .notes
+        .iter()
+        .map(|event| event.id.0 & u64::from(u32::MAX))
+        .chain(
+            track
+                .samples
+                .iter()
+                .map(|event| event.id.0 & u64::from(u32::MAX)),
+        )
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(ScheduleError::RepeatedEventIdOverflow)?;
+    let mut retriggered = Vec::with_capacity(track.samples.len());
+    for sample in track.samples.drain(..) {
+        if !chance_selected(seed, sample.id, percent) {
+            retriggered.push(sample);
+            continue;
+        }
+        let attack_duration = MusicalTime::new(
+            sample.duration.numerator(),
+            sample
+                .duration
+                .denominator()
+                .checked_mul(u64::from(count))
+                .ok_or(ScheduleError::RepeatTooLarge)?,
+        )?;
+        let mut start = sample.start;
+        for attack in 0..count {
+            let id = if attack == 0 {
+                sample.id
+            } else {
+                repeated_event_id(track_id, &mut next_event)?
+            };
+            retriggered.push(SampleEvent {
+                id,
+                start,
+                duration: attack_duration,
+                ..sample
+            });
+            start = start.checked_add(attack_duration)?;
+        }
+    }
+    track.samples = retriggered;
+    Ok(())
+}
+
+fn chance_selected(seed: u64, id: EntityId, percent: u8) -> bool {
+    mix(seed ^ id.0) % 100 < u64::from(percent)
 }
 
 fn apply_reverse(track: &mut Track) -> Result<(), TimeError> {

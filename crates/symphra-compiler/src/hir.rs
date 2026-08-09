@@ -54,10 +54,17 @@ pub struct TrackDefinition {
     pub speed: Speed,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chance {
     pub percent: u8,
-    pub transpose_semitones: i32,
+    pub transform: ChanceTransform,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ChanceTransform {
+    Transpose(i32),
+    Retrigger(u32),
+    Speed(f32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

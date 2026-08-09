@@ -79,6 +79,9 @@ impl Lexer<'_> {
             '+' => self.push(TokenKind::Plus, start),
             '-' => self.push(TokenKind::Minus, start),
             '%' => self.push(TokenKind::Percent, start),
+            '(' => self.push(TokenKind::LeftParen, start),
+            ')' => self.push(TokenKind::RightParen, start),
+            ',' => self.push(TokenKind::Comma, start),
             '|' if self.peek() == Some('>') => {
                 self.bump();
                 self.push(TokenKind::PipeGreater, start);

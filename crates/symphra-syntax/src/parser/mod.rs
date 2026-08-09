@@ -470,11 +470,11 @@ impl Parser {
                 }
                 TokenKind::Pan => {
                     let expression = self.pan()?;
-                    play_end = expression.span;
+                    play_end = expression.span();
                     if pan.replace(expression).is_some() {
                         self.diagnostics.push(Diagnostic::syntax(
                             "`pan` may only appear once in a play pipeline",
-                            expression.span,
+                            expression.span(),
                         ));
                     }
                 }
@@ -521,6 +521,9 @@ impl Parser {
 
     fn pan(&mut self) -> Option<PanExpression> {
         let start = self.bump().span;
+        if self.at(TokenKind::Alternate) {
+            return self.alternate_pan(start);
+        }
         let sign = if self.at(TokenKind::Minus) {
             self.bump();
             -1
@@ -540,10 +543,33 @@ impl Parser {
         let end = self
             .required(TokenKind::Percent, "expected `%` after pan percentage")?
             .span;
-        Some(PanExpression {
+        Some(PanExpression::Fixed {
             percent: sign * magnitude,
             span: start.cover(end),
         })
+    }
+
+    fn alternate_pan(&mut self, start: SourceSpan) -> Option<PanExpression> {
+        self.bump();
+        self.required(TokenKind::LeftParen, "expected `(` after `alternate`")?;
+        let left_percent = self.unsigned_percentage("expected left pan percentage")?;
+        self.required(TokenKind::Comma, "expected `,` between pan percentages")?;
+        let right_percent = self.unsigned_percentage("expected right pan percentage")?;
+        let end = self
+            .required(TokenKind::RightParen, "expected `)` after pan percentages")?
+            .span;
+        Some(PanExpression::Alternate {
+            left_percent,
+            right_percent,
+            span: start.cover(end),
+        })
+    }
+
+    fn unsigned_percentage(&mut self, message: &str) -> Option<u32> {
+        let value = self.required(TokenKind::Integer, message)?;
+        let percent = self.parse_u32(&value)?;
+        self.required(TokenKind::Percent, "expected `%` after percentage")?;
+        Some(percent)
     }
 
     fn reverse(&mut self, seen: &mut bool) -> SourceSpan {

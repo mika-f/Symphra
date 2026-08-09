@@ -452,6 +452,8 @@ fn completion_labels(
         ]
     ) {
         &["role"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
+        &["alternate"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
         &[
             "trigger_with",
@@ -604,8 +606,12 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Repeat
                     | TokenKind::Reverse
                     | TokenKind::Pan
+                    | TokenKind::Alternate
                     | TokenKind::PipeGreater
                     | TokenKind::Percent
+                    | TokenKind::LeftParen
+                    | TokenKind::RightParen
+                    | TokenKind::Comma
                     | TokenKind::Plus
                     | TokenKind::Minus
                     | TokenKind::Pattern
@@ -781,6 +787,9 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Repeat => "repeats a played pattern a fixed number of times.",
         TokenKind::Reverse => "mirrors a played pattern across its end time.",
         TokenKind::Pan => "places a track from `-100%` left to `100%` right.",
+        TokenKind::Alternate => {
+            "alternates successive events between left and right pan positions."
+        }
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -1053,6 +1062,14 @@ mod tests {
                 "reverse",
                 "pan"
             ]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  play melody |> pan ",
+                2,
+                21
+            ),
+            ["alternate"]
         );
     }
 

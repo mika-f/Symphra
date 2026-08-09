@@ -64,8 +64,44 @@ pub struct Track {
     pub notes: Vec<NoteEvent>,
     pub samples: Vec<SampleEvent>,
     pub gain: f32,
-    pub pan_percent: i8,
+    pub pan: Pan,
     pub end: MusicalTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pan {
+    Fixed(i8),
+    Alternate { left_percent: i8, right_percent: i8 },
+}
+
+impl Pan {
+    #[must_use]
+    pub const fn percent(self, event_index: usize) -> i8 {
+        match self {
+            Self::Fixed(percent) => percent,
+            Self::Alternate {
+                left_percent,
+                right_percent: _,
+            } if event_index.is_multiple_of(2) => -left_percent,
+            Self::Alternate { right_percent, .. } => right_percent,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        match self {
+            Self::Fixed(percent) => percent >= -100 && percent <= 100,
+            Self::Alternate {
+                left_percent,
+                right_percent,
+            } => {
+                left_percent >= 0
+                    && left_percent <= 100
+                    && right_percent >= 0
+                    && right_percent <= 100
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -65,9 +65,25 @@ pub struct RepeatExpression {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PanExpression {
-    pub percent: i32,
-    pub span: SourceSpan,
+pub enum PanExpression {
+    Fixed {
+        percent: i32,
+        span: SourceSpan,
+    },
+    Alternate {
+        left_percent: u32,
+        right_percent: u32,
+        span: SourceSpan,
+    },
+}
+
+impl PanExpression {
+    #[must_use]
+    pub const fn span(self) -> SourceSpan {
+        match self {
+            Self::Fixed { span, .. } | Self::Alternate { span, .. } => span,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

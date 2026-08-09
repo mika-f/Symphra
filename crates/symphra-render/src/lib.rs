@@ -81,11 +81,7 @@ pub fn render_song_with_samples(
     {
         return Err(RenderError::InvalidTrackGain);
     }
-    if song
-        .tracks
-        .iter()
-        .any(|track| !(-100..=100).contains(&track.pan_percent))
-    {
+    if song.tracks.iter().any(|track| !track.pan.is_valid()) {
         return Err(RenderError::InvalidTrackPan);
     }
     let channels = match score.channels {
@@ -152,7 +148,7 @@ fn render_notes(
     };
     let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
     for track in &song.tracks {
-        for note in &track.notes {
+        for (event_index, note) in track.notes.iter().enumerate() {
             let start = time_to_frame(note.start, song.tempo_bpm, sample_rate_hz)?;
             let end = time_to_frame(
                 note.start.checked_add(note.duration)?,
@@ -205,7 +201,13 @@ fn render_notes(
                     .checked_mul(u64::from(channels))
                     .and_then(|offset| usize::try_from(offset).ok())
                     .ok_or(RenderError::AudioTooLarge)?;
-                mix_sample(samples, first_sample, channels, value, track.pan_percent);
+                mix_sample(
+                    samples,
+                    first_sample,
+                    channels,
+                    value,
+                    track.pan.percent(event_index),
+                );
             }
         }
     }
@@ -228,7 +230,7 @@ fn render_samples(
         let InstrumentKind::Sampler { pack } = &track.instrument else {
             return Err(RenderError::SampleEventsRequireSampler);
         };
-        for event in &track.samples {
+        for (event_index, event) in track.samples.iter().enumerate() {
             let source = packed_sample_source(pack, event.index);
             let mut player = SamplePlayer::new(
                 sample_library
@@ -257,7 +259,13 @@ fn render_samples(
                     .checked_mul(u64::from(channels))
                     .and_then(|offset| usize::try_from(offset).ok())
                     .ok_or(RenderError::AudioTooLarge)?;
-                mix_sample(samples, first_sample, channels, value, track.pan_percent);
+                mix_sample(
+                    samples,
+                    first_sample,
+                    channels,
+                    value,
+                    track.pan.percent(event_index),
+                );
             }
         }
     }
@@ -319,8 +327,8 @@ fn time_to_frame(
 #[cfg(test)]
 mod tests {
     use symphra_score::{
-        Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass,
-        Score, Song, Track,
+        Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, Pan,
+        PitchClass, Score, Song, Track,
     };
 
     use super::{RenderError, render_song};
@@ -374,7 +382,7 @@ mod tests {
     fn render_song_should_pan_stereo_tracks_linearly() {
         let mut centered_score = score(InstrumentKind::Sine);
         let centered = render_song(&centered_score, 0).expect("centered score should render");
-        centered_score.songs[0].tracks[0].pan_percent = -100;
+        centered_score.songs[0].tracks[0].pan = Pan::Fixed(-100);
         let left = render_song(&centered_score, 0).expect("left-panned score should render");
 
         assert!(
@@ -385,6 +393,43 @@ mod tests {
                 .all(|(centered, left)| {
                     (centered[0] - left[0]).abs() < f32::EPSILON && left[1].abs() < f32::EPSILON
                 })
+        );
+    }
+
+    #[test]
+    fn render_song_should_alternate_event_pan_from_left_to_right() {
+        let mut alternating_score = score(InstrumentKind::Sine);
+        alternating_score.sample_rate_hz = 8_000;
+        alternating_score.songs[0].tracks[0].notes.push(NoteEvent {
+            id: EntityId(3),
+            start: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            duration: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            midi_pitch: 69,
+            velocity: 127,
+        });
+        alternating_score.songs[0].tracks[0].end =
+            MusicalTime::new(1, 2).expect("half note should be valid");
+        alternating_score.songs[0].tracks[0].pan = Pan::Alternate {
+            left_percent: 100,
+            right_percent: 100,
+        };
+
+        let rendered = render_song(&alternating_score, 0).expect("alternating score should render");
+        let (first, second) = rendered.samples.split_at(rendered.samples.len() / 2);
+
+        assert!(
+            first
+                .chunks_exact(2)
+                .any(|frame| frame[0].abs() > f32::EPSILON)
+                && first
+                    .chunks_exact(2)
+                    .all(|frame| frame[1].abs() < f32::EPSILON)
+                && second
+                    .chunks_exact(2)
+                    .all(|frame| frame[0].abs() < f32::EPSILON)
+                && second
+                    .chunks_exact(2)
+                    .any(|frame| frame[1].abs() > f32::EPSILON)
         );
     }
 
@@ -418,7 +463,7 @@ mod tests {
                     }],
                     samples: Vec::new(),
                     gain: 1.0,
-                    pan_percent: 0,
+                    pan: Pan::Fixed(0),
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],
             }],

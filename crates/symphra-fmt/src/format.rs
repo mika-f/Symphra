@@ -3,10 +3,10 @@ use std::fmt::Write as _;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, Identifier,
-    InstrumentBody, InstrumentDeclaration, NoteExpression, PatternBody, PatternDeclaration,
-    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, StepItem, TrackDeclaration, VolumeExpression,
+    InstrumentBody, InstrumentDeclaration, NoteExpression, PanExpression, PatternBody,
+    PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
+    RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -483,6 +483,26 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
     }
     if let Some(gain) = &play.gain {
         let _ = write!(line, " |> gain {}", gain.factor);
+    }
+    if let Some(repeat) = &play.repeat {
+        let _ = write!(line, " |> repeat {}", repeat.count);
+    }
+    if play.reverse {
+        line.push_str(" |> reverse");
+    }
+    if let Some(pan) = play.pan {
+        match pan {
+            PanExpression::Fixed { percent, .. } => {
+                let _ = write!(line, " |> pan {percent}%");
+            }
+            PanExpression::Alternate {
+                left_percent,
+                right_percent,
+                ..
+            } => {
+                let _ = write!(line, " |> pan alternate({left_percent}%, {right_percent}%)");
+            }
+        }
     }
     ctx.printer.line(line);
 }

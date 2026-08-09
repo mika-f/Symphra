@@ -141,7 +141,7 @@ fn schedule_declared_track(
     )?;
     scheduled.name.clone_from(&track.name);
     scheduled.gain = track.gain;
-    scheduled.pan_percent = track.pan_percent;
+    scheduled.pan = score_pan(track.pan);
     if let Some(semitones) = track.transpose_semitones {
         apply_transpose(&mut scheduled, semitones)?;
     }
@@ -451,7 +451,7 @@ fn schedule_track(
             notes,
             samples,
             gain: 1.0,
-            pan_percent: 0,
+            pan: symphra_score::Pan::Fixed(0),
             end: cursor,
         },
         cursor,
@@ -467,6 +467,19 @@ fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
             root_midi: *root_midi,
         },
         hir::InstrumentKind::Sampler { pack } => InstrumentKind::Sampler { pack: pack.clone() },
+    }
+}
+
+fn score_pan(pan: hir::Pan) -> symphra_score::Pan {
+    match pan {
+        hir::Pan::Fixed(percent) => symphra_score::Pan::Fixed(percent),
+        hir::Pan::Alternate {
+            left_percent,
+            right_percent,
+        } => symphra_score::Pan::Alternate {
+            left_percent,
+            right_percent,
+        },
     }
 }
 

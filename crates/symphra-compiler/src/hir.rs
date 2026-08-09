@@ -49,7 +49,13 @@ pub struct TrackDefinition {
     pub gain: f32,
     pub repeat_count: u16,
     pub reverse: bool,
-    pub pan_percent: i8,
+    pub pan: Pan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pan {
+    Fixed(i8),
+    Alternate { left_percent: i8, right_percent: i8 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

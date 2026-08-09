@@ -5,13 +5,14 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, Declaration, DegreeChoiceAlternative, Identifier, InstrumentBody,
-    PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement, RhythmDeclaration,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration,
+    PanExpression, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
+    RhythmDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
+    TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key, Meter,
-    Mode, NodeId, Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project,
+    Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project,
     Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, TrackDefinition, WeightedNote,
     WeightedSampleSequence,
 };
@@ -407,7 +408,7 @@ impl Compiler {
         };
         let gain = self.track_gain(declaration);
         let repeat_count = self.repeat_count(declaration);
-        let pan_percent = self.pan_percent(declaration);
+        let pan = self.pan(declaration);
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -421,14 +422,14 @@ impl Compiler {
             .zip(transpose_semitones)
             .zip(gain)
             .zip(repeat_count)
-            .zip(pan_percent)
+            .zip(pan)
             .map(
                 |(
                     (
                         ((((pattern, instrument), gate_percent), transpose_semitones), gain),
                         repeat_count,
                     ),
-                    pan_percent,
+                    pan,
                 )| {
                     TrackDefinition {
                         id: self.id(),
@@ -442,7 +443,7 @@ impl Compiler {
                         gain,
                         repeat_count,
                         reverse: declaration.play.reverse,
-                        pan_percent,
+                        pan,
                     }
                 },
             )
@@ -461,16 +462,36 @@ impl Compiler {
         }
     }
 
-    fn pan_percent(&mut self, declaration: &TrackDeclaration) -> Option<i8> {
+    fn pan(&mut self, declaration: &TrackDeclaration) -> Option<Pan> {
         match declaration.play.pan {
-            Some(pan) => match i8::try_from(pan.percent) {
-                Ok(percent) if (-100..=100).contains(&percent) => Some(percent),
+            Some(PanExpression::Fixed { percent, span }) => match i8::try_from(percent) {
+                Ok(percent) if (-100..=100).contains(&percent) => Some(Pan::Fixed(percent)),
                 _ => {
-                    self.error("pan must be from -100% to 100%", pan.span);
+                    self.error("pan must be from -100% to 100%", span);
                     None
                 }
             },
-            None => Some(0),
+            Some(PanExpression::Alternate {
+                left_percent,
+                right_percent,
+                span,
+            }) => {
+                let (Ok(left_percent), Ok(right_percent)) =
+                    (i8::try_from(left_percent), i8::try_from(right_percent))
+                else {
+                    self.error("alternate pan values must be from 0% to 100%", span);
+                    return None;
+                };
+                if left_percent > 100 || right_percent > 100 {
+                    self.error("alternate pan values must be from 0% to 100%", span);
+                    return None;
+                }
+                Some(Pan::Alternate {
+                    left_percent,
+                    right_percent,
+                })
+            }
+            None => Some(Pan::Fixed(0)),
         }
     }
 

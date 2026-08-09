@@ -394,6 +394,31 @@ song "Pan" {
 }
 
 #[test]
+fn compile_should_reject_out_of_range_alternating_pan() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output stereo }
+song "Pan" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> pan alternate(30%, 101%)
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range alternate pan should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "alternate pan values must be from 0% to 100%"
+    );
+}
+
+#[test]
 fn schedule_should_preserve_track_pan() {
     let parsed = parse(
         SourceId(0),
@@ -413,7 +438,36 @@ song "Pan" {
     let program = compile(&parsed.file).expect("panned track should compile");
     let score = schedule(&program).expect("panned track should schedule");
 
-    assert_eq!(score.songs[0].tracks[0].pan_percent, 55);
+    assert_eq!(score.songs[0].tracks[0].pan, symphra_score::Pan::Fixed(55));
+}
+
+#[test]
+fn schedule_should_preserve_alternating_track_pan() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output stereo }
+song "Pan" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 note D4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> pan alternate(30%, 70%)
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("alternating pan should compile");
+    let score = schedule(&program).expect("alternating pan should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0].pan,
+        symphra_score::Pan::Alternate {
+            left_percent: 30,
+            right_percent: 70,
+        }
+    );
 }
 
 #[test]

@@ -142,7 +142,7 @@ song "S" {
   track chords role harmony {
     instrument lead
     volume -6 db
-    play harmony |> trigger_with stabs |> gate 80% |> transpose +2 st |> gain 0.8
+    play harmony |> trigger_with stabs |> gate 80% |> transpose +2 st |> gain 0.8 |> repeat 2 |> reverse |> pan alternate(30%,70%)
   }
 }
 "#;
@@ -177,7 +177,7 @@ song "S" {
   track chords role harmony {
     instrument lead
     volume -6 db
-    play harmony |> trigger_with stabs |> gate 80% |> transpose 2 st |> gain 0.8
+    play harmony |> trigger_with stabs |> gate 80% |> transpose 2 st |> gain 0.8 |> repeat 2 |> reverse |> pan alternate(30%, 70%)
   }
 }
 "#;

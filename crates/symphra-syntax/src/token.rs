@@ -37,6 +37,7 @@ pub enum TokenKind {
     Repeat,
     Reverse,
     Pan,
+    Alternate,
     Pattern,
     Arrangement,
     With,
@@ -57,6 +58,9 @@ pub enum TokenKind {
     Minus,
     PipeGreater,
     Percent,
+    LeftParen,
+    RightParen,
+    Comma,
     Eof,
 }
 
@@ -94,6 +98,7 @@ impl TokenKind {
             "repeat" => Self::Repeat,
             "reverse" => Self::Reverse,
             "pan" => Self::Pan,
+            "alternate" => Self::Alternate,
             "pattern" => Self::Pattern,
             "arrangement" => Self::Arrangement,
             "with" => Self::With,

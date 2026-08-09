@@ -386,6 +386,7 @@ dependencies = [
 name = "symphra-lsp"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "symphra-compiler",
  "symphra-syntax",
  "tokio",

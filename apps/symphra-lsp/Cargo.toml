@@ -14,3 +14,6 @@ symphra-compiler.workspace = true
 symphra-syntax.workspace = true
 tokio.workspace = true
 tower-lsp-server.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

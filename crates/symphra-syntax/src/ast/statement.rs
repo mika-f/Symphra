@@ -34,6 +34,7 @@ pub struct PlayStatement {
     pub transpose: Option<TransposeExpression>,
     pub gain: Option<GainExpression>,
     pub repeat: Option<RepeatExpression>,
+    pub reverse: bool,
     pub span: SourceSpan,
 }
 
@@ -131,7 +132,7 @@ pub enum SongStatement {
     },
     Instrument(InstrumentDeclaration),
     Rhythm(RhythmDeclaration),
-    Track(TrackDeclaration),
+    Track(Box<TrackDeclaration>),
     Arrangement {
         occurrences: Vec<ArrangementOccurrence>,
         span: SourceSpan,

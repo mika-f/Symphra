@@ -372,6 +372,51 @@ song "Repeat" {
 }
 
 #[test]
+fn schedule_should_reverse_events_within_the_track_duration() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Reverse" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence {
+    note C4 for 1/4
+    rest for 1/4
+    note D4 for 1/2
+  }
+  track lead role melody {
+    instrument lead
+    play melody |> reverse
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("reversed track should compile");
+    let score = schedule(&program).expect("reversed track should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .notes
+            .iter()
+            .map(|note| (note.midi_pitch, note.start, note.duration))
+            .collect::<Vec<_>>(),
+        [
+            (
+                62,
+                MusicalTime::ZERO,
+                MusicalTime::new(1, 2).expect("half note should be valid"),
+            ),
+            (
+                60,
+                MusicalTime::new(3, 4).expect("three quarters should be valid"),
+                MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            ),
+        ]
+    );
+}
+
+#[test]
 fn schedule_should_convert_track_volume_from_decibels() {
     let parsed = parse(
         SourceId(0),

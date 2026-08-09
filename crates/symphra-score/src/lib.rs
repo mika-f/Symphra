@@ -181,6 +181,29 @@ impl MusicalTime {
             .ok_or(TimeError::Overflow)?;
         Self::new(numerator, denominator)
     }
+
+    /// Subtracts one exact musical time from another.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TimeError::Negative`] when `other` is greater than `self`, or
+    /// [`TimeError::Overflow`] when the common-denominator calculation exceeds `u64`.
+    pub fn checked_sub(self, other: Self) -> Result<Self, TimeError> {
+        let common = gcd(self.denominator, other.denominator);
+        let left = self
+            .numerator
+            .checked_mul(other.denominator / common)
+            .ok_or(TimeError::Overflow)?;
+        let right = other
+            .numerator
+            .checked_mul(self.denominator / common)
+            .ok_or(TimeError::Overflow)?;
+        let numerator = left.checked_sub(right).ok_or(TimeError::Negative)?;
+        let denominator = (self.denominator / common)
+            .checked_mul(other.denominator)
+            .ok_or(TimeError::Overflow)?;
+        Self::new(numerator, denominator)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -189,6 +212,8 @@ pub enum TimeError {
     ZeroDenominator,
     #[error("musical time exceeds the supported range")]
     Overflow,
+    #[error("musical time must not be negative")]
+    Negative,
 }
 
 fn gcd(mut left: u64, mut right: u64) -> u64 {
@@ -209,6 +234,21 @@ mod tests {
         let result = quarter
             .checked_add(quarter)
             .expect("two quarter notes should fit");
+
+        assert_eq!(
+            result,
+            MusicalTime::new(1, 2).expect("half note should be valid")
+        );
+    }
+
+    #[test]
+    fn checked_sub_should_reduce_exact_result() {
+        let three_quarters = MusicalTime::new(3, 4).expect("three quarters should be valid");
+        let quarter = MusicalTime::new(1, 4).expect("quarter note should be valid");
+
+        let result = three_quarters
+            .checked_sub(quarter)
+            .expect("subtraction should remain non-negative");
 
         assert_eq!(
             result,

@@ -48,6 +48,7 @@ pub struct TrackDefinition {
     pub transpose_semitones: Option<i32>,
     pub gain: f32,
     pub repeat_count: u16,
+    pub reverse: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

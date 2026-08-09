@@ -170,7 +170,7 @@ impl Parser {
                 TokenKind::Key => self.key(),
                 TokenKind::Instrument => self.instrument().map(SongStatement::Instrument),
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
-                TokenKind::Track => self.track().map(SongStatement::Track),
+                TokenKind::Track => self.track().map(Box::new).map(SongStatement::Track),
                 TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
@@ -413,6 +413,7 @@ impl Parser {
         let mut transpose = None;
         let mut gain = None;
         let mut repeat = None;
+        let mut reverse = false;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -479,9 +480,13 @@ impl Parser {
                         ));
                     }
                 }
+                TokenKind::Reverse => {
+                    let span = self.reverse(&mut reverse);
+                    play_end = span;
+                }
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, `gain`, or `repeat` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, or `reverse` after `|>`",
                     );
                     return None;
                 }
@@ -494,8 +499,20 @@ impl Parser {
             transpose,
             gain,
             repeat,
+            reverse,
             span: play_start.cover(play_end),
         })
+    }
+
+    fn reverse(&mut self, seen: &mut bool) -> SourceSpan {
+        let span = self.bump().span;
+        if std::mem::replace(seen, true) {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`reverse` may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        span
     }
 
     fn transpose(&mut self) -> Option<TransposeExpression> {

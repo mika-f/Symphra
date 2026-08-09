@@ -445,6 +445,7 @@ impl Compiler {
                         transpose_semitones,
                         gain,
                         repeat_count,
+                        reverse: declaration.play.reverse,
                     }
                 },
             )

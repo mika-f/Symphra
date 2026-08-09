@@ -148,7 +148,26 @@ fn schedule_declared_track(
         apply_gate(&mut scheduled, percent)?;
     }
     apply_repeat(&mut scheduled, track.repeat_count)?;
+    if track.reverse {
+        apply_reverse(&mut scheduled)?;
+    }
     Ok(scheduled)
+}
+
+fn apply_reverse(track: &mut Track) -> Result<(), TimeError> {
+    for note in &mut track.notes {
+        note.start = track
+            .end
+            .checked_sub(note.start.checked_add(note.duration)?)?;
+    }
+    track.notes.reverse();
+    for sample in &mut track.samples {
+        sample.start = track
+            .end
+            .checked_sub(sample.start.checked_add(sample.duration)?)?;
+    }
+    track.samples.reverse();
+    Ok(())
 }
 
 fn apply_repeat(track: &mut Track, count: u16) -> Result<(), ScheduleError> {

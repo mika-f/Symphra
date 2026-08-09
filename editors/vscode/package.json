@@ -4,7 +4,7 @@
   "description": "Syntax highlighting and language server support for Symphra (.sym) files.",
   "version": "0.0.1",
   "private": true,
-  "publisher": "symphra-lang",
+  "publisher": "Natsuneko Laboratory",
   "license": "MIT",
   "repository": {
     "type": "git",

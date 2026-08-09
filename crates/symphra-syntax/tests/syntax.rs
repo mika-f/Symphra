@@ -46,6 +46,25 @@ fn lexes_units_comments_and_strings() {
 }
 
 #[test]
+fn lexes_sharp_pitches_without_consuming_comments() {
+    let lexed = lex(SourceId(0), "C#4 C# comment\nDb4");
+
+    assert_eq!(
+        lexed
+            .tokens
+            .iter()
+            .map(|token| (token.kind, token.text.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (TokenKind::Identifier, "C#4"),
+            (TokenKind::Identifier, "C"),
+            (TokenKind::Identifier, "Db4"),
+            (TokenKind::Eof, ""),
+        ]
+    );
+}
+
+#[test]
 fn parses_the_draft_example() {
     let parsed = parse(SourceId(0), EXAMPLE);
     assert_eq!(parsed.diagnostics, []);

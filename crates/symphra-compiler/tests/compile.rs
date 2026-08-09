@@ -193,7 +193,7 @@ project { seed 1 sample_rate 48khz output stereo }
 song "Chords" {
   tempo 120bpm meter 4/4 key C major
   pattern harmony = sequence {
-    chord C4 E4 G4 for 1/4
+    chord C#4 Eb4 G4 for 1/4
     note C5 for 1/4
   }
 }
@@ -209,8 +209,8 @@ song "Chords" {
             .map(|note| (note.midi_pitch, note.start))
             .collect::<Vec<_>>(),
         vec![
-            (60, MusicalTime::ZERO),
-            (64, MusicalTime::ZERO),
+            (61, MusicalTime::ZERO),
+            (63, MusicalTime::ZERO),
             (67, MusicalTime::ZERO),
             (
                 72,

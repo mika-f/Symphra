@@ -422,7 +422,7 @@ impl Compiler {
 
     fn pitch(&mut self, pitch: &str, span: SourceSpan) -> Option<u8> {
         let mut chars = pitch.chars();
-        let semitone = match chars.next() {
+        let mut semitone = match chars.next() {
             Some('C') => 0,
             Some('D') => 2,
             Some('E') => 4,
@@ -435,12 +435,26 @@ impl Compiler {
                 return None;
             }
         };
-        let octave = chars.as_str().parse::<i16>().ok();
-        let midi = octave.map(|octave| (octave + 1) * 12 + semitone);
-        if let Some(value) = midi
-            .and_then(|value| u8::try_from(value).ok())
-            .filter(|value| *value <= 127)
-        {
+        match chars.clone().next() {
+            Some('#') => {
+                semitone += 1;
+                chars.next();
+            }
+            Some('b') => {
+                semitone -= 1;
+                chars.next();
+            }
+            _ => {}
+        }
+        let Ok(octave) = chars.as_str().parse::<i16>() else {
+            self.error(
+                "pitch must be a note letter, optional `#` or `b`, and an octave",
+                span,
+            );
+            return None;
+        };
+        let midi = (octave + 1) * 12 + semitone;
+        if let Some(value) = u8::try_from(midi).ok().filter(|value| *value <= 127) {
             Some(value)
         } else {
             self.error("pitch must be within the MIDI range C-1 to G9", span);

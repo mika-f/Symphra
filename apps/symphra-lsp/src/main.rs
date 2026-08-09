@@ -668,13 +668,13 @@ mod tests {
             concat!(
                 "project { seed 1 sample_rate 48khz output stereo }\n",
                 "song \"Test\" { tempo 120bpm meter 4/4 key C major\n",
-                "pattern harmony = sequence { chord C4 E4 G4 for 1/4 } }",
+                "pattern harmony = sequence { chord C#4 Eb4 G4 for 1/4 } }",
             ),
         );
-        let result = hover(&source, Position::new(2, 38)).expect("E4 should have pitch help");
+        let result = hover(&source, Position::new(2, 35)).expect("C#4 should have pitch help");
         let super::HoverContents::Markup(contents) = result.contents else {
             panic!("hover should use markup content");
         };
-        assert_eq!(contents.value, "`E4` — MIDI note 64.");
+        assert_eq!(contents.value, "`C#4` — MIDI note 61.");
     }
 }

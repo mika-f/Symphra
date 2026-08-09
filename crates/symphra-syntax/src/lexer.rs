@@ -65,6 +65,18 @@ impl Lexer<'_> {
             c if c.is_ascii_digit() => self.number(start),
             c if is_identifier_start(c) => {
                 self.skip_while(is_identifier_continue);
+                if matches!(
+                    &self.input[start..self.offset],
+                    "A" | "B" | "C" | "D" | "E" | "F" | "G"
+                ) && self.peek() == Some('#')
+                    && self.input[self.offset + 1..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_ascii_digit())
+                {
+                    self.bump();
+                    self.skip_while(|c| c.is_ascii_digit());
+                }
                 let text = &self.input[start..self.offset];
                 self.push(
                     TokenKind::keyword(text).unwrap_or(TokenKind::Identifier),

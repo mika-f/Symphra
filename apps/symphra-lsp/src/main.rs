@@ -11,8 +11,9 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    InitializeParams, InitializeResult, Location, OneOf, Position, PositionEncodingKind, Range,
+    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    Location, MarkupContent, MarkupKind, OneOf, Position, PositionEncodingKind, Range,
     ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind, TextDocumentSyncCapability,
     TextDocumentSyncKind, Uri,
 };
@@ -55,6 +56,7 @@ impl LanguageServer for Backend {
                 )),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 completion_provider: Some(CompletionOptions::default()),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -124,6 +126,15 @@ impl LanguageServer for Backend {
         Ok(Some(CompletionResponse::Array(completions(
             source, position,
         ))))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let documents = self.documents.read().await;
+        let position = params.text_document_position_params.position;
+        let uri = params.text_document_position_params.text_document.uri;
+        Ok(documents
+            .get(&uri)
+            .and_then(|source| hover(source, position)))
     }
 }
 
@@ -380,6 +391,45 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
         )
 }
 
+fn hover(source: &SourceText, position: Position) -> Option<Hover> {
+    let offset = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    })?;
+    let token = lex(source.id, &source.text)
+        .tokens
+        .into_iter()
+        .find(|token| token.span.start <= offset && offset < token.span.end)?;
+    let description = keyword_description(token.kind)?;
+    let range = lsp_range(source, token.span)?;
+
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("`{}` — {description}", token.text),
+        }),
+        range: Some(range),
+    })
+}
+
+const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
+    Some(match kind {
+        TokenKind::Project => "starts the project-wide settings block.",
+        TokenKind::Song => "starts a named song block.",
+        TokenKind::Seed => "sets the deterministic project seed.",
+        TokenKind::SampleRate => "sets the output sample rate, such as `48khz`.",
+        TokenKind::Output => "sets the output channel layout (`mono` or `stereo`).",
+        TokenKind::Tempo => "sets song tempo in beats per minute, such as `120bpm`.",
+        TokenKind::Meter => "sets the song time signature, such as `4/4`.",
+        TokenKind::Key => "sets the song tonic and mode, such as `C major`.",
+        TokenKind::Pattern => "declares a named musical pattern.",
+        TokenKind::Sequence => "plays pattern notes one after another.",
+        TokenKind::Note => "adds a written pitch to a sequence.",
+        TokenKind::For => "introduces a note duration, such as `1/4`.",
+        _ => return None,
+    })
+}
+
 #[tokio::main]
 async fn main() {
     let (service, socket) = LspService::new(|client| Backend {
@@ -396,6 +446,7 @@ async fn main() {
 mod tests {
     use super::{
         SourceId, SourceText, completions, diagnostics, document_symbols, flatten_document_symbols,
+        hover,
     };
     use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, SymbolKind, Uri};
 
@@ -498,5 +549,21 @@ mod tests {
             ["for"]
         );
         assert!(labels("😀", 0, 1).is_empty());
+    }
+
+    #[test]
+    fn hovers_documented_keywords_at_utf16_positions() {
+        let source = SourceText::new(SourceId(0), "test.sym", "😀 song \"Test\" {}");
+        let result = hover(&source, Position::new(0, 4)).expect("song should have hover help");
+
+        let super::HoverContents::Markup(contents) = result.contents else {
+            panic!("hover should use markup content");
+        };
+        assert_eq!(contents.value, "`song` — starts a named song block.");
+        assert_eq!(
+            result.range,
+            Some(Range::new(Position::new(0, 3), Position::new(0, 7)))
+        );
+        assert!(hover(&source, Position::new(0, 1)).is_none());
     }
 }

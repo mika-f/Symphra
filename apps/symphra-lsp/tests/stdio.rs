@@ -144,6 +144,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         initialized["result"]["capabilities"]["documentSymbolProvider"],
         true
     );
+    assert_eq!(initialized["result"]["capabilities"]["hoverProvider"], true);
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -224,6 +225,21 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
+        "id": 4,
+        "method": "textDocument/hover",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 0, "character": 0 }
+        }
+    }));
+    let hover = server.receive();
+    assert_eq!(
+        hover["result"]["contents"]["value"],
+        "`project` — starts the project-wide settings block."
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
         "method": "textDocument/didChange",
         "params": {
             "textDocument": {
@@ -247,11 +263,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 4,
+        "id": 5,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 4);
+    assert_eq!(server.receive()["id"], 5);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

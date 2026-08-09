@@ -421,7 +421,7 @@ fn completion_labels(
     ) {
         &["role"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
-        &["trigger_with"]
+        &["trigger_with", "gate"]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
     } else if matches!(block, Some(CompletionBlock::Arrangement))
@@ -557,7 +557,9 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Role
                     | TokenKind::Play
                     | TokenKind::TriggerWith
+                    | TokenKind::Gate
                     | TokenKind::PipeGreater
+                    | TokenKind::Percent
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
                     | TokenKind::Degree
@@ -724,6 +726,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Role => "describes a track's musical role.",
         TokenKind::Play => "selects the pattern played by a track.",
         TokenKind::TriggerWith => "applies a reusable rhythm to a played pattern.",
+        TokenKind::Gate => "scales sounding duration without moving later steps.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -987,7 +990,7 @@ mod tests {
                 2,
                 17
             ),
-            ["trigger_with"]
+            ["trigger_with", "gate"]
         );
     }
 

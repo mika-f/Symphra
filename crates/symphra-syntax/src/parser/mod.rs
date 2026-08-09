@@ -1,8 +1,8 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, Identifier,
-    InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody,
+    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, GateExpression,
+    Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody,
     PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
     RateLiteral, RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
     SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration,
@@ -359,16 +359,50 @@ impl Parser {
             .required(TokenKind::Play, "expected `play` in track")?
             .span;
         let pattern = self.identifier("expected a pattern name after `play`")?;
-        let trigger_with = if self.at(TokenKind::PipeGreater) {
+        let mut trigger_with = None;
+        let mut gate = None;
+        let mut play_end = pattern.span;
+        while self.at(TokenKind::PipeGreater) {
             self.bump();
-            self.required(TokenKind::TriggerWith, "expected `trigger_with` after `|>`")?;
-            Some(self.identifier("expected a rhythm name after `trigger_with`")?)
-        } else {
-            None
-        };
-        let play_span = trigger_with
-            .as_ref()
-            .map_or(pattern.span, |rhythm| pattern.span.cover(rhythm.span));
+            match self.current().kind {
+                TokenKind::TriggerWith => {
+                    self.bump();
+                    let reference =
+                        self.identifier("expected a rhythm name after `trigger_with`")?;
+                    play_end = reference.span;
+                    if trigger_with.replace(reference).is_some() {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "`trigger_with` may only appear once in a play pipeline",
+                            play_end,
+                        ));
+                    }
+                }
+                TokenKind::Gate => {
+                    let gate_start = self.bump().span;
+                    let value =
+                        self.required(TokenKind::Integer, "expected a percentage after `gate`")?;
+                    let percent = self.parse_u32(&value)?;
+                    let percent_end = self
+                        .required(TokenKind::Percent, "expected `%` after gate percentage")?
+                        .span;
+                    let expression = GateExpression {
+                        percent,
+                        span: gate_start.cover(percent_end),
+                    };
+                    play_end = expression.span;
+                    if gate.replace(expression).is_some() {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "`gate` may only appear once in a play pipeline",
+                            expression.span,
+                        ));
+                    }
+                }
+                _ => {
+                    self.error("expected `trigger_with` or `gate` after `|>`");
+                    return None;
+                }
+            }
+        }
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close track")?
             .span;
@@ -379,7 +413,8 @@ impl Parser {
             play: PlayStatement {
                 pattern,
                 trigger_with,
-                span: play_start.cover(play_span),
+                gate,
+                span: play_start.cover(play_end),
             },
             span: start.cover(end),
         })

@@ -30,6 +30,7 @@ pub enum TokenKind {
     Role,
     Play,
     TriggerWith,
+    Gate,
     Pattern,
     Arrangement,
     With,
@@ -47,6 +48,7 @@ pub enum TokenKind {
     Equal,
     Slash,
     PipeGreater,
+    Percent,
     Eof,
 }
 
@@ -77,6 +79,7 @@ impl TokenKind {
             "role" => Self::Role,
             "play" => Self::Play,
             "trigger_with" => Self::TriggerWith,
+            "gate" => Self::Gate,
             "pattern" => Self::Pattern,
             "arrangement" => Self::Arrangement,
             "with" => Self::With,

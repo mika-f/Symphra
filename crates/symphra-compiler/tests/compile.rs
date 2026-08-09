@@ -149,7 +149,7 @@ song "Rhythm" {
 }
 
 #[test]
-fn schedule_should_apply_reusable_rhythms_to_tracks() {
+fn schedule_should_apply_rhythms_and_gate_to_tracks() {
     let parsed = parse(
         SourceId(0),
         r#"
@@ -161,7 +161,7 @@ song "Triggered" {
   pattern harmony = sequence { chord C4 E4 G4 for 1/1 }
   track chords role harmony {
     instrument lead
-    play harmony |> trigger_with stabs
+    play harmony |> trigger_with stabs |> gate 50%
   }
 }
 "#,
@@ -184,9 +184,37 @@ song "Triggered" {
             6,
             MusicalTime::ZERO,
             MusicalTime::new(1, 2).expect("half note should be valid"),
-            MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            MusicalTime::new(1, 8).expect("eighth note should be valid"),
             MusicalTime::new(1, 1).expect("whole note should be valid"),
         )
+    );
+}
+
+#[test]
+fn compile_should_reject_gate_above_one_hundred_percent() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Gate" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> gate 101%
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("invalid gate should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["gate must be from 0% to 100%"]
     );
 }
 

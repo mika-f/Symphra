@@ -140,7 +140,32 @@ fn schedule_declared_track(
         seed,
     )?;
     scheduled.name.clone_from(&track.name);
+    if let Some(percent) = track.gate_percent {
+        apply_gate(&mut scheduled, percent)?;
+    }
     Ok(scheduled)
+}
+
+fn apply_gate(track: &mut Track, percent: u8) -> Result<(), TimeError> {
+    for note in &mut track.notes {
+        note.duration = gated_duration(note.duration, percent)?;
+    }
+    for sample in &mut track.samples {
+        sample.duration = gated_duration(sample.duration, percent)?;
+    }
+    Ok(())
+}
+
+fn gated_duration(duration: MusicalTime, percent: u8) -> Result<MusicalTime, TimeError> {
+    let numerator = duration
+        .numerator()
+        .checked_mul(u64::from(percent))
+        .ok_or(TimeError::Overflow)?;
+    let denominator = duration
+        .denominator()
+        .checked_mul(100)
+        .ok_or(TimeError::Overflow)?;
+    MusicalTime::new(numerator, denominator)
 }
 
 fn triggered_pattern(

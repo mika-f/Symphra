@@ -29,6 +29,13 @@ pub struct TrackDeclaration {
 pub struct PlayStatement {
     pub pattern: Identifier,
     pub trigger_with: Option<Identifier>,
+    pub gate: Option<GateExpression>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GateExpression {
+    pub percent: u32,
     pub span: SourceSpan,
 }
 

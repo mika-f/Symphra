@@ -380,15 +380,27 @@ impl Compiler {
         {
             self.validate_trigger(pattern, rhythm, reference.span);
         }
+        let gate_percent = match declaration.play.gate {
+            Some(gate) => match u8::try_from(gate.percent) {
+                Ok(percent) if percent <= 100 => Some(Some(percent)),
+                _ => {
+                    self.error("gate must be from 0% to 100%", gate.span);
+                    None
+                }
+            },
+            None => Some(None),
+        };
         pattern
             .zip(instrument)
-            .map(|(pattern, instrument)| TrackDefinition {
+            .zip(gate_percent)
+            .map(|((pattern, instrument), gate_percent)| TrackDefinition {
                 id: self.id(),
                 name: declaration.name.text.clone(),
                 role: declaration.role.text.clone(),
                 instrument,
                 pattern: pattern.id,
                 trigger_with: rhythm.map(|rhythm| rhythm.id),
+                gate_percent,
             })
     }
 

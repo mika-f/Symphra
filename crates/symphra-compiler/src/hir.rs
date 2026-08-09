@@ -44,6 +44,7 @@ pub struct TrackDefinition {
     pub instrument: InstrumentKind,
     pub pattern: NodeId,
     pub trigger_with: Option<NodeId>,
+    pub gate_percent: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

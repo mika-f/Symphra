@@ -384,7 +384,7 @@ fn parses_tracks_with_rhythm_triggers() {
         concat!(
             "song \"Track\" { ",
             "track chords role harmony { ",
-            "instrument lead play progression |> trigger_with stabs } }",
+            "instrument lead play progression |> trigger_with stabs |> gate 95% } }",
         ),
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -406,8 +406,16 @@ fn parses_tracks_with_rhythm_triggers() {
                 .trigger_with
                 .as_ref()
                 .map(|name| name.text.as_str()),
+            track.play.gate.map(|gate| gate.percent),
         ),
-        ("chords", "harmony", "lead", "progression", Some("stabs"))
+        (
+            "chords",
+            "harmony",
+            "lead",
+            "progression",
+            Some("stabs"),
+            Some(95)
+        )
     );
 }
 

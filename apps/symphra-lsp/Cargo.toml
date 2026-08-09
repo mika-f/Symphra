@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 symphra-compiler.workspace = true
+symphra-fmt.workspace = true
 symphra-syntax.workspace = true
 tokio.workspace = true
 tower-lsp-server.workspace = true

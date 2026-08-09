@@ -11,11 +11,12 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
-    MarkupKind, OneOf, Position, PositionEncodingKind, Range, ServerCapabilities, ServerInfo,
-    SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
+    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
+    MarkupContent, MarkupKind, OneOf, Position, PositionEncodingKind, Range, ServerCapabilities,
+    ServerInfo, SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextEdit, Uri,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -58,6 +59,7 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions::default()),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
             server_info: Some(ServerInfo {
@@ -149,6 +151,36 @@ impl LanguageServer for Backend {
             definition(source, &uri, position).map(GotoDefinitionResponse::Scalar)
         }))
     }
+
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
+        let documents = self.documents.read().await;
+        let uri = params.text_document.uri;
+        Ok(documents.get(&uri).map(formatting_edits))
+    }
+}
+
+/// Replaces the whole document with its canonical form.
+///
+/// Returns no edits when the source already has lexical or syntax
+/// diagnostics: reprinting an AST produced alongside diagnostics is not
+/// safe, since parse recovery may have skipped or misparsed tokens. This
+/// matches `symphra-fmt::format_source`'s own refusal to format such
+/// source, so a syntax error simply leaves the document unformatted rather
+/// than surfacing a separate formatting failure to the editor.
+fn formatting_edits(source: &SourceText) -> Vec<TextEdit> {
+    let Ok(formatted) = symphra_fmt::format_source(&source.text) else {
+        return Vec::new();
+    };
+    if formatted == source.text {
+        return Vec::new();
+    }
+    let Some(range) = lsp_range(source, SourceSpan::new(source.id, 0..source.text.len())) else {
+        return Vec::new();
+    };
+    vec![TextEdit {
+        range,
+        new_text: formatted,
+    }]
 }
 
 fn diagnostics(source: &SourceText) -> Vec<Diagnostic> {
@@ -421,7 +453,7 @@ fn completion_labels(
     ) {
         &["role"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
-        &["trigger_with", "gate", "transpose", "gain"]
+        &["trigger_with", "gate", "transpose", "gain", "repeat"]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
     } else if matches!(block, Some(CompletionBlock::Arrangement))
@@ -561,6 +593,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Gate
                     | TokenKind::Transpose
                     | TokenKind::Gain
+                    | TokenKind::Repeat
                     | TokenKind::PipeGreater
                     | TokenKind::Percent
                     | TokenKind::Plus
@@ -735,6 +768,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Gate => "scales sounding duration without moving later steps.",
         TokenKind::Transpose => "moves pitched events by a number of semitones.",
         TokenKind::Gain => "scales a played pattern's linear amplitude.",
+        TokenKind::Repeat => "repeats a played pattern a fixed number of times.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -775,7 +809,7 @@ async fn main() {
 mod tests {
     use super::{
         SourceId, SourceText, completions, definition, diagnostics, document_symbols,
-        flatten_document_symbols, hover,
+        flatten_document_symbols, formatting_edits, hover,
     };
     use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, SymbolKind, Uri};
 
@@ -998,7 +1032,7 @@ mod tests {
                 2,
                 17
             ),
-            ["trigger_with", "gate", "transpose", "gain"]
+            ["trigger_with", "gate", "transpose", "gain", "repeat"]
         );
     }
 
@@ -1117,5 +1151,44 @@ mod tests {
             location.range,
             Range::new(Position::new(1, 13), Position::new(1, 17))
         );
+    }
+
+    #[test]
+    fn formats_a_document_into_canonical_layout() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            "project { seed 1 sample_rate 8khz output mono }\n",
+        );
+
+        let edits = formatting_edits(&source);
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            edits[0].range,
+            Range::new(Position::new(0, 0), Position::new(1, 0))
+        );
+        assert_eq!(
+            edits[0].new_text,
+            "project {\n  seed 1\n  sample_rate 8khz\n  output mono\n}\n"
+        );
+    }
+
+    #[test]
+    fn returns_no_edits_for_an_already_formatted_document() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            "project {\n  seed 1\n  sample_rate 8khz\n  output mono\n}\n",
+        );
+
+        assert!(formatting_edits(&source).is_empty());
+    }
+
+    #[test]
+    fn returns_no_edits_for_a_document_with_syntax_errors() {
+        let source = SourceText::new(SourceId(0), "test.sym", "project {");
+
+        assert!(formatting_edits(&source).is_empty());
     }
 }

@@ -1,6 +1,6 @@
 use symphra_compiler::hir::{
     Arrangement, Channels, Duration, InstrumentKind, Key, Meter, Mode, NodeId, Note, Pattern,
-    PatternOccurrence, PatternStep, PitchClass, Program, Project, Song,
+    PatternOccurrence, PatternStep, PitchClass, Program, Project, Rhythm, RhythmItem, Song,
 };
 use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::MusicalTime;
@@ -52,6 +52,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                     tonic: PitchClass::C,
                     mode: Mode::Major,
                 },
+                rhythms: Vec::new(),
                 patterns: vec![Pattern {
                     id: NodeId(1),
                     name: "melody".to_owned(),
@@ -88,6 +89,61 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                 arrangement: None,
             }],
         }
+    );
+}
+
+#[test]
+fn compile_should_lower_reusable_rhythms() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Rhythm" {
+  tempo 120bpm meter 4/4 key C major
+  rhythm pulse resolution 1/8 { hit rest hit }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("rhythm should compile");
+
+    assert_eq!(
+        program.songs[0].rhythms,
+        [Rhythm {
+            id: NodeId(1),
+            name: "pulse".to_owned(),
+            resolution: Duration {
+                numerator: 1,
+                denominator: 8,
+            },
+            items: vec![RhythmItem::Hit, RhythmItem::Rest, RhythmItem::Hit],
+        }]
+    );
+}
+
+#[test]
+fn compile_should_reject_invalid_rhythms() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Rhythm" {
+  tempo 120bpm meter 4/4 key C major
+  rhythm pulse resolution 0/8 { hit }
+  rhythm pulse resolution 1/8 { rest }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("invalid rhythms should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "rhythm name is declared more than once",
+            "rhythm resolution duration must be greater than zero",
+        ]
     );
 }
 

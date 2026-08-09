@@ -4,15 +4,16 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, Declaration, DegreeChoiceAlternative, InstrumentBody, PatternBody,
-    PatternDeclaration, ProjectDeclaration, ProjectStatement, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, StepItem,
+    ArrangementOccurrence, Declaration, DegreeChoiceAlternative, Identifier, InstrumentBody,
+    PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement, RhythmDeclaration,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
 };
 
 use crate::hir::{
     Arrangement, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key, Meter,
     Mode, NodeId, Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project,
-    Rest, SampleChoice, SampleTrigger, Song, WeightedNote, WeightedSampleSequence,
+    Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, WeightedNote,
+    WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -159,6 +160,8 @@ impl Compiler {
         let mut key_seen = false;
         let mut pattern_declarations = Vec::new();
         let mut pattern_names = HashSet::new();
+        let mut rhythm_defs = Vec::new();
+        let mut rhythm_names = HashSet::new();
         let mut instruments = Vec::new();
         let mut instrument_names = HashSet::new();
         let mut arrangement = None;
@@ -194,16 +197,16 @@ impl Compiler {
                     }
                 }
                 SongStatement::Instrument(instrument) => {
-                    if instrument_names.insert(instrument.name.text.as_str()) {
+                    if self.declare_name(&mut instrument_names, &instrument.name, "instrument") {
                         instruments.push((
                             instrument.name.text.as_str(),
                             self.instrument_kind(&instrument.body),
                         ));
-                    } else {
-                        self.error(
-                            "instrument name is declared more than once",
-                            instrument.name.span,
-                        );
+                    }
+                }
+                SongStatement::Rhythm(rhythm) => {
+                    if self.declare_name(&mut rhythm_names, &rhythm.name, "rhythm") {
+                        rhythm_defs.push(rhythm);
                     }
                 }
                 SongStatement::Arrangement { occurrences, span } => {
@@ -212,10 +215,8 @@ impl Compiler {
                     }
                 }
                 SongStatement::Pattern(pattern) => {
-                    if pattern_names.insert(pattern.name.text.as_str()) {
+                    if self.declare_name(&mut pattern_names, &pattern.name, "pattern") {
                         pattern_declarations.push(pattern);
-                    } else {
-                        self.error("pattern name is declared more than once", pattern.name.span);
                     }
                 }
             }
@@ -230,6 +231,7 @@ impl Compiler {
         if !key_seen {
             self.error("key is required", declaration.span);
         }
+        let rhythms = rhythm_defs.iter().filter_map(|r| self.rhythm(r)).collect();
         let patterns = pattern_declarations
             .iter()
             .map(|pattern| self.pattern(pattern, key.as_ref()))
@@ -244,11 +246,51 @@ impl Compiler {
                 tempo_bpm,
                 meter,
                 key,
+                rhythms,
                 patterns,
                 arrangement,
             }),
             _ => None,
         }
+    }
+
+    fn declare_name<'a>(
+        &mut self,
+        names: &mut HashSet<&'a str>,
+        name: &'a Identifier,
+        declaration: &str,
+    ) -> bool {
+        if names.insert(&name.text) {
+            true
+        } else {
+            self.error(
+                &format!("{declaration} name is declared more than once"),
+                name.span,
+            );
+            false
+        }
+    }
+
+    fn rhythm(&mut self, declaration: &RhythmDeclaration) -> Option<Rhythm> {
+        let resolution = self.duration(
+            declaration.resolution_numerator,
+            declaration.resolution_denominator,
+            declaration.span,
+            "rhythm resolution",
+        )?;
+        Some(Rhythm {
+            id: self.id(),
+            name: declaration.name.text.clone(),
+            resolution,
+            items: declaration
+                .items
+                .iter()
+                .map(|item| match item {
+                    symphra_syntax::ast::RhythmItem::Hit { .. } => RhythmItem::Hit,
+                    symphra_syntax::ast::RhythmItem::Rest { .. } => RhythmItem::Rest,
+                })
+                .collect(),
+        })
     }
 
     fn arrangement(

@@ -30,8 +30,23 @@ pub struct Song {
     pub tempo_bpm: f64,
     pub meter: Meter,
     pub key: Key,
+    pub rhythms: Vec<Rhythm>,
     pub patterns: Vec<Pattern>,
     pub arrangement: Option<Arrangement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rhythm {
+    pub id: NodeId,
+    pub name: String,
+    pub resolution: Duration,
+    pub items: Vec<RhythmItem>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RhythmItem {
+    Hit,
+    Rest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

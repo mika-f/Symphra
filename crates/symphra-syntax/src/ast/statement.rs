@@ -1,6 +1,21 @@
 use super::{FrequencyLiteral, Identifier, PatternDeclaration, QuotedString, RateLiteral};
 use crate::SourceSpan;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RhythmDeclaration {
+    pub name: Identifier,
+    pub resolution_numerator: u32,
+    pub resolution_denominator: u32,
+    pub items: Vec<RhythmItem>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RhythmItem {
+    Hit { span: SourceSpan },
+    Rest { span: SourceSpan },
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentDeclaration {
     pub name: Identifier,
@@ -62,6 +77,7 @@ pub enum SongStatement {
         span: SourceSpan,
     },
     Instrument(InstrumentDeclaration),
+    Rhythm(RhythmDeclaration),
     Arrangement {
         occurrences: Vec<ArrangementOccurrence>,
         span: SourceSpan,

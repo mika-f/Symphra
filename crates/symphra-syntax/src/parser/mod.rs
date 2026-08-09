@@ -4,8 +4,8 @@ use crate::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, Identifier,
     InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody,
     PatternDeclaration, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RestExpression, SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, StepItem, VelocityExpression,
+    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, StepItem, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -22,8 +22,15 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Meter,
     TokenKind::Key,
     TokenKind::Instrument,
+    TokenKind::Rhythm,
     TokenKind::Pattern,
     TokenKind::Arrangement,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+const RHYTHM_ITEM_START: &[TokenKind] = &[
+    TokenKind::Hit,
+    TokenKind::Rest,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -159,6 +166,7 @@ impl Parser {
                 TokenKind::Meter => self.meter(),
                 TokenKind::Key => self.key(),
                 TokenKind::Instrument => self.instrument().map(SongStatement::Instrument),
+                TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
                 TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
@@ -289,6 +297,49 @@ impl Parser {
             .span;
         Some(SongStatement::Arrangement {
             occurrences,
+            span: start.cover(end),
+        })
+    }
+
+    fn rhythm(&mut self) -> Option<RhythmDeclaration> {
+        let start = self.bump().span;
+        let name = self.identifier("expected a rhythm name")?;
+        self.required(
+            TokenKind::Resolution,
+            "expected `resolution` after rhythm name",
+        )?;
+        let numerator = self.required(TokenKind::Integer, "expected resolution numerator")?;
+        self.required(TokenKind::Slash, "expected `/` in rhythm resolution")?;
+        let denominator = self.required(TokenKind::Integer, "expected resolution denominator")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after rhythm resolution")?;
+        let mut items = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            let item = match self.current().kind {
+                TokenKind::Hit => Some(RhythmItem::Hit {
+                    span: self.bump().span,
+                }),
+                TokenKind::Rest => Some(RhythmItem::Rest {
+                    span: self.bump().span,
+                }),
+                _ => {
+                    self.error("expected `hit` or `rest` in rhythm");
+                    None
+                }
+            };
+            if let Some(item) = item {
+                items.push(item);
+            } else {
+                self.recover_to(RHYTHM_ITEM_START);
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close rhythm")?
+            .span;
+        Some(RhythmDeclaration {
+            name,
+            resolution_numerator: self.parse_u32(&numerator)?,
+            resolution_denominator: self.parse_u32(&denominator)?,
+            items,
             span: start.cover(end),
         })
     }

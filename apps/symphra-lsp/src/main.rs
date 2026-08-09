@@ -228,6 +228,14 @@ fn document_symbols(source: &SourceText) -> Vec<DocumentSymbol> {
                             instrument.name.span,
                             None,
                         ),
+                        SongStatement::Rhythm(rhythm) => symbol(
+                            source,
+                            rhythm.name.text.clone(),
+                            SymbolKind::FUNCTION,
+                            rhythm.span,
+                            rhythm.name.span,
+                            None,
+                        ),
                         _ => None,
                     })
                     .collect();
@@ -305,6 +313,7 @@ fn symbol(
 enum CompletionBlock {
     Project,
     Song,
+    Rhythm,
     Arrangement,
     Sequence,
     Steps,
@@ -360,6 +369,20 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         ]
     ) {
         &["octave"]
+    } else if matches!(
+        line_tokens,
+        [
+            Token {
+                kind: TokenKind::Rhythm,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            }
+        ]
+    ) {
+        &["resolution"]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
     } else if matches!(block, Some(CompletionBlock::Arrangement))
@@ -376,6 +399,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
                 "meter",
                 "key",
                 "instrument",
+                "rhythm",
                 "pattern",
                 "arrangement",
             ],
@@ -385,6 +409,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
             Some(CompletionBlock::ChoiceSequence) => &["sample"],
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
+            Some(CompletionBlock::Rhythm) => &["hit", "rest"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
         }
     } else {
@@ -455,6 +480,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
         match token.kind {
             TokenKind::Project => pending = Some(CompletionBlock::Project),
             TokenKind::Song => pending = Some(CompletionBlock::Song),
+            TokenKind::Rhythm => pending = Some(CompletionBlock::Rhythm),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => {
                 pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
@@ -492,6 +518,9 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Meter
                     | TokenKind::Key
                     | TokenKind::Instrument
+                    | TokenKind::Rhythm
+                    | TokenKind::Resolution
+                    | TokenKind::Hit
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
                     | TokenKind::Degree
@@ -651,6 +680,9 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Meter => "sets the song time signature, such as `4/4`.",
         TokenKind::Key => "sets the song tonic and mode, such as `C major`.",
         TokenKind::Instrument => "declares a named instrument.",
+        TokenKind::Rhythm => "declares a reusable hit-and-rest rhythm.",
+        TokenKind::Resolution => "sets the duration of each rhythm or step item.",
+        TokenKind::Hit => "marks an active position in a rhythm.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -660,7 +692,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Octave => "sets the base octave for a degree step.",
         TokenKind::Note => "adds a written pitch to a sequence.",
         TokenKind::Chord => "adds pitches that start and end together.",
-        TokenKind::Rest => "advances a sequence without producing sound.",
+        TokenKind::Rest => "marks silence without producing sound.",
         TokenKind::For => "introduces a duration, such as `1/4`.",
         TokenKind::Velocity => "sets note intensity from 0 to 127.",
         TokenKind::Sample => "selects a sample from the current sampler pack.",
@@ -784,6 +816,7 @@ mod tests {
                 "meter",
                 "key",
                 "instrument",
+                "rhythm",
                 "pattern",
                 "arrangement"
             ]
@@ -861,6 +894,32 @@ mod tests {
             ["velocity"]
         );
         assert!(labels("😀", 0, 1).is_empty());
+    }
+
+    #[test]
+    fn completes_rhythm_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels("song \"Test\" {\n  rhythm pulse ", 1, 15),
+            ["resolution"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  rhythm pulse resolution 1/8 {\n    ",
+                2,
+                4
+            ),
+            ["hit", "rest"]
+        );
     }
 
     #[test]

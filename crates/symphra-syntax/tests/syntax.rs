@@ -1,6 +1,6 @@
 use symphra_syntax::ast::{
-    Declaration, InstrumentBody, PatternBody, ProjectStatement, SequenceItem, SongStatement,
-    StepItem,
+    Declaration, InstrumentBody, PatternBody, ProjectStatement, RhythmItem, SequenceItem,
+    SongStatement, StepItem,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -345,6 +345,35 @@ fn parses_weighted_degree_choices() {
             .map(|alternative| (alternative.degree, alternative.octave, alternative.weight,))
             .collect::<Vec<_>>(),
         [(12, 5, 1), (11, 5, 3)]
+    );
+}
+
+#[test]
+fn parses_reusable_rhythms() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Rhythm\" { rhythm pulse resolution 1/8 { hit rest hit } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Rhythm(rhythm) = &song.statements[0] else {
+        panic!("statement should be a rhythm");
+    };
+
+    assert_eq!(
+        (
+            rhythm.name.text.as_str(),
+            rhythm.resolution_numerator,
+            rhythm.resolution_denominator,
+            rhythm
+                .items
+                .iter()
+                .map(|item| matches!(item, RhythmItem::Hit { .. }))
+                .collect::<Vec<_>>(),
+        ),
+        ("pulse", 1, 8, vec![true, false, true])
     );
 }
 

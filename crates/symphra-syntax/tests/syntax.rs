@@ -239,6 +239,7 @@ fn parses_sample_steps() {
             StepItem::Rest { .. } => None,
             StepItem::Degree { .. } => panic!("unexpected degree"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
+            StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -308,6 +309,42 @@ fn parses_weighted_sample_choices() {
             .map(|alternative| (alternative.indices.clone(), alternative.weight))
             .collect::<Vec<_>>(),
         [(vec![1], 1), (vec![3, 5], 2)]
+    );
+}
+
+#[test]
+fn parses_weighted_degree_choices() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Choice" {
+  pattern phrase = steps 1/8 {
+    choose {
+      degree 12 octave 5 weight 1
+      degree 11 octave 5 weight 3
+    }
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+    let StepItem::ChooseDegrees { alternatives, .. } = &items[0] else {
+        panic!("step should be a degree choice");
+    };
+
+    assert_eq!(
+        alternatives
+            .iter()
+            .map(|alternative| (alternative.degree, alternative.octave, alternative.weight,))
+            .collect::<Vec<_>>(),
+        [(12, 5, 1), (11, 5, 3)]
     );
 }
 

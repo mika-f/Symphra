@@ -118,17 +118,15 @@ fn schedule_track(
             hir::PatternStep::Chord(chord) => chord.duration,
             hir::PatternStep::Sample(sample) => sample.duration,
             hir::PatternStep::Choice(choice) => {
-                let alternative = choose_sample_sequence(
+                let alternative = choose_weighted(
                     &choice.alternatives,
                     seed,
                     occurrence.unwrap_or(pattern.id),
                     choice.id,
+                    |alternative| alternative.weight,
                 )?;
                 for sample in &alternative.samples {
-                    let duration = MusicalTime::new(
-                        u64::from(sample.duration.numerator),
-                        u64::from(sample.duration.denominator),
-                    )?;
+                    let duration = musical_time(sample.duration)?;
                     samples.push(SampleEvent {
                         id: occurrence.map_or_else(
                             || id(sample.id),
@@ -143,12 +141,16 @@ fn schedule_track(
                 }
                 continue;
             }
+            hir::PatternStep::DegreeChoice(choice) => {
+                let (event, duration) =
+                    degree_choice_event(choice, seed, pattern.id, cursor, occurrence)?;
+                notes.push(event);
+                cursor = cursor.checked_add(duration)?;
+                continue;
+            }
             hir::PatternStep::Rest(rest) => rest.duration,
         };
-        let duration = MusicalTime::new(
-            u64::from(written_duration.numerator),
-            u64::from(written_duration.denominator),
-        )?;
+        let duration = musical_time(written_duration)?;
         match step {
             hir::PatternStep::Note(note) => notes.push(note_event(
                 note.id,
@@ -180,7 +182,9 @@ fn schedule_track(
                 index: sample.index,
                 velocity: sample.velocity,
             }),
-            hir::PatternStep::Choice(_) => unreachable!("choices are scheduled above"),
+            hir::PatternStep::Choice(_) | hir::PatternStep::DegreeChoice(_) => {
+                unreachable!("choices are scheduled above")
+            }
             hir::PatternStep::Rest(_) => {}
         }
         cursor = cursor.checked_add(duration)?;
@@ -208,15 +212,52 @@ fn schedule_track(
     ))
 }
 
-fn choose_sample_sequence(
-    alternatives: &[hir::WeightedSampleSequence],
+fn degree_choice_event(
+    choice: &hir::DegreeChoice,
+    seed: u64,
+    pattern: hir::NodeId,
+    cursor: MusicalTime,
+    occurrence: Option<hir::NodeId>,
+) -> Result<(NoteEvent, MusicalTime), ScheduleError> {
+    let alternative = choose_weighted(
+        &choice.alternatives,
+        seed,
+        occurrence.unwrap_or(pattern),
+        choice.id,
+        |alternative| alternative.weight,
+    )?;
+    let note = alternative.note;
+    let duration = musical_time(note.duration)?;
+    Ok((
+        note_event(
+            note.id,
+            note.midi_pitch,
+            note.velocity,
+            duration,
+            cursor,
+            occurrence,
+        ),
+        duration,
+    ))
+}
+
+fn musical_time(duration: hir::Duration) -> Result<MusicalTime, TimeError> {
+    MusicalTime::new(
+        u64::from(duration.numerator),
+        u64::from(duration.denominator),
+    )
+}
+
+fn choose_weighted<T>(
+    alternatives: &[T],
     seed: u64,
     track: hir::NodeId,
     choice: hir::NodeId,
-) -> Result<&hir::WeightedSampleSequence, ScheduleError> {
+    weight: impl Fn(&T) -> u32,
+) -> Result<&T, ScheduleError> {
     let total = alternatives.iter().try_fold(0u64, |total, alternative| {
         total
-            .checked_add(u64::from(alternative.weight))
+            .checked_add(u64::from(weight(alternative)))
             .ok_or(ScheduleError::ChoiceWeightOverflow)
     })?;
     if total == 0 {
@@ -226,11 +267,11 @@ fn choose_sample_sequence(
     alternatives
         .iter()
         .find(|alternative| {
-            let weight = u64::from(alternative.weight);
-            if roll < weight {
+            let alternative_weight = u64::from(weight(alternative));
+            if roll < alternative_weight {
                 true
             } else {
-                roll -= weight;
+                roll -= alternative_weight;
                 false
             }
         })

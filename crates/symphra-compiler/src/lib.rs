@@ -4,15 +4,15 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, Declaration, InstrumentBody, PatternBody, PatternDeclaration,
-    ProjectDeclaration, ProjectStatement, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    StepItem,
+    ArrangementOccurrence, Declaration, DegreeChoiceAlternative, InstrumentBody, PatternBody,
+    PatternDeclaration, ProjectDeclaration, ProjectStatement, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, StepItem,
 };
 
 use crate::hir::{
-    Arrangement, Channels, Chord, ChordNote, Duration, InstrumentKind, Key, Meter, Mode, NodeId,
-    Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest,
-    SampleChoice, SampleTrigger, Song, WeightedSampleSequence,
+    Arrangement, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key, Meter,
+    Mode, NodeId, Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project,
+    Rest, SampleChoice, SampleTrigger, Song, WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -515,8 +515,53 @@ impl Compiler {
                         alternatives,
                     }))
                 }
+                StepItem::ChooseDegrees { alternatives, span } => Some(PatternStep::DegreeChoice(
+                    self.degree_choice(alternatives, *span, duration, key),
+                )),
             })
             .collect()
+    }
+
+    fn degree_choice(
+        &mut self,
+        alternatives: &[DegreeChoiceAlternative],
+        span: SourceSpan,
+        duration: Duration,
+        key: Option<&Key>,
+    ) -> DegreeChoice {
+        if alternatives.is_empty() {
+            self.error("choose must contain at least one degree", span);
+        }
+        let alternatives = alternatives
+            .iter()
+            .filter_map(|alternative| {
+                if alternative.weight == 0 {
+                    self.error("choice weight must be greater than zero", alternative.span);
+                    return None;
+                }
+                key.and_then(|key| {
+                    self.degree_pitch(
+                        key.tonic,
+                        alternative.degree,
+                        alternative.octave,
+                        alternative.span,
+                    )
+                })
+                .map(|midi_pitch| WeightedNote {
+                    note: Note {
+                        id: self.id(),
+                        midi_pitch,
+                        duration,
+                        velocity: DEFAULT_VELOCITY,
+                    },
+                    weight: alternative.weight,
+                })
+            })
+            .collect();
+        DegreeChoice {
+            id: self.id(),
+            alternatives,
+        }
     }
 
     fn degree_pitch(

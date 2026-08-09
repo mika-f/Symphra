@@ -381,7 +381,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
             ],
             Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
             Some(CompletionBlock::Steps) => &["degree", "sample", "rest", "choose"],
-            Some(CompletionBlock::Choice) => &["sample", "sequence"],
+            Some(CompletionBlock::Choice) => &["degree", "sample", "sequence"],
             Some(CompletionBlock::ChoiceSequence) => &["sample"],
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
@@ -830,7 +830,7 @@ mod tests {
                 3,
                 4
             ),
-            ["sample", "sequence"]
+            ["degree", "sample", "sequence"]
         );
         assert_eq!(
             labels(

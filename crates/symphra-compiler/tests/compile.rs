@@ -619,6 +619,47 @@ song "Choice" {
 }
 
 #[test]
+fn schedule_should_choose_weighted_degrees_deterministically() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 20260809 sample_rate 8khz output mono }
+song "Degree choice" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = steps 1/8 {
+    choose {
+      degree 12 octave 4 weight 1
+      degree 11 octave 4 weight 3
+    }
+  }
+  arrangement { phrase phrase }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("weighted degrees should compile");
+    let first = schedule(&program).expect("weighted degrees should schedule");
+    let second = schedule(&program).expect("weighted degrees should schedule again");
+    let first_pitches = first.songs[0]
+        .tracks
+        .iter()
+        .map(|track| track.notes[0].midi_pitch)
+        .collect::<Vec<_>>();
+    let second_pitches = second.songs[0]
+        .tracks
+        .iter()
+        .map(|track| track.notes[0].midi_pitch)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        (
+            first_pitches.as_slice(),
+            first_pitches.iter().all(|pitch| [71, 72].contains(pitch))
+        ),
+        (second_pitches.as_slice(), true)
+    );
+}
+
+#[test]
 fn schedule_should_expand_a_chosen_sample_sequence() {
     let parsed = parse(
         SourceId(0),
@@ -698,6 +739,7 @@ song "Invalid choices" {
     choose {}
     choose { sample 1 weight 0 }
     choose { sequence weight 1 {} }
+    choose { degree 0 octave 4 weight 0 }
   }
 }
 "#,
@@ -714,6 +756,7 @@ song "Invalid choices" {
             "choose must contain at least one sample",
             "choice weight must be greater than zero",
             "choice sequence must contain at least one sample",
+            "choice weight must be greater than zero",
         ]
     );
 }

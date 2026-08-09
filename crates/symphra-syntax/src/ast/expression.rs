@@ -40,6 +40,18 @@ pub enum StepItem {
         alternatives: Vec<SampleChoiceAlternative>,
         span: SourceSpan,
     },
+    ChooseDegrees {
+        alternatives: Vec<DegreeChoiceAlternative>,
+        span: SourceSpan,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DegreeChoiceAlternative {
+    pub degree: u32,
+    pub octave: u32,
+    pub weight: u32,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

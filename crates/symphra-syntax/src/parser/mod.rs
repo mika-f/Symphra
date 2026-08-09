@@ -1,11 +1,11 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChordExpression, Declaration, Identifier, InstrumentBody,
-    InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody, PatternDeclaration,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression,
-    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
-    VelocityExpression,
+    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, Identifier,
+    InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody,
+    PatternDeclaration, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RestExpression, SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, StepItem, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -363,7 +363,7 @@ impl Parser {
                 TokenKind::Rest => Some(StepItem::Rest {
                     span: self.bump().span,
                 }),
-                TokenKind::Choose => self.sample_choice(),
+                TokenKind::Choose => self.choice(),
                 _ => {
                     self.error("expected a degree, sample, rest, or choose in steps");
                     None
@@ -402,9 +402,12 @@ impl Parser {
         })
     }
 
-    fn sample_choice(&mut self) -> Option<StepItem> {
+    fn choice(&mut self) -> Option<StepItem> {
         let start = self.bump().span;
         self.required(TokenKind::LeftBrace, "expected `{` after `choose`")?;
+        if self.at(TokenKind::Degree) {
+            return self.degree_choice(start);
+        }
         let mut alternatives = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             let alternative_start = self.current().span;
@@ -472,6 +475,40 @@ impl Parser {
             .required(TokenKind::RightBrace, "expected `}` to close choose")?
             .span;
         Some(StepItem::Choose {
+            alternatives,
+            span: start.cover(end),
+        })
+    }
+
+    fn degree_choice(&mut self, start: SourceSpan) -> Option<StepItem> {
+        let mut alternatives = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            let alternative_start =
+                self.required(TokenKind::Degree, "expected `degree` in choose")?;
+            let degree = self.required(TokenKind::Integer, "expected degree offset")?;
+            self.required(TokenKind::Octave, "expected `octave` after degree")?;
+            let octave = self.required(TokenKind::Integer, "expected octave number")?;
+            let weight = if self.at(TokenKind::Weight) {
+                self.bump();
+                self.required(TokenKind::Integer, "expected choice weight")?
+            } else {
+                Token {
+                    kind: TokenKind::Integer,
+                    text: "1".to_owned(),
+                    span: octave.span,
+                }
+            };
+            alternatives.push(DegreeChoiceAlternative {
+                degree: self.parse_u32(&degree)?,
+                octave: self.parse_u32(&octave)?,
+                weight: self.parse_u32(&weight)?,
+                span: alternative_start.span.cover(weight.span),
+            });
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close choose")?
+            .span;
+        Some(StepItem::ChooseDegrees {
             alternatives,
             span: start.cover(end),
         })

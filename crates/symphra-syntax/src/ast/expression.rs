@@ -1,4 +1,4 @@
-use super::Identifier;
+use super::{Identifier, QuotedString};
 use crate::SourceSpan;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +31,10 @@ pub enum StepItem {
     },
     Sample {
         index: u32,
+        span: SourceSpan,
+    },
+    Drum {
+        name: QuotedString,
         span: SourceSpan,
     },
     Rest {

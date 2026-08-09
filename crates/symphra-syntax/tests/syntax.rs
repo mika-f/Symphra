@@ -208,6 +208,61 @@ fn parses_sampler_packs() {
 }
 
 #[test]
+fn parses_drum_machine_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Drums" {
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::DrumMachine { bank, .. } = &instrument.body else {
+        panic!("instrument should be a drum machine");
+    };
+
+    assert_eq!(bank.value, "RolandTR909");
+}
+
+#[test]
+fn parses_drum_steps() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Drums" {
+  pattern kit = steps 1/8 { drum "bd" rest drum "hh" }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+
+    let names = items
+        .iter()
+        .map(|item| match item {
+            StepItem::Drum { name, .. } => Some(name.value.as_str()),
+            StepItem::Rest { .. } => None,
+            StepItem::Degree { .. } => panic!("unexpected degree"),
+            StepItem::Sample { .. } => panic!("unexpected sample"),
+            StepItem::Choose { .. } => panic!("unexpected choice"),
+            StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, vec![Some("bd"), None, Some("hh")]);
+}
+
+#[test]
 fn parses_sample_steps() {
     let parsed = parse(
         SourceId(0),
@@ -238,6 +293,7 @@ fn parses_sample_steps() {
             StepItem::Sample { index, .. } => Some(*index),
             StepItem::Rest { .. } => None,
             StepItem::Degree { .. } => panic!("unexpected degree"),
+            StepItem::Drum { .. } => panic!("unexpected drum"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
         })
@@ -455,7 +511,11 @@ fn parses_tracks_with_rhythm_triggers() {
                 else {
                     panic!("chance transform should be a transpose");
                 };
-                (chance.percent, transpose.semitones, transpose.unit.text.as_str())
+                (
+                    chance.percent,
+                    transpose.semitones,
+                    transpose.unit.text.as_str(),
+                )
             }),
         ),
         (Some(1.50), Some((15, 12, "st")))
@@ -499,7 +559,11 @@ fn parses_chance_retrigger() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let chance = track.play.chance.as_ref().expect("chance should be present");
+    let chance = track
+        .play
+        .chance
+        .as_ref()
+        .expect("chance should be present");
 
     assert_eq!(chance.percent, 40);
     assert!(matches!(
@@ -521,7 +585,11 @@ fn parses_chance_speed() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let chance = track.play.chance.as_ref().expect("chance should be present");
+    let chance = track
+        .play
+        .chance
+        .as_ref()
+        .expect("chance should be present");
 
     assert_eq!(chance.percent, 15);
     assert!(matches!(

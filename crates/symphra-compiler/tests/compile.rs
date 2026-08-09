@@ -3,7 +3,7 @@ use symphra_compiler::hir::{
     PatternOccurrence, PatternStep, PitchClass, Program, Project, Rhythm, RhythmItem, Song,
 };
 use symphra_compiler::{ScheduleError, compile, schedule};
-use symphra_score::MusicalTime;
+use symphra_score::{MusicalTime, SampleSelector};
 use symphra_syntax::{SourceId, parse};
 
 const EXAMPLE: &str = r#"
@@ -635,7 +635,7 @@ song "Lead" {
 
     assert_eq!(
         diagnostics[0].message,
-        "chance retrigger is only supported for sampler tracks"
+        "chance retrigger is only supported for sampler or drum machine tracks"
     );
 }
 
@@ -660,7 +660,7 @@ song "Lead" {
 
     assert_eq!(
         diagnostics[0].message,
-        "chance speed is only supported for sampler tracks"
+        "chance speed is only supported for sampler or drum machine tracks"
     );
 }
 
@@ -1134,7 +1134,7 @@ song "Invalid instruments" {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         [
-            "instrument kind must be `sine`, `triangle`, `sampled`, or `sampler`",
+            "instrument kind must be `sine`, `triangle`, `sampled`, `sampler`, or `drum_machine`",
             "instrument name is declared more than once",
             "arrangement references an unknown instrument",
         ]
@@ -1222,7 +1222,7 @@ song "Sampler" {
         score.songs[0].tracks[0]
             .samples
             .iter()
-            .map(|event| (event.index, event.start))
+            .map(|event| (sample_index(&event.selector), event.start))
             .collect::<Vec<_>>(),
         vec![
             (1, MusicalTime::ZERO),
@@ -1232,6 +1232,90 @@ song "Sampler" {
             ),
         ]
     );
+}
+
+fn sample_index(selector: &SampleSelector) -> u32 {
+    let SampleSelector::Index(index) = selector else {
+        panic!("sample event should use an index selector");
+    };
+    *index
+}
+
+fn sample_name(selector: &SampleSelector) -> &str {
+    let SampleSelector::Named(name) = selector else {
+        panic!("sample event should use a named selector");
+    };
+    name
+}
+
+#[test]
+fn schedule_should_create_sample_events_from_drum_steps() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  pattern kit = steps 1/8 { drum "bd" rest drum "hh" }
+  arrangement { kit with tr909 }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("drum steps should compile");
+
+    let score = schedule(&program).expect("drum steps should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .map(|event| (sample_name(&event.selector), event.start))
+            .collect::<Vec<_>>(),
+        vec![
+            ("bd", MusicalTime::ZERO),
+            (
+                "hh",
+                MusicalTime::new(1, 4).expect("quarter note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_empty_drum_bank_name() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Empty bank" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty bank name should fail");
+
+    assert_eq!(diagnostics[0].message, "drum bank name must not be empty");
+}
+
+#[test]
+fn compile_should_reject_empty_drum_voice_name() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Empty voice" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1/8 { drum "" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty voice name should fail");
+
+    assert_eq!(diagnostics[0].message, "drum voice name must not be empty");
 }
 
 #[test]
@@ -1317,7 +1401,7 @@ song "Lead" {
 
     assert_eq!(
         diagnostics[0].message,
-        "speed is only supported for sampler tracks"
+        "speed is only supported for sampler or drum machine tracks"
     );
 }
 
@@ -1434,12 +1518,12 @@ song "Choice" {
     let first_indices = first.songs[0]
         .tracks
         .iter()
-        .map(|track| track.samples[0].index)
+        .map(|track| sample_index(&track.samples[0].selector))
         .collect::<Vec<_>>();
     let second_indices = second.songs[0]
         .tracks
         .iter()
-        .map(|track| track.samples[0].index)
+        .map(|track| sample_index(&track.samples[0].selector))
         .collect::<Vec<_>>();
 
     assert_eq!(
@@ -1516,7 +1600,7 @@ song "Choice sequence" {
         track
             .samples
             .iter()
-            .map(|sample| (sample.index, sample.start))
+            .map(|sample| (sample_index(&sample.selector), sample.start))
             .collect::<Vec<_>>(),
         [
             (4, MusicalTime::ZERO),

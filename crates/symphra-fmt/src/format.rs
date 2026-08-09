@@ -379,6 +379,20 @@ fn print_instrument(ctx: &mut Ctx<'_>, decl: &InstrumentDeclaration) {
                 |ctx, pack| ctx.printer.line(format!("pack {}", ctx.text(pack.span))),
             );
         }
+        InstrumentBody::DrumMachine { bank, .. } => {
+            let header = format!("instrument {name} = drum_machine");
+            let items = [bank];
+            print_block(
+                ctx,
+                &header,
+                decl.span,
+                &items,
+                |bank: &QuotedString| bank.span,
+                |_| 0,
+                Reorder::No,
+                |ctx, bank| ctx.printer.line(format!("bank {}", ctx.text(bank.span))),
+            );
+        }
     }
 }
 
@@ -559,6 +573,7 @@ fn step_item_span(item: &StepItem) -> SourceSpan {
     match item {
         StepItem::Degree { span, .. }
         | StepItem::Sample { span, .. }
+        | StepItem::Drum { span, .. }
         | StepItem::Rest { span }
         | StepItem::Choose { span, .. }
         | StepItem::ChooseDegrees { span, .. } => *span,
@@ -655,6 +670,7 @@ fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
             ctx.printer.line(format!("degree {degree} octave {octave}"));
         }
         StepItem::Sample { index, .. } => ctx.printer.line(format!("sample {index}")),
+        StepItem::Drum { name, .. } => ctx.printer.line(format!("drum {}", ctx.text(name.span))),
         StepItem::Rest { .. } => ctx.printer.line("rest"),
         StepItem::Choose { alternatives, span } => {
             let items: Vec<&SampleChoiceAlternative> = alternatives.iter().collect();

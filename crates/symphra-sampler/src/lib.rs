@@ -30,6 +30,11 @@ pub fn packed_sample_source(pack: &str, index: u32) -> String {
     format!("{pack}/{index}.wav")
 }
 
+#[must_use]
+pub fn named_sample_source(bank: &str, name: &str) -> String {
+    format!("{bank}/{name}.wav")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum DecodeError {
     #[error("sample is not a RIFF/WAVE file")]

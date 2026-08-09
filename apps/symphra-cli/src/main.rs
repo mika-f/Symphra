@@ -8,8 +8,9 @@ use std::process::ExitCode;
 
 use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
 use symphra_engine::{
-    DecodeError, EngineError, SampleLibrary, Score, SourceId, SourceSpan, SourceText,
-    compile_source, decode_wav, packed_sample_source, render_score,
+    DecodeError, EngineError, SampleLibrary, SampleSelector, Score, SourceId, SourceSpan,
+    SourceText, compile_source, decode_wav, named_sample_source, packed_sample_source,
+    render_score,
 };
 use symphra_export::{ExportError, encode_wav};
 
@@ -62,11 +63,15 @@ fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
 
 fn load_samples(score: &Score, base: &Path) -> Result<SampleLibrary, CliError> {
     let mut samples = SampleLibrary::default();
-    let sources = score.sampled_sources().map(Cow::Borrowed).chain(
-        score
-            .packed_samples()
-            .map(|(pack, index)| Cow::Owned(packed_sample_source(pack, index))),
-    );
+    let sources = score
+        .sampled_sources()
+        .map(Cow::Borrowed)
+        .chain(score.packed_samples().map(|(container, selector)| {
+            Cow::Owned(match selector {
+                SampleSelector::Index(index) => packed_sample_source(container, *index),
+                SampleSelector::Named(name) => named_sample_source(container, name),
+            })
+        }));
     for source in sources {
         if samples.get(&source).is_some() {
             continue;

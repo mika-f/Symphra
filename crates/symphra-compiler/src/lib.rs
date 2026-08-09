@@ -5,16 +5,16 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration,
-    ProjectDeclaration, ProjectStatement, RhythmDeclaration, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
+    Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration, ProjectDeclaration,
+    ProjectStatement, RhythmDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, Duration,
     InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
-    PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song,
-    Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
+    PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleSelector,
+    SampleTrigger, Song, Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -483,10 +483,16 @@ impl Compiler {
             self.error("speed must be finite and greater than zero", span);
             return None;
         }
-        if instrument
-            .is_some_and(|instrument| !matches!(instrument, InstrumentKind::Sampler { .. }))
-        {
-            self.error("speed is only supported for sampler tracks", span);
+        if instrument.is_some_and(|instrument| {
+            !matches!(
+                instrument,
+                InstrumentKind::Sampler { .. } | InstrumentKind::DrumMachine { .. }
+            )
+        }) {
+            self.error(
+                "speed is only supported for sampler or drum machine tracks",
+                span,
+            );
             return None;
         }
         Some(speed)
@@ -556,10 +562,14 @@ impl Compiler {
             return Err(expression.span);
         }
         let sampler_only = |compiler: &mut Self, span: SourceSpan, what: &str| {
-            if instrument.is_some_and(|instrument| !matches!(instrument, InstrumentKind::Sampler { .. }))
-            {
+            if instrument.is_some_and(|instrument| {
+                !matches!(
+                    instrument,
+                    InstrumentKind::Sampler { .. } | InstrumentKind::DrumMachine { .. }
+                )
+            }) {
                 compiler.error(
-                    &format!("chance {what} is only supported for sampler tracks"),
+                    &format!("chance {what} is only supported for sampler or drum machine tracks"),
                     span,
                 );
                 return Err(span);
@@ -749,7 +759,7 @@ impl Compiler {
                 "triangle" => Some(InstrumentKind::Triangle),
                 _ => {
                     self.error(
-                        "instrument kind must be `sine`, `triangle`, `sampled`, or `sampler`",
+                        "instrument kind must be `sine`, `triangle`, `sampled`, `sampler`, or `drum_machine`",
                         kind.span,
                     );
                     None
@@ -774,6 +784,16 @@ impl Compiler {
                 } else {
                     Some(InstrumentKind::Sampler {
                         pack: pack.value.clone(),
+                    })
+                }
+            }
+            InstrumentBody::DrumMachine { bank, .. } => {
+                if bank.value.is_empty() {
+                    self.error("drum bank name must not be empty", bank.span);
+                    None
+                } else {
+                    Some(InstrumentKind::DrumMachine {
+                        bank: bank.value.clone(),
                     })
                 }
             }
@@ -906,10 +926,23 @@ impl Compiler {
                     }),
                 StepItem::Sample { index, .. } => Some(PatternStep::Sample(SampleTrigger {
                     id: self.id(),
-                    index: *index,
+                    selector: SampleSelector::Index(*index),
                     duration,
                     velocity: DEFAULT_VELOCITY,
                 })),
+                StepItem::Drum { name, span } => {
+                    if name.value.is_empty() {
+                        self.error("drum voice name must not be empty", *span);
+                        None
+                    } else {
+                        Some(PatternStep::Sample(SampleTrigger {
+                            id: self.id(),
+                            selector: SampleSelector::Named(name.value.clone()),
+                            duration,
+                            velocity: DEFAULT_VELOCITY,
+                        }))
+                    }
+                }
                 StepItem::Rest { .. } => Some(PatternStep::Rest(Rest {
                     id: self.id(),
                     duration,
@@ -941,7 +974,7 @@ impl Compiler {
                                         .iter()
                                         .map(|index| SampleTrigger {
                                             id: self.id(),
-                                            index: *index,
+                                            selector: SampleSelector::Index(*index),
                                             duration,
                                             velocity: DEFAULT_VELOCITY,
                                         })

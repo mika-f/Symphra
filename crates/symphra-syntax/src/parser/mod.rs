@@ -48,6 +48,7 @@ const SEQUENCE_ITEM_START: &[TokenKind] = &[
 const STEP_ITEM_START: &[TokenKind] = &[
     TokenKind::Degree,
     TokenKind::Sample,
+    TokenKind::Drum,
     TokenKind::Choose,
     TokenKind::Rest,
     TokenKind::RightBrace,
@@ -257,14 +258,30 @@ impl Parser {
                 pack,
                 span: sampler_start.cover(end.span),
             }
+        } else if self.at(TokenKind::DrumMachine) {
+            let drum_machine_start = self.bump().span;
+            self.required(TokenKind::LeftBrace, "expected `{` after `drum_machine`")?;
+            self.required(
+                TokenKind::Bank,
+                "expected `bank` in drum machine instrument",
+            )?;
+            let bank = self.string("expected a quoted drum bank name")?;
+            let end = self.required(
+                TokenKind::RightBrace,
+                "expected `}` to close drum machine instrument",
+            )?;
+            InstrumentBody::DrumMachine {
+                bank,
+                span: drum_machine_start.cover(end.span),
+            }
         } else {
             InstrumentBody::Builtin(self.identifier("expected an instrument kind")?)
         };
         let span = match &body {
             InstrumentBody::Builtin(kind) => start.cover(kind.span),
-            InstrumentBody::Sampled { span, .. } | InstrumentBody::Sampler { span, .. } => {
-                start.cover(*span)
-            }
+            InstrumentBody::Sampled { span, .. }
+            | InstrumentBody::Sampler { span, .. }
+            | InstrumentBody::DrumMachine { span, .. } => start.cover(*span),
         };
         Some(InstrumentDeclaration { name, body, span })
     }
@@ -816,12 +833,20 @@ impl Parser {
                             })
                         })
                 }
+                TokenKind::Drum => {
+                    let drum = self.bump().span;
+                    self.string("expected a quoted drum voice name")
+                        .map(|name| StepItem::Drum {
+                            span: drum.cover(name.span),
+                            name,
+                        })
+                }
                 TokenKind::Rest => Some(StepItem::Rest {
                     span: self.bump().span,
                 }),
                 TokenKind::Choose => self.choice(),
                 _ => {
-                    self.error("expected a degree, sample, rest, or choose in steps");
+                    self.error("expected a degree, sample, drum, rest, or choose in steps");
                     None
                 }
             };

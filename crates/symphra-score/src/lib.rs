@@ -110,6 +110,7 @@ pub enum InstrumentKind {
     Triangle,
     Sampled { source: String, root_midi: u8 },
     Sampler { pack: String },
+    DrumMachine { bank: String },
 }
 
 impl Score {
@@ -121,20 +122,25 @@ impl Score {
                 InstrumentKind::Sampled { source, .. } => Some(source.as_str()),
                 InstrumentKind::Sine
                 | InstrumentKind::Triangle
-                | InstrumentKind::Sampler { .. } => None,
+                | InstrumentKind::Sampler { .. }
+                | InstrumentKind::DrumMachine { .. } => None,
             })
     }
 
-    pub fn packed_samples(&self) -> impl Iterator<Item = (&str, u32)> {
+    pub fn packed_samples(&self) -> impl Iterator<Item = (&str, &SampleSelector)> {
         self.songs
             .iter()
             .flat_map(|song| &song.tracks)
             .flat_map(|track| {
+                let container = match &track.instrument {
+                    InstrumentKind::Sampler { pack } => Some(pack.as_str()),
+                    InstrumentKind::DrumMachine { bank } => Some(bank.as_str()),
+                    InstrumentKind::Sine
+                    | InstrumentKind::Triangle
+                    | InstrumentKind::Sampled { .. } => None,
+                };
                 track.samples.iter().filter_map(move |sample| {
-                    let InstrumentKind::Sampler { pack } = &track.instrument else {
-                        return None;
-                    };
-                    Some((pack.as_str(), sample.index))
+                    container.map(|container| (container, &sample.selector))
                 })
             })
     }
@@ -149,14 +155,20 @@ pub struct NoteEvent {
     pub velocity: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SampleEvent {
     pub id: EntityId,
     pub start: MusicalTime,
     pub duration: MusicalTime,
-    pub index: u32,
+    pub selector: SampleSelector,
     pub velocity: u8,
     pub speed: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SampleSelector {
+    Index(u32),
+    Named(String),
 }
 
 /// An exact fraction of a whole note.

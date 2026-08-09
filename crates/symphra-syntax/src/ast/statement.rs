@@ -150,6 +150,10 @@ pub enum InstrumentBody {
         pack: QuotedString,
         span: SourceSpan,
     },
+    DrumMachine {
+        bank: QuotedString,
+        span: SourceSpan,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -111,6 +111,7 @@ pub enum InstrumentKind {
     Triangle,
     Sampled { source: String, root_midi: u8 },
     Sampler { pack: String },
+    DrumMachine { bank: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,12 +184,18 @@ pub struct WeightedSampleSequence {
     pub weight: u32,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SampleTrigger {
     pub id: NodeId,
-    pub index: u32,
+    pub selector: SampleSelector,
     pub duration: Duration,
     pub velocity: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SampleSelector {
+    Index(u32),
+    Named(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

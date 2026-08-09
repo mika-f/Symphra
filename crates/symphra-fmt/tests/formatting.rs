@@ -249,6 +249,29 @@ fn formats_chance_speed() {
 }
 
 #[test]
+fn formats_drum_machine_instrument_and_drum_steps() {
+    let input = r#"song "S" {
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  pattern kit = steps 1/8 { drum "bd" rest drum "hh" }
+}
+"#;
+
+    let expected = r#"song "S" {
+  instrument tr909 = drum_machine {
+    bank "RolandTR909"
+  }
+  pattern kit = steps 1/8 {
+    drum "bd"
+    rest
+    drum "hh"
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_steps_patterns_with_degree_and_sample_choices() {
     let input = r#"project { seed 1 sample_rate 8khz output mono }
 song "S" {

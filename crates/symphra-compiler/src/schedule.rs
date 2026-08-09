@@ -1,6 +1,6 @@
 use symphra_score::{
     Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass,
-    SampleEvent, Score, Song, TimeError, Track,
+    SampleEvent, SampleSelector, Score, Song, TimeError, Track,
 };
 
 use crate::hir;
@@ -249,7 +249,9 @@ fn apply_chance_retrigger(
                 id,
                 start,
                 duration: attack_duration,
-                ..sample
+                selector: sample.selector.clone(),
+                velocity: sample.velocity,
+                speed: sample.speed,
             });
             start = start.checked_add(attack_duration)?;
         }
@@ -328,7 +330,7 @@ fn apply_repeat(track: &mut Track, count: u16) -> Result<(), ScheduleError> {
             track.notes.push(event);
         }
         for index in 0..sample_count {
-            let mut event = track.samples[index];
+            let mut event = track.samples[index].clone();
             event.id = repeated_event_id(track.id, &mut next_event)?;
             event.start = event.start.checked_add(offset)?;
             track.samples.push(event);
@@ -495,7 +497,7 @@ fn schedule_track(
                         ),
                         start: cursor,
                         duration,
-                        index: sample.index,
+                        selector: score_sample_selector(&sample.selector),
                         velocity: sample.velocity,
                         speed: 1.0,
                     });
@@ -541,7 +543,7 @@ fn schedule_track(
                 ),
                 start: cursor,
                 duration,
-                index: sample.index,
+                selector: score_sample_selector(&sample.selector),
                 velocity: sample.velocity,
                 speed: 1.0,
             }),
@@ -576,6 +578,16 @@ fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
             root_midi: *root_midi,
         },
         hir::InstrumentKind::Sampler { pack } => InstrumentKind::Sampler { pack: pack.clone() },
+        hir::InstrumentKind::DrumMachine { bank } => {
+            InstrumentKind::DrumMachine { bank: bank.clone() }
+        }
+    }
+}
+
+fn score_sample_selector(selector: &hir::SampleSelector) -> SampleSelector {
+    match selector {
+        hir::SampleSelector::Index(index) => SampleSelector::Index(*index),
+        hir::SampleSelector::Named(name) => SampleSelector::Named(name.clone()),
     }
 }
 

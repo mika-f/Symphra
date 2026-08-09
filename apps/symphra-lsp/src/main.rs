@@ -362,6 +362,7 @@ enum CompletionBlock {
     ChoiceSequence,
     Sampled,
     Sampler,
+    DrumMachine,
     Chance,
     Other,
 }
@@ -405,7 +406,7 @@ fn completion_labels(
 ) -> &'static [&'static str] {
     if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal) {
         if matches!(line_tokens.first(), Some(token) if token.kind == TokenKind::Instrument) {
-            &["sine", "triangle", "sampled", "sampler"]
+            &["sine", "triangle", "sampled", "sampler", "drum_machine"]
         } else {
             &["sequence", "steps"]
         }
@@ -476,32 +477,37 @@ fn completion_labels(
     {
         &["with"]
     } else if completion_statement_start(line_tokens) {
-        match block {
-            None => &["project", "song"],
-            Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
-            Some(CompletionBlock::Song) => &[
-                "tempo",
-                "meter",
-                "key",
-                "instrument",
-                "rhythm",
-                "track",
-                "pattern",
-                "arrangement",
-            ],
-            Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
-            Some(CompletionBlock::Steps) => &["degree", "sample", "rest", "choose"],
-            Some(CompletionBlock::Choice) => &["degree", "sample", "sequence"],
-            Some(CompletionBlock::ChoiceSequence) => &["sample"],
-            Some(CompletionBlock::Sampled) => &["source", "root"],
-            Some(CompletionBlock::Sampler) => &["pack"],
-            Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
-            Some(CompletionBlock::Rhythm) => &["hit", "rest"],
-            Some(CompletionBlock::Track) => &["instrument", "volume", "play"],
-            Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
-        }
+        completion_block_labels(block)
     } else {
         &[]
+    }
+}
+
+fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static str] {
+    match block {
+        None => &["project", "song"],
+        Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
+        Some(CompletionBlock::Song) => &[
+            "tempo",
+            "meter",
+            "key",
+            "instrument",
+            "rhythm",
+            "track",
+            "pattern",
+            "arrangement",
+        ],
+        Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
+        Some(CompletionBlock::Steps) => &["degree", "sample", "drum", "rest", "choose"],
+        Some(CompletionBlock::Choice) => &["degree", "sample", "sequence"],
+        Some(CompletionBlock::ChoiceSequence) => &["sample"],
+        Some(CompletionBlock::Sampled) => &["source", "root"],
+        Some(CompletionBlock::Sampler) => &["pack"],
+        Some(CompletionBlock::DrumMachine) => &["bank"],
+        Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
+        Some(CompletionBlock::Rhythm) => &["hit", "rest"],
+        Some(CompletionBlock::Track) => &["instrument", "volume", "play"],
+        Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
     }
 }
 
@@ -572,6 +578,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Choose => pending = Some(CompletionBlock::Choice),
             TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
+            TokenKind::DrumMachine => pending = Some(CompletionBlock::DrumMachine),
             TokenKind::Chance => pending = Some(CompletionBlock::Chance),
             TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
             TokenKind::RightBrace => {
@@ -631,11 +638,13 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Chord
                     | TokenKind::Rest
                     | TokenKind::Sample
+                    | TokenKind::Drum
                     | TokenKind::Choose
                     | TokenKind::Weight
                     | TokenKind::Source
                     | TokenKind::Root
-                    | TokenKind::Pack,
+                    | TokenKind::Pack
+                    | TokenKind::Bank,
                 ..
             }]
         )
@@ -817,9 +826,12 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Weight => "sets a relative choice weight.",
         TokenKind::Sampled => "declares a pitched instrument backed by one WAV file.",
         TokenKind::Sampler => "declares an instrument backed by a sample pack.",
+        TokenKind::DrumMachine => "declares an instrument backed by named drum voices.",
         TokenKind::Source => "sets the WAV file used by a sampled instrument.",
         TokenKind::Root => "sets the sample's original pitch, such as `C4`.",
         TokenKind::Pack => "sets the sample pack used by a sampler instrument.",
+        TokenKind::Bank => "sets the drum bank used by a drum machine instrument.",
+        TokenKind::Drum => "selects a named voice from the current drum bank.",
         _ => return None,
     })
 }
@@ -940,26 +952,6 @@ mod tests {
             ]
         );
         assert_eq!(
-            labels("song \"Test\" {\n  instrument lead = ", 1, 20),
-            ["sine", "triangle", "sampled", "sampler"]
-        );
-        assert_eq!(
-            labels(
-                "song \"Test\" {\n  instrument piano = sampled {\n    ",
-                2,
-                4
-            ),
-            ["source", "root"]
-        );
-        assert_eq!(
-            labels(
-                "song \"Test\" {\n  instrument voice = sampler {\n    ",
-                2,
-                4
-            ),
-            ["pack"]
-        );
-        assert_eq!(
             labels("song \"Test\" {\narrangement {\n  melody", 2, 8),
             ["with"]
         );
@@ -973,7 +965,7 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = steps 1/8 {\n  ", 2, 2),
-            ["degree", "sample", "rest", "choose"]
+            ["degree", "sample", "drum", "rest", "choose"]
         );
         assert_eq!(
             labels(
@@ -1012,6 +1004,48 @@ mod tests {
             ["velocity"]
         );
         assert!(labels("😀", 0, 1).is_empty());
+    }
+
+    #[test]
+    fn completes_instrument_body_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels("song \"Test\" {\n  instrument lead = ", 1, 20),
+            ["sine", "triangle", "sampled", "sampler", "drum_machine"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  instrument piano = sampled {\n    ",
+                2,
+                4
+            ),
+            ["source", "root"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  instrument voice = sampler {\n    ",
+                2,
+                4
+            ),
+            ["pack"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  instrument tr909 = drum_machine {\n    ",
+                2,
+                4
+            ),
+            ["bank"]
+        );
     }
 
     #[test]

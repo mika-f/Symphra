@@ -5,8 +5,10 @@ use symphra_render::{RenderError, render_song_with_samples};
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
-pub use symphra_sampler::{DecodeError, Sample, SampleLibrary, decode_wav, packed_sample_source};
-pub use symphra_score::Score;
+pub use symphra_sampler::{
+    DecodeError, Sample, SampleLibrary, decode_wav, named_sample_source, packed_sample_source,
+};
+pub use symphra_score::{SampleSelector, Score};
 pub use symphra_syntax::{SourceId, SourceSpan, SourceText};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -66,7 +68,7 @@ mod tests {
 
     use super::{
         EngineError, Sample, SampleLibrary, SourceId, SourceText, compile_source,
-        packed_sample_source, render_score, render_source,
+        named_sample_source, packed_sample_source, render_score, render_source,
     };
 
     const SOURCE: &str = r#"
@@ -299,6 +301,46 @@ song "Pack" {
         }
 
         let audio = render_score(&score, 0, &samples).expect("sample pack should render");
+
+        assert_eq!(
+            (
+                audio.frames(),
+                audio.samples[2_000..4_000]
+                    .iter()
+                    .all(|sample| *sample == 0.0)
+            ),
+            (6_000, true)
+        );
+    }
+
+    #[test]
+    fn render_score_should_play_samples_from_drum_banks() {
+        let source = SourceText::new(
+            SourceId(0),
+            "drums.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  pattern kit = steps 1/8 { drum "bd" rest drum "hh" }
+  arrangement { kit with tr909 }
+}
+"#,
+        );
+        let score = compile_source(&source).expect("drum bank should compile");
+        let mut samples = SampleLibrary::default();
+        for name in ["bd", "hh"] {
+            samples.insert(
+                named_sample_source("RolandTR909", name),
+                Sample {
+                    sample_rate_hz: NonZeroU32::new(8_000).expect("sample rate should be non-zero"),
+                    samples: vec![0.5; 2_000],
+                },
+            );
+        }
+
+        let audio = render_score(&score, 0, &samples).expect("drum bank should render");
 
         assert_eq!(
             (

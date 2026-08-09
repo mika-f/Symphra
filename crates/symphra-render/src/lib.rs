@@ -3,8 +3,10 @@
 use std::num::NonZeroU32;
 
 use symphra_dsp::{Oscillator, Waveform, fade_gain};
-use symphra_sampler::{SampleLibrary, SamplePlayer, packed_sample_source};
-use symphra_score::{Channels, InstrumentKind, MusicalTime, Score, Song, TimeError};
+use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
+use symphra_score::{
+    Channels, InstrumentKind, MusicalTime, SampleSelector, Score, Song, TimeError,
+};
 
 const MAX_NOTE_GAIN: f32 = 0.2;
 
@@ -42,7 +44,9 @@ pub enum RenderError {
     MissingSample(String),
     #[error("sampler pack `{0}` requires sample selection events")]
     SamplerRequiresSampleEvents(String),
-    #[error("sample selection events require a sampler instrument")]
+    #[error("drum bank `{0}` requires sample selection events")]
+    DrumMachineRequiresSampleEvents(String),
+    #[error("sample selection events require a sampler or drum machine instrument")]
     SampleEventsRequireSampler,
     #[error(transparent)]
     Time(#[from] TimeError),
@@ -197,6 +201,9 @@ fn render_notes(
                 InstrumentKind::Sampler { pack } => {
                     return Err(RenderError::SamplerRequiresSampleEvents(pack.clone()));
                 }
+                InstrumentKind::DrumMachine { bank } => {
+                    return Err(RenderError::DrumMachineRequiresSampleEvents(bank.clone()));
+                }
             };
             for frame in start..end {
                 let Some(sample) = voice.next_sample() else {
@@ -237,11 +244,18 @@ fn render_samples(
         if track.samples.is_empty() {
             continue;
         }
-        let InstrumentKind::Sampler { pack } = &track.instrument else {
-            return Err(RenderError::SampleEventsRequireSampler);
+        let container = match &track.instrument {
+            InstrumentKind::Sampler { pack } => pack,
+            InstrumentKind::DrumMachine { bank } => bank,
+            InstrumentKind::Sine | InstrumentKind::Triangle | InstrumentKind::Sampled { .. } => {
+                return Err(RenderError::SampleEventsRequireSampler);
+            }
         };
         for (event_index, event) in track.samples.iter().enumerate() {
-            let source = packed_sample_source(pack, event.index);
+            let source = match &event.selector {
+                SampleSelector::Index(index) => packed_sample_source(container, *index),
+                SampleSelector::Named(name) => named_sample_source(container, name),
+            };
             let mut player = SamplePlayer::new(
                 sample_library
                     .get(&source)
@@ -339,7 +353,7 @@ fn time_to_frame(
 mod tests {
     use symphra_score::{
         Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, Pan,
-        PitchClass, SampleEvent, Score, Song, Track,
+        PitchClass, SampleEvent, SampleSelector, Score, Song, Track,
     };
 
     use super::{RenderError, render_song};
@@ -374,6 +388,22 @@ mod tests {
     }
 
     #[test]
+    fn render_song_should_reject_note_events_for_drum_machines() {
+        let error = render_song(
+            &score(InstrumentKind::DrumMachine {
+                bank: "RolandTR909".to_owned(),
+            }),
+            0,
+        )
+        .expect_err("drum machines require sample selection events");
+
+        assert_eq!(
+            error,
+            RenderError::DrumMachineRequiresSampleEvents("RolandTR909".to_owned())
+        );
+    }
+
+    #[test]
     fn render_song_should_reject_invalid_sample_speed() {
         let mut score = score(InstrumentKind::Sampler {
             pack: "numbers".to_owned(),
@@ -383,7 +413,7 @@ mod tests {
             id: EntityId(2),
             start: MusicalTime::ZERO,
             duration: MusicalTime::new(1, 4).expect("quarter note should be valid"),
-            index: 0,
+            selector: SampleSelector::Index(0),
             velocity: 127,
             speed: 0.0,
         });

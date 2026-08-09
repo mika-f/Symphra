@@ -66,8 +66,8 @@
       }
     },
     "pitches": {
-      "comment": "A natural-note letter, an optional # or b accidental directly followed by the octave digits, and the octave, e.g. C4, C#4, Eb4. An accidental not followed by a digit (e.g. `C#` at end of line) is left for #comments to claim.",
-      "match": "\\b([A-G])(#|b)?(\\d+)\\b",
+      "comment": "A natural-note letter, an optional # or b accidental, and a decimal octave that may be negative (e.g. C4, C#4, Eb4, C-1, C#-1). An accidental not directly followed by octave digits (e.g. `C#` at end of line) is left for #comments to claim.",
+      "match": "\\b([A-G])(#|b)?(-?\\d+)\\b",
       "captures": {
         "1": { "name": "constant.language.pitch.symphra" },
         "2": { "name": "keyword.operator.accidental.symphra" },
@@ -82,11 +82,11 @@
       "patterns": [
         {
           "name": "keyword.control.declaration.symphra",
-          "match": "\\b(project|song|pattern|sequence)\\b"
+          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|choose)\\b"
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|degree|octave|note|rest|chord|for|velocity)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|sample|weight|source|root|pack|with|degree|octave|note|rest|chord|for|velocity)\\b"
         }
       ]
     },

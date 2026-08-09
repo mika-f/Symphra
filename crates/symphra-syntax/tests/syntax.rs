@@ -385,7 +385,7 @@ fn parses_tracks_with_rhythm_triggers() {
             "song \"Track\" { ",
             "track chords role harmony { ",
             "instrument lead play progression |> trigger_with stabs |> gate 95% ",
-            "|> transpose +12st } }",
+            "|> transpose +12st |> gain 0.30 } }",
         ),
     );
     assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
@@ -413,6 +413,7 @@ fn parses_tracks_with_rhythm_triggers() {
                 .transpose
                 .as_ref()
                 .map(|transpose| (transpose.semitones, transpose.unit.text.as_str())),
+            track.play.gain.map(|gain| gain.factor),
         ),
         (
             "chords",
@@ -421,7 +422,8 @@ fn parses_tracks_with_rhythm_triggers() {
             "progression",
             Some("stabs"),
             Some(95),
-            Some((12, "st"))
+            Some((12, "st")),
+            Some(0.30)
         )
     );
 }

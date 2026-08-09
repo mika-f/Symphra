@@ -140,6 +140,7 @@ fn schedule_declared_track(
         seed,
     )?;
     scheduled.name.clone_from(&track.name);
+    scheduled.gain = track.gain;
     if let Some(semitones) = track.transpose_semitones {
         apply_transpose(&mut scheduled, semitones)?;
     }
@@ -355,23 +356,26 @@ fn schedule_track(
         Track {
             id: id(occurrence.unwrap_or(pattern.id)),
             name: pattern.name.clone(),
-            instrument: match instrument {
-                hir::InstrumentKind::Sine => InstrumentKind::Sine,
-                hir::InstrumentKind::Triangle => InstrumentKind::Triangle,
-                hir::InstrumentKind::Sampled { source, root_midi } => InstrumentKind::Sampled {
-                    source: source.clone(),
-                    root_midi: *root_midi,
-                },
-                hir::InstrumentKind::Sampler { pack } => {
-                    InstrumentKind::Sampler { pack: pack.clone() }
-                }
-            },
+            instrument: score_instrument(instrument),
             notes,
             samples,
+            gain: 1.0,
             end: cursor,
         },
         cursor,
     ))
+}
+
+fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
+    match instrument {
+        hir::InstrumentKind::Sine => InstrumentKind::Sine,
+        hir::InstrumentKind::Triangle => InstrumentKind::Triangle,
+        hir::InstrumentKind::Sampled { source, root_midi } => InstrumentKind::Sampled {
+            source: source.clone(),
+            root_midi: *root_midi,
+        },
+        hir::InstrumentKind::Sampler { pack } => InstrumentKind::Sampler { pack: pack.clone() },
+    }
 }
 
 fn degree_choice_event(

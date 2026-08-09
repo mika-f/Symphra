@@ -56,13 +56,14 @@ pub enum Mode {
     Minor,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Track {
     pub id: EntityId,
     pub name: String,
     pub instrument: InstrumentKind,
     pub notes: Vec<NoteEvent>,
     pub samples: Vec<SampleEvent>,
+    pub gain: f32,
     pub end: MusicalTime,
 }
 

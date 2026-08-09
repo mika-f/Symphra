@@ -405,6 +405,17 @@ impl Compiler {
             }
             None => Some(None),
         };
+        let gain = match declaration.play.gain {
+            Some(gain) if gain.factor.is_finite() && gain.factor >= 0.0 => Some(gain.factor),
+            Some(gain) => {
+                self.error(
+                    "gain must be finite and greater than or equal to zero",
+                    gain.span,
+                );
+                None
+            }
+            None => Some(1.0),
+        };
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -416,16 +427,20 @@ impl Compiler {
             .zip(instrument)
             .zip(gate_percent)
             .zip(transpose_semitones)
+            .zip(gain)
             .map(
-                |(((pattern, instrument), gate_percent), transpose_semitones)| TrackDefinition {
-                    id: self.id(),
-                    name: declaration.name.text.clone(),
-                    role: declaration.role.text.clone(),
-                    instrument,
-                    pattern: pattern.id,
-                    trigger_with: rhythm.map(|rhythm| rhythm.id),
-                    gate_percent,
-                    transpose_semitones,
+                |((((pattern, instrument), gate_percent), transpose_semitones), gain)| {
+                    TrackDefinition {
+                        id: self.id(),
+                        name: declaration.name.text.clone(),
+                        role: declaration.role.text.clone(),
+                        instrument,
+                        pattern: pattern.id,
+                        trigger_with: rhythm.map(|rhythm| rhythm.id),
+                        gate_percent,
+                        transpose_semitones,
+                        gain,
+                    }
                 },
             )
     }

@@ -16,7 +16,7 @@ pub enum RhythmItem {
     Rest { span: SourceSpan },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackDeclaration {
     pub name: Identifier,
     pub role: Identifier,
@@ -25,12 +25,13 @@ pub struct TrackDeclaration {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PlayStatement {
     pub pattern: Identifier,
     pub trigger_with: Option<Identifier>,
     pub gate: Option<GateExpression>,
     pub transpose: Option<TransposeExpression>,
+    pub gain: Option<GainExpression>,
     pub span: SourceSpan,
 }
 
@@ -44,6 +45,12 @@ pub struct GateExpression {
 pub struct TransposeExpression {
     pub semitones: i32,
     pub unit: Identifier,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GainExpression {
+    pub factor: f32,
     pub span: SourceSpan,
 }
 

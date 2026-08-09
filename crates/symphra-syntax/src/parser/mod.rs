@@ -1,12 +1,12 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, GateExpression,
-    Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody,
-    PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
-    RateLiteral, RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration,
-    TransposeExpression, VelocityExpression,
+    ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression,
+    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
+    NumberLiteral, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RestExpression, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
+    TrackDeclaration, TransposeExpression, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -376,6 +376,7 @@ impl Parser {
         let mut trigger_with = None;
         let mut gate = None;
         let mut transpose = None;
+        let mut gain = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -413,34 +414,7 @@ impl Parser {
                     }
                 }
                 TokenKind::Transpose => {
-                    let transpose_start = self.bump().span;
-                    let sign = if self.at(TokenKind::Minus) {
-                        self.bump();
-                        -1
-                    } else {
-                        if self.at(TokenKind::Plus) {
-                            self.bump();
-                        }
-                        1
-                    };
-                    let value = self.required(
-                        TokenKind::Integer,
-                        "expected a semitone count after `transpose`",
-                    )?;
-                    let magnitude = self.parse_u32(&value)?;
-                    let Ok(magnitude) = i32::try_from(magnitude) else {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "semitone count is out of range",
-                            value.span,
-                        ));
-                        return None;
-                    };
-                    let unit = self.identifier("expected `st` after semitone count")?;
-                    let expression = TransposeExpression {
-                        semitones: sign * magnitude,
-                        span: transpose_start.cover(unit.span),
-                        unit,
-                    };
+                    let expression = self.transpose()?;
                     play_end = expression.span;
                     if transpose.replace(expression).is_some() {
                         self.diagnostics.push(Diagnostic::syntax(
@@ -449,8 +423,20 @@ impl Parser {
                         ));
                     }
                 }
+                TokenKind::Gain => {
+                    let expression = self.gain()?;
+                    play_end = expression.span;
+                    if gain.replace(expression).is_some() {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "`gain` may only appear once in a play pipeline",
+                            expression.span,
+                        ));
+                    }
+                }
                 _ => {
-                    self.error("expected `trigger_with`, `gate`, or `transpose` after `|>`");
+                    self.error(
+                        "expected `trigger_with`, `gate`, `transpose`, or `gain` after `|>`",
+                    );
                     return None;
                 }
             }
@@ -460,7 +446,56 @@ impl Parser {
             trigger_with,
             gate,
             transpose,
+            gain,
             span: play_start.cover(play_end),
+        })
+    }
+
+    fn transpose(&mut self) -> Option<TransposeExpression> {
+        let start = self.bump().span;
+        let sign = if self.at(TokenKind::Minus) {
+            self.bump();
+            -1
+        } else {
+            if self.at(TokenKind::Plus) {
+                self.bump();
+            }
+            1
+        };
+        let value = self.required(
+            TokenKind::Integer,
+            "expected a semitone count after `transpose`",
+        )?;
+        let magnitude = self.parse_u32(&value)?;
+        let Ok(magnitude) = i32::try_from(magnitude) else {
+            self.diagnostics.push(Diagnostic::syntax(
+                "semitone count is out of range",
+                value.span,
+            ));
+            return None;
+        };
+        let unit = self.identifier("expected `st` after semitone count")?;
+        Some(TransposeExpression {
+            semitones: sign * magnitude,
+            span: start.cover(unit.span),
+            unit,
+        })
+    }
+
+    fn gain(&mut self) -> Option<GainExpression> {
+        let start = self.bump().span;
+        let value = self.required_any(
+            &[TokenKind::Integer, TokenKind::Decimal],
+            "expected a number after `gain`",
+        )?;
+        let Ok(factor) = value.text.parse::<f32>() else {
+            self.diagnostics
+                .push(Diagnostic::syntax("gain is out of range", value.span));
+            return None;
+        };
+        Some(GainExpression {
+            factor,
+            span: start.cover(value.span),
         })
     }
 

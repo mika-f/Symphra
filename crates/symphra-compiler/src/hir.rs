@@ -36,7 +36,7 @@ pub struct Song {
     pub arrangement: Option<Arrangement>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TrackDefinition {
     pub id: NodeId,
     pub name: String,
@@ -46,6 +46,7 @@ pub struct TrackDefinition {
     pub trigger_with: Option<NodeId>,
     pub gate_percent: Option<u8>,
     pub transpose_semitones: Option<i32>,
+    pub gain: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

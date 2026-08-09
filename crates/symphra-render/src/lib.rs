@@ -28,6 +28,8 @@ pub enum RenderError {
     SongNotFound,
     #[error("tempo must be finite and greater than zero")]
     InvalidTempo,
+    #[error("track gain must be finite and greater than or equal to zero")]
+    InvalidTrackGain,
     #[error("sample rate must be greater than zero")]
     InvalidSampleRate,
     #[error("rendered audio is too large")]
@@ -69,6 +71,13 @@ pub fn render_song_with_samples(
         .ok_or(RenderError::SongNotFound)?;
     if !song.tempo_bpm.is_finite() || song.tempo_bpm <= 0.0 {
         return Err(RenderError::InvalidTempo);
+    }
+    if song
+        .tracks
+        .iter()
+        .any(|track| !track.gain.is_finite() || track.gain < 0.0)
+    {
+        return Err(RenderError::InvalidTrackGain);
     }
     let channels = match score.channels {
         Channels::Mono => 1,
@@ -181,6 +190,7 @@ fn render_notes(
                 let value = sample
                     * fade_gain(frame - start, note_frames, fade_samples)
                     * instrument_gain
+                    * track.gain
                     * (f32::from(note.velocity) / 127.0);
                 let first_sample = frame
                     .checked_mul(u64::from(channels))
@@ -234,6 +244,7 @@ fn render_samples(
                 };
                 let value = sample
                     * fade_gain(frame - start, event_frames, fade_samples)
+                    * track.gain
                     * (f32::from(event.velocity) / 127.0);
                 let first_sample = frame
                     .checked_mul(u64::from(channels))
@@ -321,6 +332,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn render_song_should_apply_track_gain_without_velocity_quantization() {
+        let mut full_score = score(InstrumentKind::Sine);
+        full_score.sample_rate_hz = 8_000;
+        let full = render_song(&full_score, 0).expect("full-gain score should render");
+        full_score.songs[0].tracks[0].gain = 0.3;
+        let gained = render_song(&full_score, 0).expect("gained score should render");
+
+        assert!(
+            full.samples
+                .iter()
+                .zip(gained.samples)
+                .all(|(full, gained)| { (gained - full * 0.3).abs() < f32::EPSILON })
+        );
+    }
+
     fn score(instrument: InstrumentKind) -> Score {
         Score {
             seed: 1,
@@ -350,6 +377,7 @@ mod tests {
                         velocity: 127,
                     }],
                     samples: Vec::new(),
+                    gain: 1.0,
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                 }],
             }],

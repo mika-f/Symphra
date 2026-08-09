@@ -284,6 +284,29 @@ song "Transpose" {
 }
 
 #[test]
+fn schedule_should_preserve_linear_track_gain() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Gain" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> gain 0.30
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("gained track should compile");
+    let score = schedule(&program).expect("gained track should schedule");
+
+    assert!((score.songs[0].tracks[0].gain - 0.30).abs() < f32::EPSILON);
+}
+
+#[test]
 fn compile_should_reject_incompatible_rhythm_triggers() {
     let parsed = parse(
         SourceId(0),

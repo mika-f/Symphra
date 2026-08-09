@@ -104,3 +104,52 @@ fn reports_lexical_and_syntax_errors_without_panicking() {
             .any(|error| error.kind == DiagnosticKind::Syntax)
     );
 }
+
+#[test]
+fn recovers_at_the_next_statement_or_note() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project {
+  seed nope junk
+  sample_rate 48khz
+  output stereo
+}
+song "Recovery" {
+  tempo nope junk
+  tempo 120bpm
+  meter 4/4
+  key C major
+  pattern melody = sequence {
+    note C4 for nope junk
+    note E4 for 1/4
+  }
+}
+"#,
+    );
+
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "expected an integer seed",
+            "expected a number",
+            "expected duration numerator",
+        ]
+    );
+    let Declaration::Project(project) = &parsed.file.declarations[0] else {
+        panic!("first declaration should remain a project");
+    };
+    assert_eq!(project.statements.len(), 2);
+    let Declaration::Song(song) = &parsed.file.declarations[1] else {
+        panic!("second declaration should remain a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[3] else {
+        panic!("valid pattern should remain in the song");
+    };
+    let PatternBody::Sequence { notes, .. } = &pattern.body;
+    assert_eq!((notes.len(), notes[0].pitch.text.as_str()), (1, "E4"));
+}

@@ -7,6 +7,24 @@ use crate::ast::{
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
+const DECLARATION_START: &[TokenKind] = &[TokenKind::Project, TokenKind::Song, TokenKind::Eof];
+const PROJECT_STATEMENT_START: &[TokenKind] = &[
+    TokenKind::Seed,
+    TokenKind::SampleRate,
+    TokenKind::Output,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+const SONG_STATEMENT_START: &[TokenKind] = &[
+    TokenKind::Tempo,
+    TokenKind::Meter,
+    TokenKind::Key,
+    TokenKind::Pattern,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+const SEQUENCE_ITEM_START: &[TokenKind] = &[TokenKind::Note, TokenKind::RightBrace, TokenKind::Eof];
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSource {
     pub file: SourceFile,
@@ -47,11 +65,14 @@ impl Parser {
                 TokenKind::Song => self.song().map(Declaration::Song),
                 _ => {
                     self.error("expected `project` or `song`");
-                    self.bump();
                     None
                 }
             };
-            declarations.extend(declaration);
+            if let Some(declaration) = declaration {
+                declarations.push(declaration);
+            } else {
+                self.recover_to(DECLARATION_START);
+            }
         }
         declarations
     }
@@ -67,11 +88,14 @@ impl Parser {
                 TokenKind::Output => self.output(),
                 _ => {
                     self.error("expected a project setting");
-                    self.bump();
                     None
                 }
             };
-            statements.extend(statement);
+            if let Some(statement) = statement {
+                statements.push(statement);
+            } else {
+                self.recover_to(PROJECT_STATEMENT_START);
+            }
         }
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close project")?
@@ -119,11 +143,14 @@ impl Parser {
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
                     self.error("expected a song setting or pattern");
-                    self.bump();
                     None
                 }
             };
-            statements.extend(statement);
+            if let Some(statement) = statement {
+                statements.push(statement);
+            } else {
+                self.recover_to(SONG_STATEMENT_START);
+            }
         }
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close song")?
@@ -174,11 +201,16 @@ impl Parser {
             .span;
         let mut notes = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            if self.at(TokenKind::Note) {
-                notes.extend(self.note());
+            let note = if self.at(TokenKind::Note) {
+                self.note()
             } else {
                 self.error("expected a note in sequence");
-                self.bump();
+                None
+            };
+            if let Some(note) = note {
+                notes.push(note);
+            } else {
+                self.recover_to(SEQUENCE_ITEM_START);
             }
         }
         let end = self
@@ -298,6 +330,12 @@ impl Parser {
     fn error(&mut self, message: &str) {
         self.diagnostics
             .push(Diagnostic::syntax(message, self.current().span));
+    }
+
+    fn recover_to(&mut self, kinds: &[TokenKind]) {
+        while !self.at_any(kinds) && !self.at(TokenKind::Eof) {
+            self.bump();
+        }
     }
 
     fn at(&self, kind: TokenKind) -> bool {

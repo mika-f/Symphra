@@ -136,6 +136,12 @@ impl<'a> SamplePlayer<'a> {
     }
 
     #[must_use]
+    pub fn with_speed(mut self, speed: f64) -> Self {
+        self.step *= speed;
+        self
+    }
+
+    #[must_use]
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_precision_loss,
@@ -193,6 +199,28 @@ mod tests {
                 player.next_sample()
             ],
             [Some(0.0), Some(0.0), None]
+        );
+    }
+
+    #[test]
+    fn sample_player_should_apply_playback_speed() {
+        let sample =
+            decode_wav(&wav(&[0, 8_192, 16_384, 24_576], 4)).expect("PCM16 WAV should decode");
+        let mut player = SamplePlayer::new(
+            &sample,
+            NonZeroU32::new(4).expect("sample rate should be non-zero"),
+            60,
+            60,
+        )
+        .with_speed(2.0);
+
+        assert_eq!(
+            [
+                player.next_sample(),
+                player.next_sample(),
+                player.next_sample()
+            ],
+            [Some(0.0), Some(0.5), None]
         );
     }
 

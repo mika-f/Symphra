@@ -410,6 +410,7 @@ impl Compiler {
         let repeat_count = self.repeat_count(declaration);
         let pan = self.pan(declaration);
         let chance = self.chance(declaration, pattern).ok();
+        let speed = self.speed(declaration, instrument.as_ref());
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -423,14 +424,14 @@ impl Compiler {
             .zip(transpose_semitones)
             .zip(gain)
             .zip(repeat_count)
-            .zip(pan.zip(chance))
+            .zip(pan.zip(chance).zip(speed))
             .map(
                 |(
                     (
                         ((((pattern, instrument), gate_percent), transpose_semitones), gain),
                         repeat_count,
                     ),
-                    (pan, chance),
+                    ((pan, chance), speed),
                 )| {
                     TrackDefinition {
                         id: self.id(),
@@ -446,9 +447,31 @@ impl Compiler {
                         reverse: declaration.play.reverse,
                         pan,
                         chance,
+                        speed,
                     }
                 },
             )
+    }
+
+    fn speed(
+        &mut self,
+        declaration: &TrackDeclaration,
+        instrument: Option<&InstrumentKind>,
+    ) -> Option<f32> {
+        let Some(speed) = declaration.play.speed else {
+            return Some(1.0);
+        };
+        if !speed.factor.is_finite() || speed.factor <= 0.0 {
+            self.error("speed must be finite and greater than zero", speed.span);
+            return None;
+        }
+        if instrument
+            .is_some_and(|instrument| !matches!(instrument, InstrumentKind::Sampler { .. }))
+        {
+            self.error("speed is only supported for sampler tracks", speed.span);
+            return None;
+        }
+        Some(speed.factor)
     }
 
     fn repeat_count(&mut self, declaration: &TrackDeclaration) -> Option<u16> {

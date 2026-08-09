@@ -32,6 +32,8 @@ pub enum RenderError {
     InvalidTrackGain,
     #[error("track pan must be from -100% to 100%")]
     InvalidTrackPan,
+    #[error("sample speed must be finite and greater than zero")]
+    InvalidSampleSpeed,
     #[error("sample rate must be greater than zero")]
     InvalidSampleRate,
     #[error("rendered audio is too large")]
@@ -83,6 +85,14 @@ pub fn render_song_with_samples(
     }
     if song.tracks.iter().any(|track| !track.pan.is_valid()) {
         return Err(RenderError::InvalidTrackPan);
+    }
+    if song
+        .tracks
+        .iter()
+        .flat_map(|track| &track.samples)
+        .any(|sample| !sample.speed.is_finite() || sample.speed <= 0.0)
+    {
+        return Err(RenderError::InvalidSampleSpeed);
     }
     let channels = match score.channels {
         Channels::Mono => 1,
@@ -239,7 +249,8 @@ fn render_samples(
                 sample_rate,
                 60,
                 60,
-            );
+            )
+            .with_speed(f64::from(event.speed));
             let start = time_to_frame(event.start, song.tempo_bpm, sample_rate_hz)?;
             let end = time_to_frame(
                 event.start.checked_add(event.duration)?,
@@ -328,7 +339,7 @@ fn time_to_frame(
 mod tests {
     use symphra_score::{
         Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, Pan,
-        PitchClass, Score, Song, Track,
+        PitchClass, SampleEvent, Score, Song, Track,
     };
 
     use super::{RenderError, render_song};
@@ -360,6 +371,26 @@ mod tests {
             error,
             RenderError::SamplerRequiresSampleEvents("numbers".to_owned())
         );
+    }
+
+    #[test]
+    fn render_song_should_reject_invalid_sample_speed() {
+        let mut score = score(InstrumentKind::Sampler {
+            pack: "numbers".to_owned(),
+        });
+        score.songs[0].tracks[0].notes.clear();
+        score.songs[0].tracks[0].samples.push(SampleEvent {
+            id: EntityId(2),
+            start: MusicalTime::ZERO,
+            duration: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            index: 0,
+            velocity: 127,
+            speed: 0.0,
+        });
+
+        let error = render_song(&score, 0).expect_err("zero sample speed should fail");
+
+        assert_eq!(error, RenderError::InvalidSampleSpeed);
     }
 
     #[test]

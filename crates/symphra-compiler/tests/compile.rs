@@ -1068,6 +1068,87 @@ song "Sampler" {
 }
 
 #[test]
+fn schedule_should_apply_sampler_playback_speed() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 sample 3 }
+  track voice role melody {
+    instrument voice
+    play phrase |> speed 1.5
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("sampler speed should compile");
+
+    let score = schedule(&program).expect("sampler speed should schedule");
+
+    assert!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .all(|event| (event.speed - 1.5).abs() < f32::EPSILON)
+    );
+}
+
+#[test]
+fn compile_should_reject_speed_for_pitched_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Lead" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern phrase = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play phrase |> speed 1.5
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("pitched speed should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "speed is only supported for sampler tracks"
+    );
+}
+
+#[test]
+fn compile_should_reject_non_positive_speed() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 }
+  track voice role melody {
+    instrument voice
+    play phrase |> speed 0
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero speed should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "speed must be finite and greater than zero"
+    );
+}
+
+#[test]
 fn schedule_should_resolve_degree_steps_from_the_song_key() {
     let parsed = parse(
         SourceId(0),

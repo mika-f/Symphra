@@ -51,6 +51,7 @@ pub struct TrackDefinition {
     pub reverse: bool,
     pub pan: Pan,
     pub chance: Option<Chance>,
+    pub speed: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

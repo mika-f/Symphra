@@ -142,6 +142,9 @@ fn schedule_declared_track(
     scheduled.name.clone_from(&track.name);
     scheduled.gain = track.gain;
     scheduled.pan = score_pan(track.pan);
+    for sample in &mut scheduled.samples {
+        sample.speed = track.speed;
+    }
     if let Some(semitones) = track.transpose_semitones {
         apply_transpose(&mut scheduled, semitones)?;
     }
@@ -403,6 +406,7 @@ fn schedule_track(
                         duration,
                         index: sample.index,
                         velocity: sample.velocity,
+                        speed: 1.0,
                     });
                     cursor = cursor.checked_add(duration)?;
                 }
@@ -448,6 +452,7 @@ fn schedule_track(
                 duration,
                 index: sample.index,
                 velocity: sample.velocity,
+                speed: 1.0,
             }),
             hir::PatternStep::Choice(_) | hir::PatternStep::DegreeChoice(_) => {
                 unreachable!("choices are scheduled above")

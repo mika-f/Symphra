@@ -488,6 +488,7 @@ fn completion_labels(
             "gain",
             "repeat",
             "reverse",
+            "speed",
             "pan",
             "chance",
         ]
@@ -632,6 +633,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Gain
                     | TokenKind::Repeat
                     | TokenKind::Reverse
+                    | TokenKind::Speed
                     | TokenKind::Pan
                     | TokenKind::Alternate
                     | TokenKind::Chance
@@ -814,6 +816,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Gain => "scales a played pattern's linear amplitude.",
         TokenKind::Repeat => "repeats a played pattern a fixed number of times.",
         TokenKind::Reverse => "mirrors a played pattern across its end time.",
+        TokenKind::Speed => "changes sampler playback speed without moving events.",
         TokenKind::Pan => "places a track from `-100%` left to `100%` right.",
         TokenKind::Alternate => {
             "alternates successive events between left and right pan positions."
@@ -1089,6 +1092,7 @@ mod tests {
                 "gain",
                 "repeat",
                 "reverse",
+                "speed",
                 "pan",
                 "chance"
             ]

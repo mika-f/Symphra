@@ -499,6 +499,9 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
             ctx.text(chance.transpose.unit.span)
         );
     }
+    if let Some(speed) = play.speed {
+        let _ = write!(line, " |> speed {}", speed.factor);
+    }
     if let Some(pan) = play.pan {
         match pan {
             PanExpression::Fixed { percent, .. } => {

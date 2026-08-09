@@ -6,8 +6,8 @@ use crate::ast::{
     NoteExpression, NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlayStatement,
     ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
     RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration, TransposeExpression,
-    VelocityExpression, VolumeExpression,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
+    TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -416,6 +416,7 @@ impl Parser {
         let mut reverse = false;
         let mut pan = None;
         let mut chance = None;
+        let mut speed = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -432,9 +433,7 @@ impl Parser {
                         ));
                     }
                 }
-                TokenKind::Gate => {
-                    play_end = self.gate(&mut gate)?;
-                }
+                TokenKind::Gate => play_end = self.gate(&mut gate)?,
                 TokenKind::Transpose => {
                     let expression = self.transpose()?;
                     play_end = expression.span;
@@ -479,12 +478,11 @@ impl Parser {
                         ));
                     }
                 }
-                TokenKind::Chance => {
-                    play_end = self.chance(&mut chance)?;
-                }
+                TokenKind::Chance => play_end = self.chance(&mut chance)?,
+                TokenKind::Speed => play_end = self.speed(&mut speed)?,
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, or `chance` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, `chance`, or `speed` after `|>`",
                     );
                     return None;
                 }
@@ -500,8 +498,30 @@ impl Parser {
             reverse,
             pan,
             chance,
+            speed,
             span: play_start.cover(play_end),
         })
+    }
+
+    fn speed(&mut self, speed: &mut Option<SpeedExpression>) -> Option<SourceSpan> {
+        let start = self.bump().span;
+        let value = self.required_any(
+            &[TokenKind::Integer, TokenKind::Decimal],
+            "expected a number after `speed`",
+        )?;
+        let Ok(factor) = value.text.parse::<f32>() else {
+            self.diagnostics
+                .push(Diagnostic::syntax("speed is out of range", value.span));
+            return None;
+        };
+        let span = start.cover(value.span);
+        if speed.replace(SpeedExpression { factor, span }).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`speed` may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
     }
 
     fn chance(&mut self, chance: &mut Option<ChanceExpression>) -> Option<SourceSpan> {

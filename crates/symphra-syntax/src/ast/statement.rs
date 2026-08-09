@@ -37,6 +37,7 @@ pub struct PlayStatement {
     pub reverse: bool,
     pub pan: Option<PanExpression>,
     pub chance: Option<ChanceExpression>,
+    pub speed: Option<SpeedExpression>,
     pub span: SourceSpan,
 }
 
@@ -91,6 +92,12 @@ impl PanExpression {
 pub struct ChanceExpression {
     pub percent: u32,
     pub transpose: TransposeExpression,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeedExpression {
+    pub factor: f32,
     pub span: SourceSpan,
 }
 

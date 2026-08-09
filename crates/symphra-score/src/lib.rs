@@ -149,13 +149,14 @@ pub struct NoteEvent {
     pub velocity: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SampleEvent {
     pub id: EntityId,
     pub start: MusicalTime,
     pub duration: MusicalTime,
     pub index: u32,
     pub velocity: u8,
+    pub speed: f32,
 }
 
 /// An exact fraction of a whole note.

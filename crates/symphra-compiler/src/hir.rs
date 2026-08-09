@@ -32,7 +32,18 @@ pub struct Song {
     pub key: Key,
     pub rhythms: Vec<Rhythm>,
     pub patterns: Vec<Pattern>,
+    pub tracks: Vec<TrackDefinition>,
     pub arrangement: Option<Arrangement>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackDefinition {
+    pub id: NodeId,
+    pub name: String,
+    pub role: String,
+    pub instrument: InstrumentKind,
+    pub pattern: NodeId,
+    pub trigger_with: Option<NodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

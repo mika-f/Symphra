@@ -236,6 +236,14 @@ fn document_symbols(source: &SourceText) -> Vec<DocumentSymbol> {
                             rhythm.name.span,
                             None,
                         ),
+                        SongStatement::Track(track) => symbol(
+                            source,
+                            track.name.text.clone(),
+                            SymbolKind::OBJECT,
+                            track.span,
+                            track.name.span,
+                            None,
+                        ),
                         _ => None,
                     })
                     .collect();
@@ -314,6 +322,7 @@ enum CompletionBlock {
     Project,
     Song,
     Rhythm,
+    Track,
     Arrangement,
     Sequence,
     Steps,
@@ -346,8 +355,22 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         .map_or(0, |index| index + 1);
     let line_tokens = &tokens[line_token_start..];
 
-    let labels: &[&str] = if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal)
-    {
+    completion_labels(block, line_tokens)
+        .iter()
+        .map(|label| CompletionItem {
+            label: (*label).to_owned(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            detail: Some("Symphra keyword".to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
+fn completion_labels(
+    block: Option<CompletionBlock>,
+    line_tokens: &[Token],
+) -> &'static [&'static str] {
+    if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal) {
         if matches!(line_tokens.first(), Some(token) if token.kind == TokenKind::Instrument) {
             &["sine", "triangle", "sampled", "sampler"]
         } else {
@@ -383,6 +406,22 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         ]
     ) {
         &["resolution"]
+    } else if matches!(
+        line_tokens,
+        [
+            Token {
+                kind: TokenKind::Track,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            }
+        ]
+    ) {
+        &["role"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
+        &["trigger_with"]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
     } else if matches!(block, Some(CompletionBlock::Arrangement))
@@ -400,6 +439,7 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
                 "key",
                 "instrument",
                 "rhythm",
+                "track",
                 "pattern",
                 "arrangement",
             ],
@@ -410,21 +450,12 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
             Some(CompletionBlock::Rhythm) => &["hit", "rest"],
+            Some(CompletionBlock::Track) => &["instrument", "play"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
         }
     } else {
         &[]
-    };
-
-    labels
-        .iter()
-        .map(|label| CompletionItem {
-            label: (*label).to_owned(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            detail: Some("Symphra keyword".to_owned()),
-            ..CompletionItem::default()
-        })
-        .collect()
+    }
 }
 
 fn duration_keyword_follows(tokens: &[Token]) -> bool {
@@ -481,6 +512,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Project => pending = Some(CompletionBlock::Project),
             TokenKind::Song => pending = Some(CompletionBlock::Song),
             TokenKind::Rhythm => pending = Some(CompletionBlock::Rhythm),
+            TokenKind::Track => pending = Some(CompletionBlock::Track),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => {
                 pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
@@ -521,6 +553,11 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Rhythm
                     | TokenKind::Resolution
                     | TokenKind::Hit
+                    | TokenKind::Track
+                    | TokenKind::Role
+                    | TokenKind::Play
+                    | TokenKind::TriggerWith
+                    | TokenKind::PipeGreater
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
                     | TokenKind::Degree
@@ -683,6 +720,10 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Rhythm => "declares a reusable hit-and-rest rhythm.",
         TokenKind::Resolution => "sets the duration of each rhythm or step item.",
         TokenKind::Hit => "marks an active position in a rhythm.",
+        TokenKind::Track => "declares a named playback track.",
+        TokenKind::Role => "describes a track's musical role.",
+        TokenKind::Play => "selects the pattern played by a track.",
+        TokenKind::TriggerWith => "applies a reusable rhythm to a played pattern.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => "assigns an instrument to an arrangement occurrence.",
@@ -817,6 +858,7 @@ mod tests {
                 "key",
                 "instrument",
                 "rhythm",
+                "track",
                 "pattern",
                 "arrangement"
             ]
@@ -919,6 +961,33 @@ mod tests {
                 4
             ),
             ["hit", "rest"]
+        );
+    }
+
+    #[test]
+    fn completes_track_and_trigger_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(labels("song \"Test\" {\n  track lead ", 1, 13), ["role"]);
+        assert_eq!(
+            labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
+            ["instrument", "play"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  play melody |> ",
+                2,
+                17
+            ),
+            ["trigger_with"]
         );
     }
 

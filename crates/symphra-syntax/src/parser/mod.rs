@@ -3,9 +3,10 @@ mod literal;
 use crate::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, Identifier,
     InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody,
-    PatternDeclaration, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, StepItem, VelocityExpression,
+    PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
+    RateLiteral, RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration,
+    VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -23,6 +24,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Key,
     TokenKind::Instrument,
     TokenKind::Rhythm,
+    TokenKind::Track,
     TokenKind::Pattern,
     TokenKind::Arrangement,
     TokenKind::RightBrace,
@@ -167,6 +169,7 @@ impl Parser {
                 TokenKind::Key => self.key(),
                 TokenKind::Instrument => self.instrument().map(SongStatement::Instrument),
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
+                TokenKind::Track => self.track().map(SongStatement::Track),
                 TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
@@ -340,6 +343,44 @@ impl Parser {
             resolution_numerator: self.parse_u32(&numerator)?,
             resolution_denominator: self.parse_u32(&denominator)?,
             items,
+            span: start.cover(end),
+        })
+    }
+
+    fn track(&mut self) -> Option<TrackDeclaration> {
+        let start = self.bump().span;
+        let name = self.identifier("expected a track name")?;
+        self.required(TokenKind::Role, "expected `role` after track name")?;
+        let role = self.identifier("expected a track role")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after track role")?;
+        self.required(TokenKind::Instrument, "expected `instrument` in track")?;
+        let instrument = self.identifier("expected an instrument name")?;
+        let play_start = self
+            .required(TokenKind::Play, "expected `play` in track")?
+            .span;
+        let pattern = self.identifier("expected a pattern name after `play`")?;
+        let trigger_with = if self.at(TokenKind::PipeGreater) {
+            self.bump();
+            self.required(TokenKind::TriggerWith, "expected `trigger_with` after `|>`")?;
+            Some(self.identifier("expected a rhythm name after `trigger_with`")?)
+        } else {
+            None
+        };
+        let play_span = trigger_with
+            .as_ref()
+            .map_or(pattern.span, |rhythm| pattern.span.cover(rhythm.span));
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close track")?
+            .span;
+        Some(TrackDeclaration {
+            name,
+            role,
+            instrument,
+            play: PlayStatement {
+                pattern,
+                trigger_with,
+                span: play_start.cover(play_span),
+            },
             span: start.cover(end),
         })
     }

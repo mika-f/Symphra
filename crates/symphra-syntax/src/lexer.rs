@@ -61,6 +61,10 @@ impl Lexer<'_> {
             '}' => self.push(TokenKind::RightBrace, start),
             '=' => self.push(TokenKind::Equal, start),
             '/' => self.push(TokenKind::Slash, start),
+            '|' if self.peek() == Some('>') => {
+                self.bump();
+                self.push(TokenKind::PipeGreater, start);
+            }
             '"' => self.string(start),
             c if c.is_ascii_digit() => self.number(start),
             c if is_identifier_start(c) => {

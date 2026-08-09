@@ -6,13 +6,13 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, Declaration, DegreeChoiceAlternative, Identifier, InstrumentBody,
     PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement, RhythmDeclaration,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key, Meter,
     Mode, NodeId, Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project,
-    Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, WeightedNote,
+    Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, TrackDefinition, WeightedNote,
     WeightedSampleSequence,
 };
 
@@ -22,6 +22,16 @@ mod schedule;
 pub use schedule::{ScheduleError, schedule};
 
 const DEFAULT_VELOCITY: u8 = 127;
+
+fn rhythm_cell_count(duration: Duration, resolution: Duration) -> Option<u64> {
+    let dividend = u64::from(duration.numerator) * u64::from(resolution.denominator);
+    let divisor = u64::from(duration.denominator) * u64::from(resolution.numerator);
+    if divisor == 0 || dividend % divisor != 0 {
+        None
+    } else {
+        Some(dividend / divisor)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileDiagnostic {
@@ -45,6 +55,16 @@ pub fn compile(file: &SourceFile) -> Result<Program, Vec<CompileDiagnostic>> {
 struct Compiler {
     diagnostics: Vec<CompileDiagnostic>,
     next_id: u32,
+}
+
+#[derive(Default)]
+struct SongSettings {
+    tempo_bpm: Option<f64>,
+    meter: Option<Meter>,
+    key: Option<Key>,
+    tempo_seen: bool,
+    meter_seen: bool,
+    key_seen: bool,
 }
 
 impl Compiler {
@@ -152,50 +172,22 @@ impl Compiler {
 
     fn song(&mut self, declaration: &SongDeclaration) -> Option<Song> {
         let id = self.id();
-        let mut tempo_bpm = None;
-        let mut meter = None;
-        let mut key = None;
-        let mut tempo_seen = false;
-        let mut meter_seen = false;
-        let mut key_seen = false;
+        let mut settings = SongSettings::default();
         let mut pattern_declarations = Vec::new();
         let mut pattern_names = HashSet::new();
         let mut rhythm_defs = Vec::new();
         let mut rhythm_names = HashSet::new();
+        let mut track_defs = Vec::new();
+        let mut track_names = HashSet::new();
         let mut instruments = Vec::new();
         let mut instrument_names = HashSet::new();
         let mut arrangement = None;
 
         for statement in &declaration.statements {
             match statement {
-                SongStatement::Tempo { value, span } => {
-                    if tempo_seen {
-                        self.error("tempo is declared more than once", *span);
-                    } else {
-                        tempo_seen = true;
-                        tempo_bpm = self.tempo(value.value.value, &value.unit.text, *span);
-                    }
-                }
-                SongStatement::Meter {
-                    numerator,
-                    denominator,
-                    span,
-                } => {
-                    if meter_seen {
-                        self.error("meter is declared more than once", *span);
-                    } else {
-                        meter_seen = true;
-                        meter = self.meter(*numerator, *denominator, *span);
-                    }
-                }
-                SongStatement::Key { tonic, mode, span } => {
-                    if key_seen {
-                        self.error("key is declared more than once", *span);
-                    } else {
-                        key_seen = true;
-                        key = self.key(&tonic.text, &mode.text, *span);
-                    }
-                }
+                SongStatement::Tempo { .. }
+                | SongStatement::Meter { .. }
+                | SongStatement::Key { .. } => self.song_setting(statement, &mut settings),
                 SongStatement::Instrument(instrument) => {
                     if self.declare_name(&mut instrument_names, &instrument.name, "instrument") {
                         instruments.push((
@@ -207,6 +199,11 @@ impl Compiler {
                 SongStatement::Rhythm(rhythm) => {
                     if self.declare_name(&mut rhythm_names, &rhythm.name, "rhythm") {
                         rhythm_defs.push(rhythm);
+                    }
+                }
+                SongStatement::Track(track) => {
+                    if self.declare_name(&mut track_names, &track.name, "track") {
+                        track_defs.push(track);
                     }
                 }
                 SongStatement::Arrangement { occurrences, span } => {
@@ -222,24 +219,37 @@ impl Compiler {
             }
         }
 
-        if !tempo_seen {
+        if !settings.tempo_seen {
             self.error("tempo is required", declaration.span);
         }
-        if !meter_seen {
+        if !settings.meter_seen {
             self.error("meter is required", declaration.span);
         }
-        if !key_seen {
+        if !settings.key_seen {
             self.error("key is required", declaration.span);
         }
-        let rhythms = rhythm_defs.iter().filter_map(|r| self.rhythm(r)).collect();
+        let rhythms = rhythm_defs
+            .iter()
+            .filter_map(|rhythm| self.rhythm(rhythm))
+            .collect::<Vec<_>>();
         let patterns = pattern_declarations
             .iter()
-            .map(|pattern| self.pattern(pattern, key.as_ref()))
+            .map(|pattern| self.pattern(pattern, settings.key.as_ref()))
             .collect::<Vec<_>>();
+        let tracks = track_defs
+            .iter()
+            .filter_map(|track| self.track(track, &patterns, &rhythms, &instruments))
+            .collect::<Vec<_>>();
+        if !tracks.is_empty() && arrangement.is_some() {
+            self.error(
+                "track declarations cannot be combined with a pattern arrangement",
+                declaration.span,
+            );
+        }
         let arrangement = arrangement.and_then(|(references, span)| {
             self.arrangement(references, span, &patterns, &instruments)
         });
-        match (tempo_bpm, meter, key) {
+        match (settings.tempo_bpm, settings.meter, settings.key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
                 id,
                 name: declaration.name.value.clone(),
@@ -248,9 +258,44 @@ impl Compiler {
                 key,
                 rhythms,
                 patterns,
+                tracks,
                 arrangement,
             }),
             _ => None,
+        }
+    }
+
+    fn song_setting(&mut self, statement: &SongStatement, settings: &mut SongSettings) {
+        match statement {
+            SongStatement::Tempo { value, span } => {
+                if settings.tempo_seen {
+                    self.error("tempo is declared more than once", *span);
+                } else {
+                    settings.tempo_seen = true;
+                    settings.tempo_bpm = self.tempo(value.value.value, &value.unit.text, *span);
+                }
+            }
+            SongStatement::Meter {
+                numerator,
+                denominator,
+                span,
+            } => {
+                if settings.meter_seen {
+                    self.error("meter is declared more than once", *span);
+                } else {
+                    settings.meter_seen = true;
+                    settings.meter = self.meter(*numerator, *denominator, *span);
+                }
+            }
+            SongStatement::Key { tonic, mode, span } => {
+                if settings.key_seen {
+                    self.error("key is declared more than once", *span);
+                } else {
+                    settings.key_seen = true;
+                    settings.key = self.key(&tonic.text, &mode.text, *span);
+                }
+            }
+            _ => unreachable!("called only for song settings"),
         }
     }
 
@@ -291,6 +336,88 @@ impl Compiler {
                 })
                 .collect(),
         })
+    }
+
+    fn track(
+        &mut self,
+        declaration: &TrackDeclaration,
+        patterns: &[Pattern],
+        rhythms: &[Rhythm],
+        instruments: &[(&str, Option<InstrumentKind>)],
+    ) -> Option<TrackDefinition> {
+        let pattern = patterns
+            .iter()
+            .find(|pattern| pattern.name == declaration.play.pattern.text);
+        if pattern.is_none() {
+            self.error(
+                "track references an unknown pattern",
+                declaration.play.pattern.span,
+            );
+        }
+        let instrument = instruments
+            .iter()
+            .find(|(name, _)| *name == declaration.instrument.text)
+            .and_then(|(_, instrument)| instrument.clone());
+        if instrument.is_none() {
+            self.error(
+                "track references an unknown instrument",
+                declaration.instrument.span,
+            );
+        }
+        let rhythm = declaration
+            .play
+            .trigger_with
+            .as_ref()
+            .and_then(|reference| {
+                let rhythm = rhythms.iter().find(|rhythm| rhythm.name == reference.text);
+                if rhythm.is_none() {
+                    self.error("trigger_with references an unknown rhythm", reference.span);
+                }
+                rhythm
+            });
+        if let (Some(pattern), Some(rhythm), Some(reference)) =
+            (pattern, rhythm, declaration.play.trigger_with.as_ref())
+        {
+            self.validate_trigger(pattern, rhythm, reference.span);
+        }
+        pattern
+            .zip(instrument)
+            .map(|(pattern, instrument)| TrackDefinition {
+                id: self.id(),
+                name: declaration.name.text.clone(),
+                role: declaration.role.text.clone(),
+                instrument,
+                pattern: pattern.id,
+                trigger_with: rhythm.map(|rhythm| rhythm.id),
+            })
+    }
+
+    fn validate_trigger(&mut self, pattern: &Pattern, rhythm: &Rhythm, span: SourceSpan) {
+        if rhythm.items.is_empty() {
+            self.error("trigger_with rhythm must contain at least one item", span);
+            return;
+        }
+        for step in &pattern.steps {
+            let duration = match step {
+                PatternStep::Note(note) => note.duration,
+                PatternStep::Chord(chord) => chord.duration,
+                PatternStep::Rest(rest) => rest.duration,
+                PatternStep::Sample(_) | PatternStep::Choice(_) | PatternStep::DegreeChoice(_) => {
+                    self.error(
+                        "trigger_with currently supports note, chord, and rest patterns",
+                        span,
+                    );
+                    return;
+                }
+            };
+            if rhythm_cell_count(duration, rhythm.resolution).is_none() {
+                self.error(
+                    "pattern step duration must be divisible by rhythm resolution",
+                    span,
+                );
+                return;
+            }
+        }
     }
 
     fn arrangement(

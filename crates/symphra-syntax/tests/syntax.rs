@@ -378,6 +378,40 @@ fn parses_reusable_rhythms() {
 }
 
 #[test]
+fn parses_tracks_with_rhythm_triggers() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Track\" { ",
+            "track chords role harmony { ",
+            "instrument lead play progression |> trigger_with stabs } }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+
+    assert_eq!(
+        (
+            track.name.text.as_str(),
+            track.role.text.as_str(),
+            track.instrument.text.as_str(),
+            track.play.pattern.text.as_str(),
+            track
+                .play
+                .trigger_with
+                .as_ref()
+                .map(|name| name.text.as_str()),
+        ),
+        ("chords", "harmony", "lead", "progression", Some("stabs"))
+    );
+}
+
+#[test]
 fn parses_chord_pitches_and_duration() {
     let parsed = parse(
         SourceId(0),

@@ -86,6 +86,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                         }),
                     ],
                 }],
+                tracks: Vec::new(),
                 arrangement: None,
             }],
         }
@@ -144,6 +145,77 @@ song "Rhythm" {
             "rhythm name is declared more than once",
             "rhythm resolution duration must be greater than zero",
         ]
+    );
+}
+
+#[test]
+fn schedule_should_apply_reusable_rhythms_to_tracks() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Triggered" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  rhythm stabs resolution 1/4 { hit rest hit rest }
+  pattern harmony = sequence { chord C4 E4 G4 for 1/1 }
+  track chords role harmony {
+    instrument lead
+    play harmony |> trigger_with stabs
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("triggered track should compile");
+    let score = schedule(&program).expect("triggered track should schedule");
+    let track = &score.songs[0].tracks[0];
+
+    assert_eq!(
+        (
+            track.name.as_str(),
+            track.notes.len(),
+            track.notes[0].start,
+            track.notes[3].start,
+            track.notes[0].duration,
+            track.end,
+        ),
+        (
+            "chords",
+            6,
+            MusicalTime::ZERO,
+            MusicalTime::new(1, 2).expect("half note should be valid"),
+            MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            MusicalTime::new(1, 1).expect("whole note should be valid"),
+        )
+    );
+}
+
+#[test]
+fn compile_should_reject_incompatible_rhythm_triggers() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Triggered" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  rhythm pulse resolution 1/3 { hit }
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role harmony {
+    instrument lead
+    play melody |> trigger_with pulse
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("incompatible trigger should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["pattern step duration must be divisible by rhythm resolution"]
     );
 }
 

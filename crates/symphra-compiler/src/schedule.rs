@@ -56,6 +56,13 @@ fn schedule_song(song: &hir::Song, seed: u64) -> Result<Song, ScheduleError> {
 }
 
 fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleError> {
+    if !song.tracks.is_empty() {
+        return song
+            .tracks
+            .iter()
+            .map(|track| schedule_declared_track(song, track, seed))
+            .collect();
+    }
     let Some(arrangement) = &song.arrangement else {
         return song
             .patterns
@@ -101,6 +108,125 @@ fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleEr
         cursor = end;
     }
     Ok(tracks)
+}
+
+fn schedule_declared_track(
+    song: &hir::Song,
+    track: &hir::TrackDefinition,
+    seed: u64,
+) -> Result<Track, ScheduleError> {
+    let pattern = song
+        .patterns
+        .iter()
+        .find(|pattern| pattern.id == track.pattern)
+        .ok_or(ScheduleError::UnknownPattern(track.pattern))?;
+    let expanded;
+    let pattern = if let Some(rhythm) = track.trigger_with {
+        let rhythm = song
+            .rhythms
+            .iter()
+            .find(|candidate| candidate.id == rhythm)
+            .ok_or(ScheduleError::UnknownRhythm(rhythm))?;
+        expanded = triggered_pattern(pattern, rhythm, track)?;
+        &expanded
+    } else {
+        pattern
+    };
+    let (mut scheduled, _) = schedule_track(
+        pattern,
+        MusicalTime::ZERO,
+        Some(track.id),
+        &track.instrument,
+        seed,
+    )?;
+    scheduled.name.clone_from(&track.name);
+    Ok(scheduled)
+}
+
+fn triggered_pattern(
+    pattern: &hir::Pattern,
+    rhythm: &hir::Rhythm,
+    track: &hir::TrackDefinition,
+) -> Result<hir::Pattern, ScheduleError> {
+    if rhythm.items.is_empty() {
+        return Err(ScheduleError::EmptyRhythm(rhythm.id));
+    }
+    let mut steps = Vec::new();
+    let mut rhythm_index = 0usize;
+    let mut next_id = 0u32;
+    for step in &pattern.steps {
+        let duration = step_duration(step)?;
+        let cells = crate::rhythm_cell_count(duration, rhythm.resolution)
+            .ok_or(ScheduleError::IncompatibleRhythmResolution)?;
+        for _ in 0..cells {
+            let hit = rhythm.items[rhythm_index % rhythm.items.len()] == hir::RhythmItem::Hit;
+            rhythm_index += 1;
+            steps.push(triggered_step(step, hit, rhythm.resolution, &mut next_id)?);
+        }
+    }
+    Ok(hir::Pattern {
+        id: track.id,
+        name: track.name.clone(),
+        steps,
+    })
+}
+
+fn step_duration(step: &hir::PatternStep) -> Result<hir::Duration, ScheduleError> {
+    match step {
+        hir::PatternStep::Note(note) => Ok(note.duration),
+        hir::PatternStep::Chord(chord) => Ok(chord.duration),
+        hir::PatternStep::Rest(rest) => Ok(rest.duration),
+        hir::PatternStep::Sample(_)
+        | hir::PatternStep::Choice(_)
+        | hir::PatternStep::DegreeChoice(_) => Err(ScheduleError::UnsupportedTriggeredStep),
+    }
+}
+
+fn triggered_step(
+    step: &hir::PatternStep,
+    hit: bool,
+    duration: hir::Duration,
+    next_id: &mut u32,
+) -> Result<hir::PatternStep, ScheduleError> {
+    if !hit || matches!(step, hir::PatternStep::Rest(_)) {
+        return Ok(hir::PatternStep::Rest(hir::Rest {
+            id: generated_id(next_id)?,
+            duration,
+        }));
+    }
+    match step {
+        hir::PatternStep::Note(note) => Ok(hir::PatternStep::Note(hir::Note {
+            id: generated_id(next_id)?,
+            duration,
+            ..*note
+        })),
+        hir::PatternStep::Chord(chord) => Ok(hir::PatternStep::Chord(hir::Chord {
+            notes: chord
+                .notes
+                .iter()
+                .map(|note| {
+                    Ok(hir::ChordNote {
+                        id: generated_id(next_id)?,
+                        midi_pitch: note.midi_pitch,
+                    })
+                })
+                .collect::<Result<_, ScheduleError>>()?,
+            duration,
+            velocity: chord.velocity,
+        })),
+        hir::PatternStep::Rest(_) => unreachable!("rests are handled above"),
+        hir::PatternStep::Sample(_)
+        | hir::PatternStep::Choice(_)
+        | hir::PatternStep::DegreeChoice(_) => Err(ScheduleError::UnsupportedTriggeredStep),
+    }
+}
+
+fn generated_id(next_id: &mut u32) -> Result<hir::NodeId, ScheduleError> {
+    let id = hir::NodeId(*next_id);
+    *next_id = (*next_id)
+        .checked_add(1)
+        .ok_or(ScheduleError::TriggeredPatternTooLong)?;
+    Ok(id)
 }
 
 fn schedule_track(
@@ -314,6 +440,16 @@ pub enum ScheduleError {
     DuplicateOccurrence(hir::NodeId),
     #[error("arrangement references unknown pattern ID {0:?}")]
     UnknownPattern(hir::NodeId),
+    #[error("track references unknown rhythm ID {0:?}")]
+    UnknownRhythm(hir::NodeId),
+    #[error("trigger_with rhythm must contain at least one item")]
+    EmptyRhythm(hir::NodeId),
+    #[error("pattern step duration must be divisible by rhythm resolution")]
+    IncompatibleRhythmResolution,
+    #[error("trigger_with supports only note, chord, and rest pattern steps")]
+    UnsupportedTriggeredStep,
+    #[error("triggered pattern contains too many events")]
+    TriggeredPatternTooLong,
     #[error("sample choice {0:?} has no alternatives")]
     EmptyChoice(hir::NodeId),
     #[error("sample choice weights exceed the supported range")]

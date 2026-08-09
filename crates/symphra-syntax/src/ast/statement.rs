@@ -16,6 +16,22 @@ pub enum RhythmItem {
     Rest { span: SourceSpan },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackDeclaration {
+    pub name: Identifier,
+    pub role: Identifier,
+    pub instrument: Identifier,
+    pub play: PlayStatement,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayStatement {
+    pub pattern: Identifier,
+    pub trigger_with: Option<Identifier>,
+    pub span: SourceSpan,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentDeclaration {
     pub name: Identifier,
@@ -78,6 +94,7 @@ pub enum SongStatement {
     },
     Instrument(InstrumentDeclaration),
     Rhythm(RhythmDeclaration),
+    Track(TrackDeclaration),
     Arrangement {
         occurrences: Vec<ArrangementOccurrence>,
         span: SourceSpan,

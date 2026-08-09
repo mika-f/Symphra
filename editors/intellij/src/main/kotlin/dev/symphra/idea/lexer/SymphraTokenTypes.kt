@@ -41,7 +41,8 @@ object SymphraTokenTypes {
     val KEYWORDS = setOf(
         "project", "song", "seed", "sample_rate", "output", "tempo", "meter", "key",
         "instrument", "sample", "choose", "weight", "sampled", "sampler", "source", "root",
-        "pack", "pattern", "arrangement", "with", "sequence", "steps", "degree", "octave",
+        "pack", "rhythm", "resolution", "hit", "track", "role", "play", "trigger_with", "gate",
+        "transpose", "pattern", "arrangement", "with", "sequence", "steps", "degree", "octave",
         "note", "chord", "rest", "for", "velocity"
     )
 

@@ -115,7 +115,12 @@ class SymphraLexer : LexerBase() {
                         i++
                     }
 
-                    c == '=' || c == '/' -> {
+                    c == '|' && i + 1 < end && text[i + 1] == '>' -> {
+                        out += Token(i, i + 2, SymphraTokenTypes.OPERATOR)
+                        i += 2
+                    }
+
+                    c == '=' || c == '/' || c == '+' || c == '-' || c == '%' -> {
                         out += Token(i, i + 1, SymphraTokenTypes.OPERATOR)
                         i++
                     }

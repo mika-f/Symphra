@@ -237,11 +237,43 @@ fn parses_sample_steps() {
         .map(|item| match item {
             StepItem::Sample { index, .. } => Some(*index),
             StepItem::Rest { .. } => None,
+            StepItem::Choose { .. } => panic!("unexpected choice"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
         (*resolution_numerator, *resolution_denominator, indices),
         (1, 8, vec![Some(1), None, Some(3)])
+    );
+}
+
+#[test]
+fn parses_weighted_sample_choices() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Choice" {
+  pattern phrase = steps 1/8 { choose { sample 1 sample 3 weight 2 } }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+    let StepItem::Choose { alternatives, .. } = &items[0] else {
+        panic!("step should be a choice");
+    };
+
+    assert_eq!(
+        alternatives
+            .iter()
+            .map(|alternative| (alternative.index, alternative.weight))
+            .collect::<Vec<_>>(),
+        [(1, 1), (3, 2)]
     );
 }
 

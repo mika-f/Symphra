@@ -22,12 +22,12 @@ pub fn schedule(program: &hir::Program) -> Result<Score, ScheduleError> {
         songs: program
             .songs
             .iter()
-            .map(schedule_song)
+            .map(|song| schedule_song(song, program.project.seed))
             .collect::<Result<_, _>>()?,
     })
 }
 
-fn schedule_song(song: &hir::Song) -> Result<Song, ScheduleError> {
+fn schedule_song(song: &hir::Song, seed: u64) -> Result<Song, ScheduleError> {
     Ok(Song {
         id: id(song.id),
         name: song.name.clone(),
@@ -51,18 +51,24 @@ fn schedule_song(song: &hir::Song) -> Result<Song, ScheduleError> {
                 hir::Mode::Minor => Mode::Minor,
             },
         },
-        tracks: schedule_tracks(song)?,
+        tracks: schedule_tracks(song, seed)?,
     })
 }
 
-fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
+fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleError> {
     let Some(arrangement) = &song.arrangement else {
         return song
             .patterns
             .iter()
             .map(|pattern| {
-                schedule_track(pattern, MusicalTime::ZERO, None, &hir::InstrumentKind::Sine)
-                    .map(|(track, _)| track)
+                schedule_track(
+                    pattern,
+                    MusicalTime::ZERO,
+                    None,
+                    &hir::InstrumentKind::Sine,
+                    seed,
+                )
+                .map(|(track, _)| track)
             })
             .collect();
     };
@@ -84,8 +90,13 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
             .iter()
             .find(|pattern| pattern.id == occurrence.pattern)
             .ok_or(ScheduleError::UnknownPattern(occurrence.pattern))?;
-        let (track, end) =
-            schedule_track(pattern, cursor, Some(occurrence.id), &occurrence.instrument)?;
+        let (track, end) = schedule_track(
+            pattern,
+            cursor,
+            Some(occurrence.id),
+            &occurrence.instrument,
+            seed,
+        )?;
         tracks.push(track);
         cursor = end;
     }
@@ -97,6 +108,7 @@ fn schedule_track(
     mut cursor: MusicalTime,
     occurrence: Option<hir::NodeId>,
     instrument: &hir::InstrumentKind,
+    seed: u64,
 ) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::new();
     let mut samples = Vec::new();
@@ -105,6 +117,7 @@ fn schedule_track(
             hir::PatternStep::Note(note) => note.duration,
             hir::PatternStep::Chord(chord) => chord.duration,
             hir::PatternStep::Sample(sample) => sample.duration,
+            hir::PatternStep::Choice(choice) => choice.duration,
             hir::PatternStep::Rest(rest) => rest.duration,
         };
         let duration = MusicalTime::new(
@@ -142,6 +155,24 @@ fn schedule_track(
                 index: sample.index,
                 velocity: sample.velocity,
             }),
+            hir::PatternStep::Choice(choice) => {
+                let alternative = choose_sample(
+                    &choice.alternatives,
+                    seed,
+                    occurrence.unwrap_or(pattern.id),
+                    choice.id,
+                )?;
+                samples.push(SampleEvent {
+                    id: occurrence.map_or_else(
+                        || id(choice.id),
+                        |occurrence| occurrence_note_id(occurrence, choice.id),
+                    ),
+                    start: cursor,
+                    duration,
+                    index: alternative.index,
+                    velocity: choice.velocity,
+                });
+            }
             hir::PatternStep::Rest(_) => {}
         }
         cursor = cursor.checked_add(duration)?;
@@ -167,6 +198,43 @@ fn schedule_track(
         },
         cursor,
     ))
+}
+
+fn choose_sample(
+    alternatives: &[hir::WeightedSample],
+    seed: u64,
+    track: hir::NodeId,
+    choice: hir::NodeId,
+) -> Result<&hir::WeightedSample, ScheduleError> {
+    let total = alternatives.iter().try_fold(0u64, |total, alternative| {
+        total
+            .checked_add(u64::from(alternative.weight))
+            .ok_or(ScheduleError::ChoiceWeightOverflow)
+    })?;
+    if total == 0 {
+        return Err(ScheduleError::EmptyChoice(choice));
+    }
+    let mut roll = mix(seed ^ (u64::from(track.0) << 32) ^ u64::from(choice.0)) % total;
+    alternatives
+        .iter()
+        .find(|alternative| {
+            let weight = u64::from(alternative.weight);
+            if roll < weight {
+                true
+            } else {
+                roll -= weight;
+                false
+            }
+        })
+        .ok_or(ScheduleError::EmptyChoice(choice))
+}
+
+fn mix(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
 }
 
 fn note_event(
@@ -197,6 +265,10 @@ pub enum ScheduleError {
     DuplicateOccurrence(hir::NodeId),
     #[error("arrangement references unknown pattern ID {0:?}")]
     UnknownPattern(hir::NodeId),
+    #[error("sample choice {0:?} has no alternatives")]
+    EmptyChoice(hir::NodeId),
+    #[error("sample choice weights exceed the supported range")]
+    ChoiceWeightOverflow,
     #[error(transparent)]
     Time(#[from] TimeError),
 }

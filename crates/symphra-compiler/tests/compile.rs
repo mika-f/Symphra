@@ -515,6 +515,45 @@ song "Sampler" {
 }
 
 #[test]
+fn schedule_should_choose_weighted_samples_deterministically() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 20260809 sample_rate 8khz output mono }
+song "Choice" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 {
+    choose { sample 1 sample 3 weight 3 }
+  }
+  arrangement { phrase with voice phrase with voice }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("weighted choices should compile");
+    let first = schedule(&program).expect("weighted choices should schedule");
+    let second = schedule(&program).expect("weighted choices should schedule again");
+    let first_indices = first.songs[0]
+        .tracks
+        .iter()
+        .map(|track| track.samples[0].index)
+        .collect::<Vec<_>>();
+    let second_indices = second.songs[0]
+        .tracks
+        .iter()
+        .map(|track| track.samples[0].index)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        (
+            first_indices.as_slice(),
+            first_indices.iter().all(|index| [1, 3].contains(index))
+        ),
+        (second_indices.as_slice(), true)
+    );
+}
+
+#[test]
 fn compile_should_reject_empty_sample_asset_names() {
     let parsed = parse(
         SourceId(0),
@@ -538,6 +577,36 @@ song "Empty samples" {
         [
             "sample source path must not be empty",
             "sample pack name must not be empty",
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_invalid_sample_choices() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Invalid choices" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = steps 1/8 {
+    choose {}
+    choose { sample 1 weight 0 }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("invalid choices should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "choose must contain at least one sample",
+            "choice weight must be greater than zero",
         ]
     );
 }

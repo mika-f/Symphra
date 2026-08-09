@@ -3,8 +3,9 @@ mod literal;
 use crate::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, Identifier, InstrumentBody,
     InstrumentDeclaration, NoteExpression, NumberLiteral, PatternBody, PatternDeclaration,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, StepItem, VelocityExpression,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RestExpression,
+    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
+    VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -35,6 +36,7 @@ const SEQUENCE_ITEM_START: &[TokenKind] = &[
 ];
 const STEP_ITEM_START: &[TokenKind] = &[
     TokenKind::Sample,
+    TokenKind::Choose,
     TokenKind::Rest,
     TokenKind::RightBrace,
     TokenKind::Eof,
@@ -359,8 +361,9 @@ impl Parser {
                 TokenKind::Rest => Some(StepItem::Rest {
                     span: self.bump().span,
                 }),
+                TokenKind::Choose => self.sample_choice(),
                 _ => {
-                    self.error("expected a sample or rest in steps");
+                    self.error("expected a sample, rest, or choose in steps");
                     None
                 }
             };
@@ -381,6 +384,38 @@ impl Parser {
                 items,
                 span: body_start.cover(end),
             },
+            span: start.cover(end),
+        })
+    }
+
+    fn sample_choice(&mut self) -> Option<StepItem> {
+        let start = self.bump().span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `choose`")?;
+        let mut alternatives = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            let sample = self.required(TokenKind::Sample, "expected `sample` in choose")?;
+            let index = self.required(TokenKind::Integer, "expected sample index")?;
+            let weight = if self.at(TokenKind::Weight) {
+                self.bump();
+                self.required(TokenKind::Integer, "expected choice weight")?
+            } else {
+                Token {
+                    kind: TokenKind::Integer,
+                    text: "1".to_owned(),
+                    span: index.span,
+                }
+            };
+            alternatives.push(SampleChoiceAlternative {
+                index: self.parse_u32(&index)?,
+                weight: self.parse_u32(&weight)?,
+                span: sample.span.cover(weight.span),
+            });
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close choose")?
+            .span;
+        Some(StepItem::Choose {
+            alternatives,
             span: start.cover(end),
         })
     }

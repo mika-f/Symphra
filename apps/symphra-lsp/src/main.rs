@@ -308,6 +308,7 @@ enum CompletionBlock {
     Arrangement,
     Sequence,
     Steps,
+    Choice,
     Sampled,
     Sampler,
     Other,
@@ -364,7 +365,8 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
                 "arrangement",
             ],
             Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
-            Some(CompletionBlock::Steps) => &["sample", "rest"],
+            Some(CompletionBlock::Steps) => &["sample", "rest", "choose"],
+            Some(CompletionBlock::Choice) => &["sample"],
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
@@ -440,6 +442,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => pending = Some(CompletionBlock::Sequence),
             TokenKind::Steps => pending = Some(CompletionBlock::Steps),
+            TokenKind::Choose => pending = Some(CompletionBlock::Choice),
             TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
             TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
@@ -473,6 +476,8 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Chord
                     | TokenKind::Rest
                     | TokenKind::Sample
+                    | TokenKind::Choose
+                    | TokenKind::Weight
                     | TokenKind::Source
                     | TokenKind::Root
                     | TokenKind::Pack,
@@ -633,6 +638,8 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::For => "introduces a duration, such as `1/4`.",
         TokenKind::Velocity => "sets note intensity from 0 to 127.",
         TokenKind::Sample => "selects a sample from the current sampler pack.",
+        TokenKind::Choose => "selects one sample alternative deterministically.",
+        TokenKind::Weight => "sets a relative choice weight.",
         TokenKind::Sampled => "declares a pitched instrument backed by one WAV file.",
         TokenKind::Sampler => "declares an instrument backed by a sample pack.",
         TokenKind::Source => "sets the WAV file used by a sampled instrument.",
@@ -789,7 +796,15 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = steps 1/8 {\n  ", 2, 2),
-            ["sample", "rest"]
+            ["sample", "rest", "choose"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\npattern p = steps 1/8 {\n  choose {\n    ",
+                3,
+                4
+            ),
+            ["sample"]
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  note C4 ", 2, 10),

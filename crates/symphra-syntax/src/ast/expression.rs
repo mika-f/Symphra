@@ -22,10 +22,26 @@ pub enum PatternBody {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepItem {
-    Sample { index: u32, span: SourceSpan },
-    Rest { span: SourceSpan },
+    Sample {
+        index: u32,
+        span: SourceSpan,
+    },
+    Rest {
+        span: SourceSpan,
+    },
+    Choose {
+        alternatives: Vec<SampleChoiceAlternative>,
+        span: SourceSpan,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SampleChoiceAlternative {
+    pub index: u32,
+    pub weight: u32,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug, PartialEq)]

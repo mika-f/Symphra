@@ -95,7 +95,22 @@ pub enum PatternStep {
     Note(Note),
     Chord(Chord),
     Sample(SampleTrigger),
+    Choice(SampleChoice),
     Rest(Rest),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SampleChoice {
+    pub id: NodeId,
+    pub alternatives: Vec<WeightedSample>,
+    pub duration: Duration,
+    pub velocity: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeightedSample {
+    pub index: u32,
+    pub weight: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

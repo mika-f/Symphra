@@ -12,7 +12,7 @@ use symphra_syntax::ast::{
 use crate::hir::{
     Arrangement, Channels, Chord, ChordNote, Duration, InstrumentKind, Key, Meter, Mode, NodeId,
     Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest,
-    SampleTrigger, Song,
+    SampleChoice, SampleTrigger, Song, WeightedSample,
 };
 
 pub mod hir;
@@ -448,6 +448,34 @@ impl Compiler {
                     id: self.id(),
                     duration,
                 }),
+                StepItem::Choose { alternatives, span } => {
+                    if alternatives.is_empty() {
+                        self.error("choose must contain at least one sample", *span);
+                    }
+                    let alternatives = alternatives
+                        .iter()
+                        .filter_map(|alternative| {
+                            if alternative.weight == 0 {
+                                self.error(
+                                    "choice weight must be greater than zero",
+                                    alternative.span,
+                                );
+                                None
+                            } else {
+                                Some(WeightedSample {
+                                    index: alternative.index,
+                                    weight: alternative.weight,
+                                })
+                            }
+                        })
+                        .collect();
+                    PatternStep::Choice(SampleChoice {
+                        id: self.id(),
+                        alternatives,
+                        duration,
+                        velocity: DEFAULT_VELOCITY,
+                    })
+                }
             })
             .collect()
     }

@@ -4,6 +4,18 @@ use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind};
 pub struct Lexed {
     pub tokens: Vec<Token>,
     pub diagnostics: Vec<Diagnostic>,
+    pub comments: Vec<Comment>,
+}
+
+/// A `#` or `//` line comment, captured as trivia rather than a token.
+///
+/// Comments are otherwise discarded during lexing because they are
+/// insignificant to parsing. Tools that need to reproduce source text, such
+/// as a formatter, read them from here instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub span: SourceSpan,
 }
 
 /// Lexes one Symphra source buffer.
@@ -20,6 +32,7 @@ pub fn lex(source: SourceId, input: &str) -> Lexed {
         offset: 0,
         tokens: Vec::new(),
         diagnostics: Vec::new(),
+        comments: Vec::new(),
     };
     while lexer.offset < input.len() {
         lexer.next();
@@ -35,6 +48,7 @@ pub fn lex(source: SourceId, input: &str) -> Lexed {
     Lexed {
         tokens: lexer.tokens,
         diagnostics: lexer.diagnostics,
+        comments: lexer.comments,
     }
 }
 
@@ -44,6 +58,7 @@ struct Lexer<'a> {
     offset: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
+    comments: Vec<Comment>,
 }
 
 impl Lexer<'_> {
@@ -52,10 +67,10 @@ impl Lexer<'_> {
         let ch = self.bump().expect("called only before EOF");
         match ch {
             c if c.is_whitespace() => self.skip_while(char::is_whitespace),
-            '#' => self.skip_while(|c| c != '\n'),
+            '#' => self.comment(start),
             '/' if self.peek() == Some('/') => {
                 self.bump();
-                self.skip_while(|c| c != '\n');
+                self.comment(start);
             }
             '{' => self.push(TokenKind::LeftBrace, start),
             '}' => self.push(TokenKind::RightBrace, start),
@@ -139,6 +154,14 @@ impl Lexer<'_> {
     fn push(&mut self, kind: TokenKind, start: usize) {
         self.tokens.push(Token {
             kind,
+            text: self.input[start..self.offset].to_owned(),
+            span: SourceSpan::new(self.source, start..self.offset),
+        });
+    }
+
+    fn comment(&mut self, start: usize) {
+        self.skip_while(|c| c != '\n');
+        self.comments.push(Comment {
             text: self.input[start..self.offset].to_owned(),
             span: SourceSpan::new(self.source, start..self.offset),
         });

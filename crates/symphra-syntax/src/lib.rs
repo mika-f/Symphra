@@ -12,7 +12,7 @@ mod span;
 mod token;
 
 pub use diagnostic::{Diagnostic, DiagnosticKind};
-pub use lexer::{Lexed, lex};
+pub use lexer::{Comment, Lexed, lex};
 pub use parser::{ParsedSource, parse};
 pub use source::{SourcePosition, SourceRange, SourceText};
 pub use span::{SourceId, SourceSpan};

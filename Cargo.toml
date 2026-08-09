@@ -23,6 +23,7 @@ tokio = { version = "1", features = ["io-std", "macros", "rt-multi-thread", "syn
 tower-lsp-server = "0.23.0"
 
 symphra-syntax = { path = "crates/symphra-syntax" }
+symphra-fmt = { path = "crates/symphra-fmt" }
 symphra-compiler = { path = "crates/symphra-compiler" }
 symphra-score = { path = "crates/symphra-score" }
 symphra-render = { path = "crates/symphra-render" }

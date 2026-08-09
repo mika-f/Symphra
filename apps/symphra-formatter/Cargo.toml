@@ -1,0 +1,16 @@
+[package]
+name = "symphra-formatter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+annotate-snippets.workspace = true
+thiserror.workspace = true
+symphra-fmt.workspace = true
+symphra-syntax.workspace = true
+
+[lints]
+workspace = true

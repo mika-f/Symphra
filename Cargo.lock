@@ -23,6 +23,11 @@ dependencies = [
 [[package]]
 name = "symphra"
 version = "0.1.0"
+dependencies = [
+ "symphra-engine",
+ "symphra-export",
+ "thiserror",
+]
 
 [[package]]
 name = "symphra-compiler"

@@ -22,6 +22,7 @@ symphra-syntax = { path = "crates/symphra-syntax" }
 symphra-compiler = { path = "crates/symphra-compiler" }
 symphra-score = { path = "crates/symphra-score" }
 symphra-render = { path = "crates/symphra-render" }
+symphra-export = { path = "crates/symphra-export" }
 symphra-dsp = { path = "crates/symphra-dsp" }
 symphra-sampler = { path = "crates/symphra-sampler" }
 symphra-engine = { path = "crates/symphra-engine" }

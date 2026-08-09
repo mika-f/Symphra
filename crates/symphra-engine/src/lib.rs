@@ -6,7 +6,7 @@ use symphra_score::TimeError;
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
-pub use symphra_syntax::SourceText;
+pub use symphra_syntax::{SourceId, SourceText};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum EngineError {
@@ -38,9 +38,7 @@ pub fn render_source(source: &SourceText, song_index: usize) -> Result<AudioBuff
 
 #[cfg(test)]
 mod tests {
-    use symphra_syntax::SourceId;
-
-    use super::{EngineError, SourceText, render_source};
+    use super::{EngineError, SourceId, SourceText, render_source};
 
     const SOURCE: &str = r#"
 project {

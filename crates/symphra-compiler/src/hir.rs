@@ -51,7 +51,7 @@ pub struct TrackDefinition {
     pub reverse: bool,
     pub pan: Pan,
     pub chance: Option<Chance>,
-    pub speed: f32,
+    pub speed: Speed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +64,12 @@ pub struct Chance {
 pub enum Pan {
     Fixed(i8),
     Alternate { left_percent: i8, right_percent: i8 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Speed {
+    Fixed(f32),
+    Alternate { first: f32, second: f32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

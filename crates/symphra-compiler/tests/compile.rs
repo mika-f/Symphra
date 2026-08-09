@@ -1097,6 +1097,38 @@ song "Sampler" {
 }
 
 #[test]
+fn schedule_should_alternate_sampler_playback_speed() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 sample 2 sample 3 }
+  track voice role melody {
+    instrument voice
+    play phrase |> alternate { speed 1.5 speed 1.8 }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("alternating speed should compile");
+
+    let score = schedule(&program).expect("alternating speed should schedule");
+    let speeds = score.songs[0].tracks[0]
+        .samples
+        .iter()
+        .map(|event| event.speed);
+
+    assert!(
+        speeds
+            .zip([1.5, 1.8, 1.5])
+            .all(|(actual, expected)| (actual - expected).abs() < f32::EPSILON)
+    );
+}
+
+#[test]
 fn compile_should_reject_speed_for_pitched_instruments() {
     let parsed = parse(
         SourceId(0),

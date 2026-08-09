@@ -6,14 +6,14 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, Declaration, DegreeChoiceAlternative, Identifier, InstrumentBody,
     PanExpression, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
-    RhythmDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
-    TrackDeclaration,
+    RhythmDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
+    StepItem, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, Channels, Chord, ChordNote, DegreeChoice, Duration, InstrumentKind, Key,
     Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program,
-    Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, TrackDefinition,
+    Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleTrigger, Song, Speed, TrackDefinition,
     WeightedNote, WeightedSampleSequence,
 };
 
@@ -457,21 +457,39 @@ impl Compiler {
         &mut self,
         declaration: &TrackDeclaration,
         instrument: Option<&InstrumentKind>,
-    ) -> Option<f32> {
+    ) -> Option<Speed> {
         let Some(speed) = declaration.play.speed else {
-            return Some(1.0);
+            return Some(Speed::Fixed(1.0));
         };
-        if !speed.factor.is_finite() || speed.factor <= 0.0 {
-            self.error("speed must be finite and greater than zero", speed.span);
+        let span = speed.span();
+        let (speed, factors) = match speed {
+            SpeedExpression::Fixed { factor, .. } => (Speed::Fixed(factor), [factor, factor]),
+            SpeedExpression::Alternate {
+                first_factor,
+                second_factor,
+                ..
+            } => (
+                Speed::Alternate {
+                    first: first_factor,
+                    second: second_factor,
+                },
+                [first_factor, second_factor],
+            ),
+        };
+        if factors
+            .iter()
+            .any(|factor| !factor.is_finite() || *factor <= 0.0)
+        {
+            self.error("speed must be finite and greater than zero", span);
             return None;
         }
         if instrument
             .is_some_and(|instrument| !matches!(instrument, InstrumentKind::Sampler { .. }))
         {
-            self.error("speed is only supported for sampler tracks", speed.span);
+            self.error("speed is only supported for sampler tracks", span);
             return None;
         }
-        Some(speed.factor)
+        Some(speed)
     }
 
     fn repeat_count(&mut self, declaration: &TrackDeclaration) -> Option<u16> {

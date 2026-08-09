@@ -463,6 +463,7 @@ fn completion_labels(
             "repeat",
             "reverse",
             "speed",
+            "alternate",
             "pan",
             "chance",
         ]
@@ -792,9 +793,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Reverse => "mirrors a played pattern across its end time.",
         TokenKind::Speed => "changes sampler playback speed without moving events.",
         TokenKind::Pan => "places a track from `-100%` left to `100%` right.",
-        TokenKind::Alternate => {
-            "alternates successive events between left and right pan positions."
-        }
+        TokenKind::Alternate => "alternates successive pan positions or sampler speeds.",
         TokenKind::Chance => "applies a transform to a deterministic percentage of events.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
@@ -1067,6 +1066,7 @@ mod tests {
                 "repeat",
                 "reverse",
                 "speed",
+                "alternate",
                 "pan",
                 "chance"
             ]

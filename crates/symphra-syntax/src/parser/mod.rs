@@ -480,9 +480,10 @@ impl Parser {
                 }
                 TokenKind::Chance => play_end = self.chance(&mut chance)?,
                 TokenKind::Speed => play_end = self.speed(&mut speed)?,
+                TokenKind::Alternate => play_end = self.alternate_speed(&mut speed)?,
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, `chance`, or `speed` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, `repeat`, `reverse`, `pan`, `chance`, `speed`, or `alternate` after `|>`",
                     );
                     return None;
                 }
@@ -504,7 +505,48 @@ impl Parser {
     }
 
     fn speed(&mut self, speed: &mut Option<SpeedExpression>) -> Option<SourceSpan> {
+        let (factor, span) = self.speed_factor()?;
+        if speed
+            .replace(SpeedExpression::Fixed { factor, span })
+            .is_some()
+        {
+            self.diagnostics.push(Diagnostic::syntax(
+                "playback speed may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
+    }
+
+    fn alternate_speed(&mut self, speed: &mut Option<SpeedExpression>) -> Option<SourceSpan> {
         let start = self.bump().span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `alternate`")?;
+        let (first_factor, _) = self.speed_factor()?;
+        let (second_factor, _) = self.speed_factor()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` after alternate block")?
+            .span;
+        let span = start.cover(end);
+        if speed
+            .replace(SpeedExpression::Alternate {
+                first_factor,
+                second_factor,
+                span,
+            })
+            .is_some()
+        {
+            self.diagnostics.push(Diagnostic::syntax(
+                "playback speed may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
+    }
+
+    fn speed_factor(&mut self) -> Option<(f32, SourceSpan)> {
+        let start = self
+            .required(TokenKind::Speed, "expected `speed` in alternate block")?
+            .span;
         let value = self.required_any(
             &[TokenKind::Integer, TokenKind::Decimal],
             "expected a number after `speed`",
@@ -515,13 +557,7 @@ impl Parser {
             return None;
         };
         let span = start.cover(value.span);
-        if speed.replace(SpeedExpression { factor, span }).is_some() {
-            self.diagnostics.push(Diagnostic::syntax(
-                "`speed` may only appear once in a play pipeline",
-                span,
-            ));
-        }
-        Some(span)
+        Some((factor, span))
     }
 
     fn chance(&mut self, chance: &mut Option<ChanceExpression>) -> Option<SourceSpan> {

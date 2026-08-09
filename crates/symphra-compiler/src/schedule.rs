@@ -142,9 +142,6 @@ fn schedule_declared_track(
     scheduled.name.clone_from(&track.name);
     scheduled.gain = track.gain;
     scheduled.pan = score_pan(track.pan);
-    for sample in &mut scheduled.samples {
-        sample.speed = track.speed;
-    }
     if let Some(semitones) = track.transpose_semitones {
         apply_transpose(&mut scheduled, semitones)?;
     }
@@ -158,7 +155,18 @@ fn schedule_declared_track(
     if track.reverse {
         apply_reverse(&mut scheduled)?;
     }
+    apply_speed(&mut scheduled, track.speed);
     Ok(scheduled)
+}
+
+fn apply_speed(track: &mut Track, speed: hir::Speed) {
+    for (index, sample) in track.samples.iter_mut().enumerate() {
+        sample.speed = match speed {
+            hir::Speed::Fixed(factor) => factor,
+            hir::Speed::Alternate { first, .. } if index % 2 == 0 => first,
+            hir::Speed::Alternate { second, .. } => second,
+        };
+    }
 }
 
 fn apply_chance(track: &mut Track, chance: hir::Chance, seed: u64) -> Result<(), ScheduleError> {

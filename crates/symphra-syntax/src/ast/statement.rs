@@ -96,9 +96,25 @@ pub struct ChanceExpression {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SpeedExpression {
-    pub factor: f32,
-    pub span: SourceSpan,
+pub enum SpeedExpression {
+    Fixed {
+        factor: f32,
+        span: SourceSpan,
+    },
+    Alternate {
+        first_factor: f32,
+        second_factor: f32,
+        span: SourceSpan,
+    },
+}
+
+impl SpeedExpression {
+    #[must_use]
+    pub const fn span(self) -> SourceSpan {
+        match self {
+            Self::Fixed { span, .. } | Self::Alternate { span, .. } => span,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

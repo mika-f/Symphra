@@ -445,7 +445,10 @@ fn parses_tracks_with_rhythm_triggers() {
     );
     assert_eq!(
         (
-            track.play.speed.map(|speed| speed.factor),
+            track.play.speed.and_then(|speed| match speed {
+                symphra_syntax::ast::SpeedExpression::Fixed { factor, .. } => Some(factor),
+                symphra_syntax::ast::SpeedExpression::Alternate { .. } => None,
+            }),
             track.play.chance.as_ref().map(|chance| (
                 chance.percent,
                 chance.transpose.semitones,
@@ -454,6 +457,30 @@ fn parses_tracks_with_rhythm_triggers() {
         ),
         (Some(1.50), Some((15, 12, "st")))
     );
+}
+
+#[test]
+fn parses_alternating_sampler_speed() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Track\" { track voice role melody { instrument voice play phrase |> alternate { speed 1.50 speed 1.80 } } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+
+    assert!(matches!(
+        track.play.speed,
+        Some(symphra_syntax::ast::SpeedExpression::Alternate {
+            first_factor: 1.5,
+            second_factor: 1.8,
+            ..
+        })
+    ));
 }
 
 #[test]

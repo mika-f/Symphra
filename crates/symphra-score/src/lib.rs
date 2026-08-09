@@ -60,8 +60,15 @@ pub enum Mode {
 pub struct Track {
     pub id: EntityId,
     pub name: String,
+    pub instrument: InstrumentKind,
     pub notes: Vec<NoteEvent>,
     pub end: MusicalTime,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentKind {
+    Sine,
+    Triangle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

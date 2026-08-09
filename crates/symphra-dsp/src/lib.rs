@@ -3,6 +3,37 @@
 use std::f64::consts::TAU;
 use std::num::NonZeroU32;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waveform {
+    Sine,
+    Triangle,
+}
+
+#[derive(Clone, Debug)]
+pub struct Oscillator {
+    sine: SineOscillator,
+    waveform: Waveform,
+}
+
+impl Oscillator {
+    #[must_use]
+    pub fn from_midi(midi_pitch: u8, sample_rate_hz: NonZeroU32, waveform: Waveform) -> Self {
+        Self {
+            sine: SineOscillator::from_midi(midi_pitch, sample_rate_hz),
+            waveform,
+        }
+    }
+
+    #[must_use]
+    pub fn next_sample(&mut self) -> f32 {
+        let sine = self.sine.next_sample();
+        match self.waveform {
+            Waveform::Sine => sine,
+            Waveform::Triangle => sine.asin() * std::f32::consts::FRAC_2_PI,
+        }
+    }
+}
+
 /// Converts a MIDI note number to frequency in hertz using A4 = 440 Hz.
 #[must_use]
 pub fn midi_frequency(midi_pitch: u8) -> f64 {
@@ -68,7 +99,7 @@ pub fn fade_gain(sample_index: u64, total_samples: u64, fade_samples: u64) -> f3
 mod tests {
     use std::num::NonZeroU32;
 
-    use super::{SineOscillator, fade_gain};
+    use super::{Oscillator, SineOscillator, Waveform, fade_gain};
 
     #[test]
     fn sine_oscillator_should_complete_one_cycle_in_four_samples() {
@@ -85,6 +116,18 @@ mod tests {
                 .zip([0.0, 1.0, 0.0, -1.0])
                 .all(|(actual, expected)| (actual - expected).abs() < f32::EPSILON)
         );
+    }
+
+    #[test]
+    fn oscillator_should_render_selected_waveform() {
+        let sample_rate = NonZeroU32::new(3_520).expect("sample rate should be non-zero");
+        let mut sine = Oscillator::from_midi(69, sample_rate, Waveform::Sine);
+        let mut triangle = Oscillator::from_midi(69, sample_rate, Waveform::Triangle);
+
+        let _ = sine.next_sample();
+        let _ = triangle.next_sample();
+
+        assert!((sine.next_sample() - triangle.next_sample()).abs() > 0.1);
     }
 
     #[test]

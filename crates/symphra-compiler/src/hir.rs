@@ -43,6 +43,13 @@ pub struct Arrangement {
 pub struct PatternOccurrence {
     pub id: NodeId,
     pub pattern: NodeId,
+    pub instrument: InstrumentKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstrumentKind {
+    Sine,
+    Triangle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

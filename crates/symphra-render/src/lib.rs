@@ -2,8 +2,8 @@
 
 use std::num::NonZeroU32;
 
-use symphra_dsp::{SineOscillator, fade_gain};
-use symphra_score::{Channels, MusicalTime, Score, Song, TimeError};
+use symphra_dsp::{Oscillator, Waveform, fade_gain};
+use symphra_score::{Channels, InstrumentKind, MusicalTime, Score, Song, TimeError};
 
 const MAX_NOTE_GAIN: f32 = 0.2;
 
@@ -98,26 +98,32 @@ fn render_notes(
         return Err(RenderError::InvalidSampleRate);
     };
     let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
-    for note in song.tracks.iter().flat_map(|track| &track.notes) {
-        let start = time_to_frame(note.start, song.tempo_bpm, sample_rate_hz)?;
-        let end = time_to_frame(
-            note.start.checked_add(note.duration)?,
-            song.tempo_bpm,
-            sample_rate_hz,
-        )?;
-        let note_frames = end.saturating_sub(start);
-        let mut oscillator = SineOscillator::from_midi(note.midi_pitch, sample_rate);
-        for frame in start..end {
-            let value = oscillator.next_sample()
-                * fade_gain(frame - start, note_frames, fade_samples)
-                * MAX_NOTE_GAIN
-                * (f32::from(note.velocity) / 127.0);
-            let first_sample = frame
-                .checked_mul(u64::from(channels))
-                .and_then(|offset| usize::try_from(offset).ok())
-                .ok_or(RenderError::AudioTooLarge)?;
-            for channel in 0..usize::from(channels) {
-                samples[first_sample + channel] += value;
+    for track in &song.tracks {
+        let waveform = match track.instrument {
+            InstrumentKind::Sine => Waveform::Sine,
+            InstrumentKind::Triangle => Waveform::Triangle,
+        };
+        for note in &track.notes {
+            let start = time_to_frame(note.start, song.tempo_bpm, sample_rate_hz)?;
+            let end = time_to_frame(
+                note.start.checked_add(note.duration)?,
+                song.tempo_bpm,
+                sample_rate_hz,
+            )?;
+            let note_frames = end.saturating_sub(start);
+            let mut oscillator = Oscillator::from_midi(note.midi_pitch, sample_rate, waveform);
+            for frame in start..end {
+                let value = oscillator.next_sample()
+                    * fade_gain(frame - start, note_frames, fade_samples)
+                    * MAX_NOTE_GAIN
+                    * (f32::from(note.velocity) / 127.0);
+                let first_sample = frame
+                    .checked_mul(u64::from(channels))
+                    .and_then(|offset| usize::try_from(offset).ok())
+                    .ok_or(RenderError::AudioTooLarge)?;
+                for channel in 0..usize::from(channels) {
+                    samples[first_sample + channel] += value;
+                }
             }
         }
     }
@@ -148,8 +154,8 @@ fn time_to_frame(
 #[cfg(test)]
 mod tests {
     use symphra_score::{
-        Channels, EntityId, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass, Score, Song,
-        Track,
+        Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass,
+        Score, Song, Track,
     };
 
     use super::render_song;
@@ -175,6 +181,7 @@ mod tests {
                 tracks: vec![Track {
                     id: EntityId(1),
                     name: "tone".to_owned(),
+                    instrument: InstrumentKind::Sine,
                     notes: vec![NoteEvent {
                         id: EntityId(2),
                         start: MusicalTime::ZERO,

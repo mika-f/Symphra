@@ -1,9 +1,10 @@
 mod literal;
 
 use crate::ast::{
-    ChordExpression, Declaration, Identifier, NoteExpression, NumberLiteral, PatternBody,
-    PatternDeclaration, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RestExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile, VelocityExpression,
+    ArrangementOccurrence, ChordExpression, Declaration, Identifier, InstrumentDeclaration,
+    NoteExpression, NumberLiteral, PatternBody, PatternDeclaration, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RestExpression, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -19,6 +20,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Tempo,
     TokenKind::Meter,
     TokenKind::Key,
+    TokenKind::Instrument,
     TokenKind::Pattern,
     TokenKind::Arrangement,
     TokenKind::RightBrace,
@@ -147,6 +149,7 @@ impl Parser {
                 TokenKind::Tempo => self.tempo(),
                 TokenKind::Meter => self.meter(),
                 TokenKind::Key => self.key(),
+                TokenKind::Instrument => self.instrument().map(SongStatement::Instrument),
                 TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
@@ -199,13 +202,36 @@ impl Parser {
         Some(SongStatement::Key { tonic, mode, span })
     }
 
+    fn instrument(&mut self) -> Option<InstrumentDeclaration> {
+        let start = self.bump().span;
+        let name = self.identifier("expected an instrument name")?;
+        self.required(TokenKind::Equal, "expected `=` after instrument name")?;
+        let kind = self.identifier("expected an instrument kind")?;
+        let span = start.cover(kind.span);
+        Some(InstrumentDeclaration { name, kind, span })
+    }
+
     fn arrangement(&mut self) -> Option<SongStatement> {
         let start = self.bump().span;
         self.required(TokenKind::LeftBrace, "expected `{` after `arrangement`")?;
-        let mut patterns = Vec::new();
+        let mut occurrences = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             if self.at(TokenKind::Identifier) {
-                patterns.push(self.identifier("expected a pattern name in arrangement")?);
+                let pattern = self.identifier("expected a pattern name in arrangement")?;
+                let instrument = if self.at(TokenKind::With) {
+                    self.bump();
+                    Some(self.identifier("expected an instrument name after `with`")?)
+                } else {
+                    None
+                };
+                let span = instrument.as_ref().map_or(pattern.span, |instrument| {
+                    pattern.span.cover(instrument.span)
+                });
+                occurrences.push(ArrangementOccurrence {
+                    pattern,
+                    instrument,
+                    span,
+                });
             } else {
                 self.error("expected a pattern name in arrangement");
                 while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
@@ -217,7 +243,7 @@ impl Parser {
             .required(TokenKind::RightBrace, "expected `}` to close arrangement")?
             .span;
         Some(SongStatement::Arrangement {
-            patterns,
+            occurrences,
             span: start.cover(end),
         })
     }

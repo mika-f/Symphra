@@ -112,10 +112,46 @@ fn parses_the_draft_example() {
     };
     assert_eq!(note.pitch.text, "G4");
     assert_eq!((note.duration_numerator, note.duration_denominator), (1, 2));
-    let SongStatement::Arrangement { patterns, .. } = &song.statements[4] else {
+    let SongStatement::Arrangement { occurrences, .. } = &song.statements[4] else {
         panic!("fifth song statement should be an arrangement");
     };
-    assert_eq!(patterns[0].text, "melody");
+    assert_eq!(occurrences[0].pattern.text, "melody");
+}
+
+#[test]
+fn parses_instrument_assignments_in_arrangements() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Instruments" {
+  instrument lead = triangle
+  pattern melody = sequence {}
+  arrangement { melody with lead melody }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("first statement should be an instrument");
+    };
+    let SongStatement::Arrangement { occurrences, .. } = &song.statements[2] else {
+        panic!("third statement should be an arrangement");
+    };
+
+    assert_eq!(
+        (
+            instrument.name.text.as_str(),
+            instrument.kind.text.as_str(),
+            occurrences[0].pattern.text.as_str(),
+            occurrences[0]
+                .instrument
+                .as_ref()
+                .map(|instrument| instrument.text.as_str()),
+            occurrences[1].instrument.as_ref(),
+        ),
+        ("lead", "triangle", "melody", Some("lead"), None)
+    );
 }
 
 #[test]

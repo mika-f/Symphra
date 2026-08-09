@@ -1,6 +1,6 @@
 use symphra_compiler::hir::{
-    Arrangement, Channels, Duration, Key, Meter, Mode, NodeId, Note, Pattern, PatternOccurrence,
-    PatternStep, PitchClass, Program, Project, Song,
+    Arrangement, Channels, Duration, InstrumentKind, Key, Meter, Mode, NodeId, Note, Pattern,
+    PatternOccurrence, PatternStep, PitchClass, Program, Project, Song,
 };
 use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::MusicalTime;
@@ -318,6 +318,7 @@ fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
         occurrences: vec![PatternOccurrence {
             id: NodeId(99),
             pattern: NodeId(u32::MAX),
+            instrument: InstrumentKind::Sine,
         }],
     });
     let unknown = schedule(&program);
@@ -326,10 +327,12 @@ fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
             PatternOccurrence {
                 id: NodeId(99),
                 pattern: NodeId(1),
+                instrument: InstrumentKind::Sine,
             },
             PatternOccurrence {
                 id: NodeId(99),
                 pattern: NodeId(1),
+                instrument: InstrumentKind::Sine,
             },
         ],
     });
@@ -341,6 +344,80 @@ fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
             Err(ScheduleError::UnknownPattern(NodeId(u32::MAX))),
             Err(ScheduleError::DuplicateOccurrence(NodeId(99))),
         )
+    );
+}
+
+#[test]
+fn schedule_should_apply_arrangement_instruments_with_sine_default() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Instruments" {
+  tempo 120bpm meter 4/4 key C major
+  arrangement { phrase with lead phrase }
+  instrument lead = triangle
+  pattern phrase = sequence { note C4 for 1/4 }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("instruments should compile");
+
+    let score = schedule(&program).expect("instruments should schedule");
+
+    assert_eq!(
+        (
+            program.songs[0].arrangement.as_ref().map(|arrangement| {
+                arrangement
+                    .occurrences
+                    .iter()
+                    .map(|occurrence| occurrence.instrument)
+                    .collect::<Vec<_>>()
+            }),
+            score.songs[0]
+                .tracks
+                .iter()
+                .map(|track| track.instrument)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            Some(vec![InstrumentKind::Triangle, InstrumentKind::Sine]),
+            vec![
+                symphra_score::InstrumentKind::Triangle,
+                symphra_score::InstrumentKind::Sine,
+            ],
+        )
+    );
+}
+
+#[test]
+fn compile_should_reject_invalid_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Invalid instruments" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = square
+  instrument lead = sine
+  pattern phrase = sequence {}
+  arrangement { phrase with missing }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("invalid instruments should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "instrument kind must be `sine` or `triangle`",
+            "instrument name is declared more than once",
+            "arrangement references an unknown instrument",
+        ]
     );
 }
 

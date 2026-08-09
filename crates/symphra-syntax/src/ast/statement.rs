@@ -2,6 +2,20 @@ use super::{FrequencyLiteral, Identifier, PatternDeclaration, RateLiteral};
 use crate::SourceSpan;
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct InstrumentDeclaration {
+    pub name: Identifier,
+    pub kind: Identifier,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArrangementOccurrence {
+    pub pattern: Identifier,
+    pub instrument: Option<Identifier>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum ProjectStatement {
     Seed {
         value: u64,
@@ -33,8 +47,9 @@ pub enum SongStatement {
         mode: Identifier,
         span: SourceSpan,
     },
+    Instrument(InstrumentDeclaration),
     Arrangement {
-        patterns: Vec<Identifier>,
+        occurrences: Vec<ArrangementOccurrence>,
         span: SourceSpan,
     },
     Pattern(PatternDeclaration),

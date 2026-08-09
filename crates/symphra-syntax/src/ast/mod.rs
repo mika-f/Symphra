@@ -9,4 +9,6 @@ pub use expression::{
     VelocityExpression,
 };
 pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, RateLiteral};
-pub use statement::{ProjectStatement, SongStatement};
+pub use statement::{
+    ArrangementOccurrence, InstrumentDeclaration, ProjectStatement, SongStatement,
+};

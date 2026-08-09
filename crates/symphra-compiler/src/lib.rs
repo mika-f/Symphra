@@ -4,13 +4,13 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    Declaration, Identifier, PatternBody, PatternDeclaration, ProjectDeclaration, ProjectStatement,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    ArrangementOccurrence, Declaration, PatternBody, PatternDeclaration, ProjectDeclaration,
+    ProjectStatement, SequenceItem, SongDeclaration, SongStatement, SourceFile,
 };
 
 use crate::hir::{
-    Arrangement, Channels, Chord, ChordNote, Duration, Key, Meter, Mode, NodeId, Note, Pattern,
-    PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Song,
+    Arrangement, Channels, Chord, ChordNote, Duration, InstrumentKind, Key, Meter, Mode, NodeId,
+    Note, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Song,
 };
 
 pub mod hir;
@@ -157,6 +157,8 @@ impl Compiler {
         let mut key_seen = false;
         let mut patterns = Vec::new();
         let mut pattern_names = HashSet::new();
+        let mut instruments = Vec::new();
+        let mut instrument_names = HashSet::new();
         let mut arrangement = None;
 
         for statement in &declaration.statements {
@@ -189,11 +191,21 @@ impl Compiler {
                         key = self.key(&tonic.text, &mode.text, *span);
                     }
                 }
-                SongStatement::Arrangement {
-                    patterns: references,
-                    span,
-                } => {
-                    if arrangement.replace((references, *span)).is_some() {
+                SongStatement::Instrument(instrument) => {
+                    if instrument_names.insert(instrument.name.text.as_str()) {
+                        instruments.push((
+                            instrument.name.text.as_str(),
+                            self.instrument_kind(&instrument.kind.text, instrument.kind.span),
+                        ));
+                    } else {
+                        self.error(
+                            "instrument name is declared more than once",
+                            instrument.name.span,
+                        );
+                    }
+                }
+                SongStatement::Arrangement { occurrences, span } => {
+                    if arrangement.replace((occurrences, *span)).is_some() {
                         self.error("arrangement is declared more than once", *span);
                     }
                 }
@@ -216,8 +228,9 @@ impl Compiler {
         if !key_seen {
             self.error("key is required", declaration.span);
         }
-        let arrangement = arrangement
-            .and_then(|(references, span)| self.arrangement(references, span, &patterns));
+        let arrangement = arrangement.and_then(|(references, span)| {
+            self.arrangement(references, span, &patterns, &instruments)
+        });
         match (tempo_bpm, meter, key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
                 id,
@@ -234,9 +247,10 @@ impl Compiler {
 
     fn arrangement(
         &mut self,
-        references: &[Identifier],
+        references: &[ArrangementOccurrence],
         span: SourceSpan,
         patterns: &[Pattern],
+        instruments: &[(&str, Option<InstrumentKind>)],
     ) -> Option<Arrangement> {
         if references.is_empty() {
             self.error("arrangement must contain at least one pattern", span);
@@ -247,17 +261,49 @@ impl Compiler {
             .filter_map(|reference| {
                 let pattern = patterns
                     .iter()
-                    .find(|pattern| pattern.name == reference.text);
+                    .find(|pattern| pattern.name == reference.pattern.text);
                 if pattern.is_none() {
-                    self.error("arrangement references an unknown pattern", reference.span);
+                    self.error(
+                        "arrangement references an unknown pattern",
+                        reference.pattern.span,
+                    );
                 }
-                pattern.map(|pattern| PatternOccurrence {
-                    id: self.id(),
-                    pattern: pattern.id,
-                })
+                let instrument =
+                    reference
+                        .instrument
+                        .as_ref()
+                        .map_or(Some(InstrumentKind::Sine), |reference| {
+                            let instrument =
+                                instruments.iter().find(|(name, _)| *name == reference.text);
+                            if instrument.is_none() {
+                                self.error(
+                                    "arrangement references an unknown instrument",
+                                    reference.span,
+                                );
+                            }
+                            instrument.and_then(|(_, kind)| *kind)
+                        });
+                pattern
+                    .zip(instrument)
+                    .map(|(pattern, instrument)| PatternOccurrence {
+                        id: self.id(),
+                        pattern: pattern.id,
+                        instrument,
+                    })
             })
             .collect();
         Some(Arrangement { occurrences })
+    }
+
+    fn instrument_kind(&mut self, kind: &str, span: SourceSpan) -> Option<InstrumentKind> {
+        match kind {
+            "sine" => Some(InstrumentKind::Sine),
+            "triangle" => Some(InstrumentKind::Triangle),
+            _ => {
+                self.error("instrument kind must be `sine` or `triangle`", span);
+                None
+            }
+        }
     }
 
     fn pattern(&mut self, declaration: &PatternDeclaration) -> Pattern {

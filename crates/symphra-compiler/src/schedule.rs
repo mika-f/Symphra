@@ -1,6 +1,6 @@
 use symphra_score::{
-    Channels, EntityId, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass, Score, Song,
-    TimeError, Track,
+    Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass,
+    Score, Song, TimeError, Track,
 };
 
 use crate::hir;
@@ -60,7 +60,10 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
         return song
             .patterns
             .iter()
-            .map(|pattern| schedule_track(pattern, MusicalTime::ZERO, None).map(|(track, _)| track))
+            .map(|pattern| {
+                schedule_track(pattern, MusicalTime::ZERO, None, hir::InstrumentKind::Sine)
+                    .map(|(track, _)| track)
+            })
             .collect();
     };
     if arrangement.occurrences.is_empty() {
@@ -81,7 +84,8 @@ fn schedule_tracks(song: &hir::Song) -> Result<Vec<Track>, ScheduleError> {
             .iter()
             .find(|pattern| pattern.id == occurrence.pattern)
             .ok_or(ScheduleError::UnknownPattern(occurrence.pattern))?;
-        let (track, end) = schedule_track(pattern, cursor, Some(occurrence.id))?;
+        let (track, end) =
+            schedule_track(pattern, cursor, Some(occurrence.id), occurrence.instrument)?;
         tracks.push(track);
         cursor = end;
     }
@@ -92,6 +96,7 @@ fn schedule_track(
     pattern: &hir::Pattern,
     mut cursor: MusicalTime,
     occurrence: Option<hir::NodeId>,
+    instrument: hir::InstrumentKind,
 ) -> Result<(Track, MusicalTime), ScheduleError> {
     let mut notes = Vec::new();
     for step in &pattern.steps {
@@ -133,6 +138,10 @@ fn schedule_track(
         Track {
             id: id(occurrence.unwrap_or(pattern.id)),
             name: pattern.name.clone(),
+            instrument: match instrument {
+                hir::InstrumentKind::Sine => InstrumentKind::Sine,
+                hir::InstrumentKind::Triangle => InstrumentKind::Triangle,
+            },
             notes,
             end: cursor,
         },

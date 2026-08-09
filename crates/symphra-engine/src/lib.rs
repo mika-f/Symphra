@@ -185,4 +185,25 @@ song "Velocity" {
             (4_000, true)
         );
     }
+
+    #[test]
+    fn render_source_should_apply_arrangement_instruments() {
+        let source = SourceText::new(
+            SourceId(0),
+            "instrument.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Instrument" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = triangle
+  pattern phrase = sequence { note A4 for 1/4 }
+  arrangement { phrase with lead phrase }
+}
+"#,
+        );
+
+        let audio = render_source(&source, 0).expect("instrument should render");
+
+        assert_ne!(audio.samples[..4_000], audio.samples[4_000..]);
+    }
 }

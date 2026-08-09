@@ -211,18 +211,24 @@ fn document_symbols(source: &SourceText) -> Vec<DocumentSymbol> {
                 let children = song
                     .statements
                     .iter()
-                    .filter_map(|statement| {
-                        let SongStatement::Pattern(pattern) = statement else {
-                            return None;
-                        };
-                        symbol(
+                    .filter_map(|statement| match statement {
+                        SongStatement::Pattern(pattern) => symbol(
                             source,
                             pattern.name.text.clone(),
                             SymbolKind::FUNCTION,
                             pattern.span,
                             pattern.name.span,
                             None,
-                        )
+                        ),
+                        SongStatement::Instrument(instrument) => symbol(
+                            source,
+                            instrument.name.text.clone(),
+                            SymbolKind::OBJECT,
+                            instrument.span,
+                            instrument.name.span,
+                            None,
+                        ),
+                        _ => None,
                     })
                     .collect();
                 symbol(
@@ -299,6 +305,7 @@ fn symbol(
 enum CompletionBlock {
     Project,
     Song,
+    Arrangement,
     Sequence,
     Other,
 }
@@ -327,18 +334,34 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
 
     let labels: &[&str] = if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal)
     {
-        &["sequence"]
+        if matches!(line_tokens.first(), Some(token) if token.kind == TokenKind::Instrument) {
+            &["sine", "triangle"]
+        } else {
+            &["sequence"]
+        }
     } else if duration_keyword_follows(line_tokens) {
         &["for"]
     } else if velocity_keyword_follows(line_tokens) {
         &["velocity"]
+    } else if matches!(block, Some(CompletionBlock::Arrangement))
+        && matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Identifier)
+        && !matches!(line_tokens.get(line_tokens.len().saturating_sub(2)), Some(token) if token.kind == TokenKind::With)
+    {
+        &["with"]
     } else if completion_statement_start(line_tokens) {
         match block {
             None => &["project", "song"],
             Some(CompletionBlock::Project) => &["seed", "sample_rate", "output"],
-            Some(CompletionBlock::Song) => &["tempo", "meter", "key", "pattern", "arrangement"],
+            Some(CompletionBlock::Song) => &[
+                "tempo",
+                "meter",
+                "key",
+                "instrument",
+                "pattern",
+                "arrangement",
+            ],
             Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
-            Some(CompletionBlock::Other) => &[],
+            Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
         }
     } else {
         &[]
@@ -408,6 +431,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
         match token.kind {
             TokenKind::Project => pending = Some(CompletionBlock::Project),
             TokenKind::Song => pending = Some(CompletionBlock::Song),
+            TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => pending = Some(CompletionBlock::Sequence),
             TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
             TokenKind::RightBrace => {
@@ -433,6 +457,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Tempo
                     | TokenKind::Meter
                     | TokenKind::Key
+                    | TokenKind::Instrument
                     | TokenKind::Pattern
                     | TokenKind::Arrangement
                     | TokenKind::Note
@@ -477,27 +502,45 @@ fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Loca
         let Declaration::Song(song) = declaration else {
             continue;
         };
-        let reference = song.statements.iter().find_map(|statement| {
-            let SongStatement::Arrangement { patterns, .. } = statement else {
+        let occurrence = song.statements.iter().find_map(|statement| {
+            let SongStatement::Arrangement { occurrences, .. } = statement else {
                 return None;
             };
-            patterns
+            occurrences
                 .iter()
-                .find(|pattern| pattern.span.start <= offset && offset < pattern.span.end)
+                .find(|occurrence| occurrence.span.start <= offset && offset < occurrence.span.end)
         });
-        let Some(reference) = reference else {
+        let Some(occurrence) = occurrence else {
             continue;
         };
-        let pattern = song.statements.iter().find_map(|statement| {
-            let SongStatement::Pattern(pattern) = statement else {
-                return None;
-            };
-            (pattern.name.text == reference.text).then_some(pattern)
-        })?;
-        return Some(Location::new(
-            uri.clone(),
-            lsp_range(source, pattern.name.span)?,
-        ));
+        if occurrence.pattern.span.start <= offset && offset < occurrence.pattern.span.end {
+            let pattern = song.statements.iter().find_map(|statement| {
+                let SongStatement::Pattern(pattern) = statement else {
+                    return None;
+                };
+                (pattern.name.text == occurrence.pattern.text).then_some(pattern)
+            })?;
+            return Some(Location::new(
+                uri.clone(),
+                lsp_range(source, pattern.name.span)?,
+            ));
+        }
+        if let Some(reference) = occurrence
+            .instrument
+            .as_ref()
+            .filter(|instrument| instrument.span.start <= offset && offset < instrument.span.end)
+        {
+            let instrument = song.statements.iter().find_map(|statement| {
+                let SongStatement::Instrument(instrument) = statement else {
+                    return None;
+                };
+                (instrument.name.text == reference.text).then_some(instrument)
+            })?;
+            return Some(Location::new(
+                uri.clone(),
+                lsp_range(source, instrument.name.span)?,
+            ));
+        }
     }
     None
 }
@@ -563,8 +606,10 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Tempo => "sets song tempo in beats per minute, such as `120bpm`.",
         TokenKind::Meter => "sets the song time signature, such as `4/4`.",
         TokenKind::Key => "sets the song tonic and mode, such as `C major`.",
+        TokenKind::Instrument => "declares a named instrument.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
+        TokenKind::With => "assigns an instrument to an arrangement occurrence.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Note => "adds a written pitch to a sequence.",
         TokenKind::Chord => "adds pitches that start and end together.",
@@ -679,7 +724,22 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\n  pat", 1, 5),
-            ["tempo", "meter", "key", "pattern", "arrangement"]
+            [
+                "tempo",
+                "meter",
+                "key",
+                "instrument",
+                "pattern",
+                "arrangement"
+            ]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\n  instrument lead = ", 1, 20),
+            ["sine", "triangle"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\narrangement {\n  melody", 2, 8),
+            ["with"]
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  no", 2, 4),
@@ -788,5 +848,29 @@ mod tests {
             Range::new(Position::new(4, 10), Position::new(4, 16))
         );
         assert!(definition(&source, &uri, Position::new(1, 10)).is_none());
+    }
+
+    #[test]
+    fn finds_instrument_definitions_from_arrangements() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  instrument lead = triangle\n",
+                "  pattern melody = sequence {}\n",
+                "  arrangement { melody with lead }\n",
+                "}",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let location = definition(&source, &uri, Position::new(3, 30))
+            .expect("instrument reference should resolve");
+
+        assert_eq!(
+            location.range,
+            Range::new(Position::new(1, 13), Position::new(1, 17))
+        );
     }
 }

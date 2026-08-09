@@ -307,6 +307,54 @@ song "Gain" {
 }
 
 #[test]
+fn schedule_should_convert_track_volume_from_decibels() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Volume" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    volume -6db
+    play melody
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("track volume should compile");
+    let score = schedule(&program).expect("track volume should schedule");
+    let expected = 10.0_f32.powf(-6.0 / 20.0);
+
+    assert!((score.songs[0].tracks[0].gain - expected).abs() < f32::EPSILON);
+}
+
+#[test]
+fn compile_should_reject_non_decibel_track_volume() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Volume" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    volume -6hz
+    play melody
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("non-decibel volume should fail");
+
+    assert_eq!(diagnostics[0].message, "volume unit must be `db`");
+}
+
+#[test]
 fn compile_should_reject_incompatible_rhythm_triggers() {
     let parsed = parse(
         SourceId(0),

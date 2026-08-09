@@ -405,17 +405,7 @@ impl Compiler {
             }
             None => Some(None),
         };
-        let gain = match declaration.play.gain {
-            Some(gain) if gain.factor.is_finite() && gain.factor >= 0.0 => Some(gain.factor),
-            Some(gain) => {
-                self.error(
-                    "gain must be finite and greater than or equal to zero",
-                    gain.span,
-                );
-                None
-            }
-            None => Some(1.0),
-        };
+        let gain = self.track_gain(declaration);
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -443,6 +433,42 @@ impl Compiler {
                     }
                 },
             )
+    }
+
+    fn track_gain(&mut self, declaration: &TrackDeclaration) -> Option<f32> {
+        let pipeline = match declaration.play.gain {
+            Some(gain) if gain.factor.is_finite() && gain.factor >= 0.0 => gain.factor,
+            Some(gain) => {
+                self.error(
+                    "gain must be finite and greater than or equal to zero",
+                    gain.span,
+                );
+                return None;
+            }
+            None => 1.0,
+        };
+        let volume = match declaration.volume.as_deref() {
+            Some(volume) if volume.unit.text != "db" => {
+                self.error("volume unit must be `db`", volume.unit.span);
+                return None;
+            }
+            Some(volume) if volume.decibels.is_finite() => 10.0_f32.powf(volume.decibels / 20.0),
+            Some(volume) => {
+                self.error("volume must be finite", volume.span);
+                return None;
+            }
+            None => 1.0,
+        };
+        let combined = pipeline * volume;
+        if combined.is_finite() {
+            Some(combined)
+        } else {
+            self.error(
+                "combined track gain is outside the supported range",
+                declaration.play.span,
+            );
+            None
+        }
     }
 
     fn validate_transpose(&mut self, pattern: &Pattern, semitones: i32, span: SourceSpan) {

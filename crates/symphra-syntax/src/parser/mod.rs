@@ -6,7 +6,7 @@ use crate::ast::{
     NumberLiteral, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
     ProjectStatement, QuotedString, RateLiteral, RestExpression, RhythmDeclaration, RhythmItem,
     SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
-    TrackDeclaration, TransposeExpression, VelocityExpression,
+    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -355,6 +355,11 @@ impl Parser {
         self.required(TokenKind::LeftBrace, "expected `{` after track role")?;
         self.required(TokenKind::Instrument, "expected `instrument` in track")?;
         let instrument = self.identifier("expected an instrument name")?;
+        let volume = if self.at(TokenKind::Volume) {
+            Some(Box::new(self.volume()?))
+        } else {
+            None
+        };
         let play = self.play()?;
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close track")?
@@ -363,8 +368,37 @@ impl Parser {
             name,
             role,
             instrument,
+            volume,
             play,
             span: start.cover(end),
+        })
+    }
+
+    fn volume(&mut self) -> Option<VolumeExpression> {
+        let start = self.bump().span;
+        let sign = if self.at(TokenKind::Minus) {
+            self.bump();
+            -1.0
+        } else {
+            if self.at(TokenKind::Plus) {
+                self.bump();
+            }
+            1.0
+        };
+        let value = self.required_any(
+            &[TokenKind::Integer, TokenKind::Decimal],
+            "expected a number after `volume`",
+        )?;
+        let Ok(decibels) = value.text.parse::<f32>() else {
+            self.diagnostics
+                .push(Diagnostic::syntax("volume is out of range", value.span));
+            return None;
+        };
+        let unit = self.identifier("expected `db` after volume")?;
+        Some(VolumeExpression {
+            decibels: sign * decibels,
+            span: start.cover(unit.span),
+            unit,
         })
     }
 

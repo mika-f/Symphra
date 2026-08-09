@@ -384,7 +384,7 @@ fn parses_tracks_with_rhythm_triggers() {
         concat!(
             "song \"Track\" { ",
             "track chords role harmony { ",
-            "instrument lead play progression |> trigger_with stabs |> gate 95% ",
+            "instrument lead volume -5.2db play progression |> trigger_with stabs |> gate 95% ",
             "|> transpose +12st |> gain 0.30 } }",
         ),
     );
@@ -401,6 +401,10 @@ fn parses_tracks_with_rhythm_triggers() {
             track.name.text.as_str(),
             track.role.text.as_str(),
             track.instrument.text.as_str(),
+            track
+                .volume
+                .as_ref()
+                .map(|volume| (volume.decibels, volume.unit.text.as_str())),
             track.play.pattern.text.as_str(),
             track
                 .play
@@ -419,6 +423,7 @@ fn parses_tracks_with_rhythm_triggers() {
             "chords",
             "harmony",
             "lead",
+            Some((-5.2, "db")),
             "progression",
             Some("stabs"),
             Some(95),

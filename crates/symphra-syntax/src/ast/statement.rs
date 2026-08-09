@@ -21,6 +21,7 @@ pub struct TrackDeclaration {
     pub name: Identifier,
     pub role: Identifier,
     pub instrument: Identifier,
+    pub volume: Option<Box<VolumeExpression>>,
     pub play: PlayStatement,
     pub span: SourceSpan,
 }
@@ -51,6 +52,13 @@ pub struct TransposeExpression {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GainExpression {
     pub factor: f32,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VolumeExpression {
+    pub decibels: f32,
+    pub unit: Identifier,
     pub span: SourceSpan,
 }
 

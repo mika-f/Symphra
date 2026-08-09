@@ -12,5 +12,5 @@ pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, Rat
 pub use statement::{
     ArrangementOccurrence, GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration,
     PlayStatement, ProjectStatement, RhythmDeclaration, RhythmItem, SongStatement,
-    TrackDeclaration, TransposeExpression,
+    TrackDeclaration, TransposeExpression, VolumeExpression,
 };

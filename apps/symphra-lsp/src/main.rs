@@ -450,7 +450,7 @@ fn completion_labels(
             Some(CompletionBlock::Sampled) => &["source", "root"],
             Some(CompletionBlock::Sampler) => &["pack"],
             Some(CompletionBlock::Rhythm) => &["hit", "rest"],
-            Some(CompletionBlock::Track) => &["instrument", "play"],
+            Some(CompletionBlock::Track) => &["instrument", "volume", "play"],
             Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
         }
     } else {
@@ -555,6 +555,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Hit
                     | TokenKind::Track
                     | TokenKind::Role
+                    | TokenKind::Volume
                     | TokenKind::Play
                     | TokenKind::TriggerWith
                     | TokenKind::Gate
@@ -728,6 +729,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Hit => "marks an active position in a rhythm.",
         TokenKind::Track => "declares a named playback track.",
         TokenKind::Role => "describes a track's musical role.",
+        TokenKind::Volume => "sets track volume in decibels, such as `-5.2db`.",
         TokenKind::Play => "selects the pattern played by a track.",
         TokenKind::TriggerWith => "applies a reusable rhythm to a played pattern.",
         TokenKind::Gate => "scales sounding duration without moving later steps.",
@@ -988,7 +990,7 @@ mod tests {
         assert_eq!(labels("song \"Test\" {\n  track lead ", 1, 13), ["role"]);
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
-            ["instrument", "play"]
+            ["instrument", "volume", "play"]
         );
         assert_eq!(
             labels(

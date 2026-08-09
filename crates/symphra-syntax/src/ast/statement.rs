@@ -33,6 +33,7 @@ pub struct PlayStatement {
     pub gate: Option<GateExpression>,
     pub transpose: Option<TransposeExpression>,
     pub gain: Option<GainExpression>,
+    pub repeat: Option<RepeatExpression>,
     pub span: SourceSpan,
 }
 
@@ -52,6 +53,12 @@ pub struct TransposeExpression {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GainExpression {
     pub factor: f32,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepeatExpression {
+    pub count: u32,
     pub span: SourceSpan,
 }
 

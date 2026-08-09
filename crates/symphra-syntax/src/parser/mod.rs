@@ -4,9 +4,10 @@ use crate::ast::{
     ArrangementOccurrence, ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression,
     GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
     NumberLiteral, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RestExpression, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem,
-    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
+    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, StepItem, TrackDeclaration, TransposeExpression, VelocityExpression,
+    VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -411,6 +412,7 @@ impl Parser {
         let mut gate = None;
         let mut transpose = None;
         let mut gain = None;
+        let mut repeat = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -467,9 +469,19 @@ impl Parser {
                         ));
                     }
                 }
+                TokenKind::Repeat => {
+                    let expression = self.repeat()?;
+                    play_end = expression.span;
+                    if repeat.replace(expression).is_some() {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "`repeat` may only appear once in a play pipeline",
+                            expression.span,
+                        ));
+                    }
+                }
                 _ => {
                     self.error(
-                        "expected `trigger_with`, `gate`, `transpose`, or `gain` after `|>`",
+                        "expected `trigger_with`, `gate`, `transpose`, `gain`, or `repeat` after `|>`",
                     );
                     return None;
                 }
@@ -481,6 +493,7 @@ impl Parser {
             gate,
             transpose,
             gain,
+            repeat,
             span: play_start.cover(play_end),
         })
     }
@@ -529,6 +542,15 @@ impl Parser {
         };
         Some(GainExpression {
             factor,
+            span: start.cover(value.span),
+        })
+    }
+
+    fn repeat(&mut self) -> Option<RepeatExpression> {
+        let start = self.bump().span;
+        let value = self.required(TokenKind::Integer, "expected a count after `repeat`")?;
+        Some(RepeatExpression {
+            count: self.parse_u32(&value)?,
             span: start.cover(value.span),
         })
     }

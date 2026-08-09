@@ -307,6 +307,71 @@ song "Gain" {
 }
 
 #[test]
+fn schedule_should_repeat_tracks_sequentially_with_unique_event_ids() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Repeat" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> repeat 3
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("repeated track should compile");
+    let score = schedule(&program).expect("repeated track should schedule");
+    let track = &score.songs[0].tracks[0];
+
+    assert_eq!(
+        (
+            track
+                .notes
+                .iter()
+                .map(|note| note.start)
+                .collect::<Vec<_>>(),
+            track.end,
+            track.notes.windows(2).all(|pair| pair[0].id != pair[1].id),
+        ),
+        (
+            vec![
+                MusicalTime::ZERO,
+                MusicalTime::new(1, 4).expect("quarter note should be valid"),
+                MusicalTime::new(1, 2).expect("half note should be valid"),
+            ],
+            MusicalTime::new(3, 4).expect("three quarters should be valid"),
+            true,
+        )
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_repeats() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Repeat" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> repeat 0
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("zero repeats should fail");
+
+    assert_eq!(diagnostics[0].message, "repeat must be from 1 to 65535");
+}
+
+#[test]
 fn schedule_should_convert_track_volume_from_decibels() {
     let parsed = parse(
         SourceId(0),

@@ -147,7 +147,78 @@ fn schedule_declared_track(
     if let Some(percent) = track.gate_percent {
         apply_gate(&mut scheduled, percent)?;
     }
+    apply_repeat(&mut scheduled, track.repeat_count)?;
     Ok(scheduled)
+}
+
+fn apply_repeat(track: &mut Track, count: u16) -> Result<(), ScheduleError> {
+    if count == 0 {
+        return Err(ScheduleError::InvalidRepeatCount);
+    }
+    if count == 1 {
+        return Ok(());
+    }
+    let note_count = track.notes.len();
+    let sample_count = track.samples.len();
+    let copies = usize::from(count - 1);
+    track
+        .notes
+        .try_reserve(
+            note_count
+                .checked_mul(copies)
+                .ok_or(ScheduleError::RepeatTooLarge)?,
+        )
+        .map_err(|_| ScheduleError::RepeatTooLarge)?;
+    track
+        .samples
+        .try_reserve(
+            sample_count
+                .checked_mul(copies)
+                .ok_or(ScheduleError::RepeatTooLarge)?,
+        )
+        .map_err(|_| ScheduleError::RepeatTooLarge)?;
+
+    let mut next_event = track
+        .notes
+        .iter()
+        .map(|event| event.id.0 & u64::from(u32::MAX))
+        .chain(
+            track
+                .samples
+                .iter()
+                .map(|event| event.id.0 & u64::from(u32::MAX)),
+        )
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(ScheduleError::RepeatedEventIdOverflow)?;
+    let mut offset = track.end;
+    for _ in 1..count {
+        for index in 0..note_count {
+            let mut event = track.notes[index];
+            event.id = repeated_event_id(track.id, &mut next_event)?;
+            event.start = event.start.checked_add(offset)?;
+            track.notes.push(event);
+        }
+        for index in 0..sample_count {
+            let mut event = track.samples[index];
+            event.id = repeated_event_id(track.id, &mut next_event)?;
+            event.start = event.start.checked_add(offset)?;
+            track.samples.push(event);
+        }
+        offset = offset.checked_add(track.end)?;
+    }
+    track.end = offset;
+    Ok(())
+}
+
+fn repeated_event_id(track: EntityId, next_event: &mut u64) -> Result<EntityId, ScheduleError> {
+    if *next_event > u64::from(u32::MAX) {
+        return Err(ScheduleError::RepeatedEventIdOverflow);
+    }
+    let id = EntityId((track.0 << 32) | *next_event);
+    *next_event += 1;
+    Ok(id)
 }
 
 fn apply_transpose(track: &mut Track, semitones: i32) -> Result<(), ScheduleError> {
@@ -492,6 +563,12 @@ pub enum ScheduleError {
     TriggeredPatternTooLong,
     #[error("transposed pitch must be within the MIDI range 0 to 127")]
     TransposedPitchOutOfRange,
+    #[error("repeat produces too many events")]
+    RepeatTooLarge,
+    #[error("repeat count must be greater than zero")]
+    InvalidRepeatCount,
+    #[error("repeat exhausts the event ID range")]
+    RepeatedEventIdOverflow,
     #[error("sample choice {0:?} has no alternatives")]
     EmptyChoice(hir::NodeId),
     #[error("sample choice weights exceed the supported range")]

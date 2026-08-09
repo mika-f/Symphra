@@ -406,6 +406,16 @@ impl Compiler {
             None => Some(None),
         };
         let gain = self.track_gain(declaration);
+        let repeat_count = match declaration.play.repeat {
+            Some(repeat) => match u16::try_from(repeat.count) {
+                Ok(count) if count > 0 => Some(count),
+                _ => {
+                    self.error("repeat must be from 1 to 65535", repeat.span);
+                    None
+                }
+            },
+            None => Some(1),
+        };
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern,
             transpose_semitones,
@@ -418,8 +428,12 @@ impl Compiler {
             .zip(gate_percent)
             .zip(transpose_semitones)
             .zip(gain)
+            .zip(repeat_count)
             .map(
-                |((((pattern, instrument), gate_percent), transpose_semitones), gain)| {
+                |(
+                    ((((pattern, instrument), gate_percent), transpose_semitones), gain),
+                    repeat_count,
+                )| {
                     TrackDefinition {
                         id: self.id(),
                         name: declaration.name.text.clone(),
@@ -430,6 +444,7 @@ impl Compiler {
                         gate_percent,
                         transpose_semitones,
                         gain,
+                        repeat_count,
                     }
                 },
             )

@@ -29,7 +29,6 @@ struct Backend {
 
 impl Backend {
     async fn update(&self, uri: Uri, version: i32, text: String) {
-        debug_log(&format!("update stored uri={}", uri.as_str()));
         let source = SourceText::new(SourceId(0), uri.as_str(), text);
         let diagnostics = diagnostics(&source);
         self.documents.write().await.insert(uri.clone(), source);
@@ -41,7 +40,6 @@ impl Backend {
 
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        debug_log("initialize called");
         let hierarchical_symbols = params
             .capabilities
             .text_document
@@ -157,31 +155,7 @@ impl LanguageServer for Backend {
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let documents = self.documents.read().await;
         let uri = params.text_document.uri;
-        let found = documents.get(&uri);
-        debug_log(&format!(
-            "formatting request uri={} document_found={}",
-            uri.as_str(),
-            found.is_some()
-        ));
-        let result = found.map(formatting_edits);
-        if let Some(edits) = &result {
-            debug_log(&format!("formatting result edit_count={}", edits.len()));
-        }
-        Ok(result)
-    }
-}
-
-/// Temporary diagnostic: appends a line to `%TEMP%/symphra-lsp-format-debug.log`.
-/// Remove once IntelliJ formatting is confirmed working end to end.
-fn debug_log(message: &str) {
-    use std::io::Write;
-    let path = std::env::temp_dir().join("symphra-lsp-format-debug.log");
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{message}");
+        Ok(documents.get(&uri).map(formatting_edits))
     }
 }
 

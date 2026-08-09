@@ -6,7 +6,8 @@ use symphra_syntax::ast::{
     InstrumentBody, InstrumentDeclaration, NoteExpression, PanExpression, PatternBody,
     PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
     RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration, VolumeExpression,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
+    VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -500,7 +501,21 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
         );
     }
     if let Some(speed) = play.speed {
-        let _ = write!(line, " |> speed {}", speed.factor);
+        match speed {
+            SpeedExpression::Fixed { factor, .. } => {
+                let _ = write!(line, " |> speed {factor}");
+            }
+            SpeedExpression::Alternate {
+                first_factor,
+                second_factor,
+                ..
+            } => {
+                let _ = write!(
+                    line,
+                    " |> alternate {{ speed {first_factor} speed {second_factor} }}"
+                );
+            }
+        }
     }
     if let Some(pan) = play.pan {
         match pan {

@@ -219,6 +219,71 @@ song "Gate" {
 }
 
 #[test]
+fn schedule_should_transpose_tracks_without_moving_events() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Transpose" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 note E4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> transpose -12st
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("transposed track should compile");
+    let score = schedule(&program).expect("transposed track should schedule");
+    let track = &score.songs[0].tracks[0];
+
+    assert_eq!(
+        (
+            track.notes[0].midi_pitch,
+            track.notes[1].midi_pitch,
+            track.notes[1].start,
+            track.end,
+        ),
+        (
+            48,
+            52,
+            MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            MusicalTime::new(1, 2).expect("half note should be valid"),
+        )
+    );
+}
+
+#[test]
+fn compile_should_reject_transposed_pitches_outside_midi_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Transpose" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C9 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody |> transpose +12st
+  }
+}
+"#,
+    );
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range transpose should fail");
+
+    assert_eq!(
+        diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["transposed pitch must be within the MIDI range 0 to 127"]
+    );
+}
+
+#[test]
 fn compile_should_reject_incompatible_rhythm_triggers() {
     let parsed = parse(
         SourceId(0),

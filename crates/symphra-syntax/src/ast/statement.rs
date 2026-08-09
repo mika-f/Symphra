@@ -30,12 +30,20 @@ pub struct PlayStatement {
     pub pattern: Identifier,
     pub trigger_with: Option<Identifier>,
     pub gate: Option<GateExpression>,
+    pub transpose: Option<TransposeExpression>,
     pub span: SourceSpan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateExpression {
     pub percent: u32,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransposeExpression {
+    pub semitones: i32,
+    pub unit: Identifier,
     pub span: SourceSpan,
 }
 

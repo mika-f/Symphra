@@ -6,7 +6,7 @@ use crate::ast::{
     PatternDeclaration, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
     RateLiteral, RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
     SequenceItem, SongDeclaration, SongStatement, SourceFile, StepItem, TrackDeclaration,
-    VelocityExpression,
+    TransposeExpression, VelocityExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -355,12 +355,27 @@ impl Parser {
         self.required(TokenKind::LeftBrace, "expected `{` after track role")?;
         self.required(TokenKind::Instrument, "expected `instrument` in track")?;
         let instrument = self.identifier("expected an instrument name")?;
+        let play = self.play()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close track")?
+            .span;
+        Some(TrackDeclaration {
+            name,
+            role,
+            instrument,
+            play,
+            span: start.cover(end),
+        })
+    }
+
+    fn play(&mut self) -> Option<PlayStatement> {
         let play_start = self
             .required(TokenKind::Play, "expected `play` in track")?
             .span;
         let pattern = self.identifier("expected a pattern name after `play`")?;
         let mut trigger_with = None;
         let mut gate = None;
+        let mut transpose = None;
         let mut play_end = pattern.span;
         while self.at(TokenKind::PipeGreater) {
             self.bump();
@@ -397,26 +412,55 @@ impl Parser {
                         ));
                     }
                 }
+                TokenKind::Transpose => {
+                    let transpose_start = self.bump().span;
+                    let sign = if self.at(TokenKind::Minus) {
+                        self.bump();
+                        -1
+                    } else {
+                        if self.at(TokenKind::Plus) {
+                            self.bump();
+                        }
+                        1
+                    };
+                    let value = self.required(
+                        TokenKind::Integer,
+                        "expected a semitone count after `transpose`",
+                    )?;
+                    let magnitude = self.parse_u32(&value)?;
+                    let Ok(magnitude) = i32::try_from(magnitude) else {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "semitone count is out of range",
+                            value.span,
+                        ));
+                        return None;
+                    };
+                    let unit = self.identifier("expected `st` after semitone count")?;
+                    let expression = TransposeExpression {
+                        semitones: sign * magnitude,
+                        span: transpose_start.cover(unit.span),
+                        unit,
+                    };
+                    play_end = expression.span;
+                    if transpose.replace(expression).is_some() {
+                        self.diagnostics.push(Diagnostic::syntax(
+                            "`transpose` may only appear once in a play pipeline",
+                            play_end,
+                        ));
+                    }
+                }
                 _ => {
-                    self.error("expected `trigger_with` or `gate` after `|>`");
+                    self.error("expected `trigger_with`, `gate`, or `transpose` after `|>`");
                     return None;
                 }
             }
         }
-        let end = self
-            .required(TokenKind::RightBrace, "expected `}` to close track")?
-            .span;
-        Some(TrackDeclaration {
-            name,
-            role,
-            instrument,
-            play: PlayStatement {
-                pattern,
-                trigger_with,
-                gate,
-                span: play_start.cover(play_end),
-            },
-            span: start.cover(end),
+        Some(PlayStatement {
+            pattern,
+            trigger_with,
+            gate,
+            transpose,
+            span: play_start.cover(play_end),
         })
     }
 

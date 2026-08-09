@@ -140,10 +140,21 @@ fn schedule_declared_track(
         seed,
     )?;
     scheduled.name.clone_from(&track.name);
+    if let Some(semitones) = track.transpose_semitones {
+        apply_transpose(&mut scheduled, semitones)?;
+    }
     if let Some(percent) = track.gate_percent {
         apply_gate(&mut scheduled, percent)?;
     }
     Ok(scheduled)
+}
+
+fn apply_transpose(track: &mut Track, semitones: i32) -> Result<(), ScheduleError> {
+    for note in &mut track.notes {
+        note.midi_pitch = crate::transposed_pitch(note.midi_pitch, semitones)
+            .ok_or(ScheduleError::TransposedPitchOutOfRange)?;
+    }
+    Ok(())
 }
 
 fn apply_gate(track: &mut Track, percent: u8) -> Result<(), TimeError> {
@@ -475,6 +486,8 @@ pub enum ScheduleError {
     UnsupportedTriggeredStep,
     #[error("triggered pattern contains too many events")]
     TriggeredPatternTooLong,
+    #[error("transposed pitch must be within the MIDI range 0 to 127")]
+    TransposedPitchOutOfRange,
     #[error("sample choice {0:?} has no alternatives")]
     EmptyChoice(hir::NodeId),
     #[error("sample choice weights exceed the supported range")]

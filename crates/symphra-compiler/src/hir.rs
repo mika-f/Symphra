@@ -45,6 +45,7 @@ pub struct TrackDefinition {
     pub pattern: NodeId,
     pub trigger_with: Option<NodeId>,
     pub gate_percent: Option<u8>,
+    pub transpose_semitones: Option<i32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

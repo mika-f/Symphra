@@ -33,6 +33,13 @@ fn rhythm_cell_count(duration: Duration, resolution: Duration) -> Option<u64> {
     }
 }
 
+fn transposed_pitch(midi_pitch: u8, semitones: i32) -> Option<u8> {
+    i32::from(midi_pitch)
+        .checked_add(semitones)
+        .and_then(|pitch| u8::try_from(pitch).ok())
+        .filter(|pitch| *pitch <= 127)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompileDiagnostic {
     pub message: String,
@@ -390,18 +397,66 @@ impl Compiler {
             },
             None => Some(None),
         };
+        let transpose_semitones = match declaration.play.transpose.as_ref() {
+            Some(transpose) if transpose.unit.text == "st" => Some(Some(transpose.semitones)),
+            Some(transpose) => {
+                self.error("transpose unit must be `st`", transpose.unit.span);
+                None
+            }
+            None => Some(None),
+        };
+        if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
+            pattern,
+            transpose_semitones,
+            declaration.play.transpose.as_ref(),
+        ) {
+            self.validate_transpose(pattern, semitones, transpose.span);
+        }
         pattern
             .zip(instrument)
             .zip(gate_percent)
-            .map(|((pattern, instrument), gate_percent)| TrackDefinition {
-                id: self.id(),
-                name: declaration.name.text.clone(),
-                role: declaration.role.text.clone(),
-                instrument,
-                pattern: pattern.id,
-                trigger_with: rhythm.map(|rhythm| rhythm.id),
-                gate_percent,
-            })
+            .zip(transpose_semitones)
+            .map(
+                |(((pattern, instrument), gate_percent), transpose_semitones)| TrackDefinition {
+                    id: self.id(),
+                    name: declaration.name.text.clone(),
+                    role: declaration.role.text.clone(),
+                    instrument,
+                    pattern: pattern.id,
+                    trigger_with: rhythm.map(|rhythm| rhythm.id),
+                    gate_percent,
+                    transpose_semitones,
+                },
+            )
+    }
+
+    fn validate_transpose(&mut self, pattern: &Pattern, semitones: i32, span: SourceSpan) {
+        for step in &pattern.steps {
+            let valid = match step {
+                PatternStep::Note(note) => transposed_pitch(note.midi_pitch, semitones).is_some(),
+                PatternStep::Chord(chord) => chord
+                    .notes
+                    .iter()
+                    .all(|note| transposed_pitch(note.midi_pitch, semitones).is_some()),
+                PatternStep::DegreeChoice(choice) => {
+                    choice.alternatives.iter().all(|alternative| {
+                        transposed_pitch(alternative.note.midi_pitch, semitones).is_some()
+                    })
+                }
+                PatternStep::Rest(_) => true,
+                PatternStep::Sample(_) | PatternStep::Choice(_) => {
+                    self.error("transpose supports only pitched patterns", span);
+                    return;
+                }
+            };
+            if !valid {
+                self.error(
+                    "transposed pitch must be within the MIDI range 0 to 127",
+                    span,
+                );
+                return;
+            }
+        }
     }
 
     fn validate_trigger(&mut self, pattern: &Pattern, rhythm: &Rhythm, span: SourceSpan) {

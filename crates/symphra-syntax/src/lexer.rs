@@ -61,6 +61,8 @@ impl Lexer<'_> {
             '}' => self.push(TokenKind::RightBrace, start),
             '=' => self.push(TokenKind::Equal, start),
             '/' => self.push(TokenKind::Slash, start),
+            '+' => self.push(TokenKind::Plus, start),
+            '-' => self.push(TokenKind::Minus, start),
             '%' => self.push(TokenKind::Percent, start),
             '|' if self.peek() == Some('>') => {
                 self.bump();

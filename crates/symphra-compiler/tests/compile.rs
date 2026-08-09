@@ -102,6 +102,7 @@ song "Bad" {
     note H4 for 0/4
     rest for 1/0
     chord C4 H4 for 0/4
+    note C-2 for 1/4
   }
 }
 "#,
@@ -127,6 +128,7 @@ song "Bad" {
             "rest duration must be greater than zero",
             "pitch must be a natural note followed by an octave",
             "chord duration must be greater than zero",
+            "pitch must be within the MIDI range C-1 to G9",
         ]
     );
 }
@@ -217,6 +219,31 @@ song "Chords" {
                 MusicalTime::new(1, 4).expect("quarter note should be valid"),
             ),
         ]
+    );
+}
+
+#[test]
+fn schedule_should_accept_full_midi_pitch_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Range" {
+  tempo 120bpm meter 4/4 key C major
+  pattern range = sequence { chord C-1 G9 for 1/4 }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("MIDI boundary pitches should compile");
+
+    let score = schedule(&program).expect("MIDI boundary pitches should schedule");
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .notes
+            .iter()
+            .map(|note| note.midi_pitch)
+            .collect::<Vec<_>>(),
+        [0, 127]
     );
 }
 

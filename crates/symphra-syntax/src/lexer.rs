@@ -65,18 +65,7 @@ impl Lexer<'_> {
             c if c.is_ascii_digit() => self.number(start),
             c if is_identifier_start(c) => {
                 self.skip_while(is_identifier_continue);
-                if matches!(
-                    &self.input[start..self.offset],
-                    "A" | "B" | "C" | "D" | "E" | "F" | "G"
-                ) && self.peek() == Some('#')
-                    && self.input[self.offset + 1..]
-                        .chars()
-                        .next()
-                        .is_some_and(|c| c.is_ascii_digit())
-                {
-                    self.bump();
-                    self.skip_while(|c| c.is_ascii_digit());
-                }
+                self.pitch_suffix(start);
                 let text = &self.input[start..self.offset];
                 self.push(
                     TokenKind::keyword(text).unwrap_or(TokenKind::Identifier),
@@ -108,6 +97,19 @@ impl Lexer<'_> {
             SourceSpan::new(self.source, start..self.offset),
         ));
         self.push(TokenKind::String, start);
+    }
+
+    fn pitch_suffix(&mut self, start: usize) {
+        if !is_pitch_prefix(&self.input[start..self.offset]) {
+            return;
+        }
+        if self.peek() == Some('#') && octave_follows(&self.input[self.offset + 1..]) {
+            self.bump();
+        }
+        if self.peek() == Some('-') && octave_follows(&self.input[self.offset..]) {
+            self.bump();
+        }
+        self.skip_while(|c| c.is_ascii_digit());
     }
 
     fn number(&mut self, start: usize) {
@@ -158,4 +160,16 @@ fn is_identifier_start(ch: char) -> bool {
 
 fn is_identifier_continue(ch: char) -> bool {
     ch == '_' || ch.is_alphanumeric()
+}
+
+fn is_pitch_prefix(text: &str) -> bool {
+    matches!(text.as_bytes(), [b'A'..=b'G'] | [b'A'..=b'G', b'b'])
+}
+
+fn octave_follows(text: &str) -> bool {
+    text.strip_prefix('-')
+        .unwrap_or(text)
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_digit())
 }

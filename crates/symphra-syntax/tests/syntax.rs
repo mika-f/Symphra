@@ -47,7 +47,7 @@ fn lexes_units_comments_and_strings() {
 
 #[test]
 fn lexes_sharp_pitches_without_consuming_comments() {
-    let lexed = lex(SourceId(0), "C#4 C# comment\nDb4");
+    let lexed = lex(SourceId(0), "C#4 C# comment\nDb4 C-1 C#-1 Cb-1");
 
     assert_eq!(
         lexed
@@ -59,6 +59,9 @@ fn lexes_sharp_pitches_without_consuming_comments() {
             (TokenKind::Identifier, "C#4"),
             (TokenKind::Identifier, "C"),
             (TokenKind::Identifier, "Db4"),
+            (TokenKind::Identifier, "C-1"),
+            (TokenKind::Identifier, "C#-1"),
+            (TokenKind::Identifier, "Cb-1"),
             (TokenKind::Eof, ""),
         ]
     );

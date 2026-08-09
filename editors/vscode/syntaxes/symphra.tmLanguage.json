@@ -1,0 +1,86 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Symphra",
+  "scopeName": "source.symphra",
+  "fileTypes": ["sym"],
+  "comment": "Tracks the Draft 0.1 grammar in docs/language/draft-0.1.md. Keep in sync as the grammar grows.",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#rates" },
+    { "include": "#pitches" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.symphra",
+          "match": "#.*$"
+        },
+        {
+          "name": "comment.line.double-slash.symphra",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.symphra",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.symphra",
+          "match": "\\\\[\"\\\\n]"
+        }
+      ]
+    },
+    "rates": {
+      "comment": "A number immediately followed by a unit identifier, e.g. 48khz, 150bpm.",
+      "match": "\\b(\\d+(?:\\.\\d+)?)([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "captures": {
+        "1": { "name": "constant.numeric.symphra" },
+        "2": { "name": "keyword.other.unit.symphra" }
+      }
+    },
+    "pitches": {
+      "comment": "A natural-note letter followed by a decimal octave, e.g. C4, A4.",
+      "match": "\\b([A-G])(\\d+)\\b",
+      "name": "constant.language.pitch.symphra"
+    },
+    "numbers": {
+      "name": "constant.numeric.symphra",
+      "match": "\\b\\d+(?:\\.\\d+)?\\b"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.declaration.symphra",
+          "match": "\\b(project|song|pattern|sequence)\\b"
+        },
+        {
+          "name": "keyword.control.statement.symphra",
+          "match": "\\b(seed|sample_rate|output|tempo|meter|key|note|for)\\b"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.section.block.symphra",
+          "match": "[{}]"
+        },
+        {
+          "name": "keyword.operator.assignment.symphra",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.arithmetic.symphra",
+          "match": "/"
+        }
+      ]
+    }
+  }
+}

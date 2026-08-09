@@ -1,0 +1,86 @@
+{
+  "name": "symphra-vscode",
+  "displayName": "Symphra",
+  "description": "Syntax highlighting and language server support for Symphra (.sym) files.",
+  "version": "0.0.1",
+  "private": true,
+  "publisher": "symphra-lang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mika-f/Symphra",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:symphra"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "symphra",
+        "aliases": [
+          "Symphra",
+          "symphra"
+        ],
+        "extensions": [
+          ".sym"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "symphra",
+        "scopeName": "source.symphra",
+        "path": "./syntaxes/symphra.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "symphra.restartServer",
+        "title": "Symphra: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Symphra",
+      "properties": {
+        "symphra.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `symphra-lsp` executable. When empty, the extension looks for `target/debug/symphra-lsp` or `target/release/symphra-lsp` in the workspace, then falls back to `symphra-lsp` on `PATH`."
+        },
+        "symphra.trace.server": {
+          "scope": "window",
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace communication between the extension and the Symphra language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.5.4"
+  }
+}

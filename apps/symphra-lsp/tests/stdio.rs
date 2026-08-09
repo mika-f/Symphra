@@ -114,19 +114,35 @@ impl Drop for TestServer {
 }
 
 #[test]
-fn stdio_server_should_publish_diagnostics_and_shutdown() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one protocol session is clearest as one sequential integration test"
+)]
+fn stdio_server_should_handle_documents_and_shutdown() {
     let mut server = TestServer::start();
 
     server.send(&json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
-        "params": { "capabilities": {} }
+        "params": {
+            "capabilities": {
+                "textDocument": {
+                    "documentSymbol": {
+                        "hierarchicalDocumentSymbolSupport": true
+                    }
+                }
+            }
+        }
     }));
     let initialized = server.receive();
     assert_eq!(
         initialized["result"]["capabilities"]["positionEncoding"],
         "utf-16"
+    );
+    assert_eq!(
+        initialized["result"]["capabilities"]["documentSymbolProvider"],
+        true
     );
 
     server.send(&json!({
@@ -181,6 +197,17 @@ fn stdio_server_should_publish_diagnostics_and_shutdown() {
     let cleared = server.receive();
     assert_eq!(cleared["params"]["version"], 2);
     assert_eq!(cleared["params"]["diagnostics"], json!([]));
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "textDocument/documentSymbol",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" }
+        }
+    }));
+    let symbols = server.receive();
+    assert_eq!(symbols["result"][1]["name"], "Test");
+    assert_eq!(symbols["result"][1]["children"][0]["name"], "melody");
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -207,11 +234,11 @@ fn stdio_server_should_publish_diagnostics_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": 3,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 2);
+    assert_eq!(server.receive()["id"], 3);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

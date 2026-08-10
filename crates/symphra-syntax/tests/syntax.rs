@@ -272,6 +272,55 @@ fn parses_soundfont_instruments() {
 }
 
 #[test]
+fn parses_vst3_instruments_with_preset() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Vst3" {
+  instrument lead = vst3 { source "instruments/synth.vst3" preset "Warm Pad" }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::Vst3 { source, preset, .. } = &instrument.body else {
+        panic!("instrument should be a vst3");
+    };
+
+    assert_eq!(source.value.as_str(), "instruments/synth.vst3");
+    assert_eq!(
+        preset.as_ref().map(|preset| preset.value.as_str()),
+        Some("Warm Pad")
+    );
+}
+
+#[test]
+fn parses_vst3_instruments_without_preset() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Vst3" {
+  instrument lead = vst3 { source "instruments/synth.vst3" }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::Vst3 { source, preset, .. } = &instrument.body else {
+        panic!("instrument should be a vst3");
+    };
+
+    assert_eq!(source.value.as_str(), "instruments/synth.vst3");
+    assert!(preset.is_none());
+}
+
+#[test]
 fn parses_oscillator_instruments_with_envelope() {
     let parsed = parse(
         SourceId(0),

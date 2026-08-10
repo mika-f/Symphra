@@ -25,8 +25,7 @@ fn run_with_stdin(input: &str) -> (bool, String, String) {
 
 #[test]
 fn formats_stdin_to_stdout() {
-    let (success, stdout, _) =
-        run_with_stdin("project { seed 1 sample_rate 8khz output mono }\n");
+    let (success, stdout, _) = run_with_stdin("project { seed 1 sample_rate 8khz output mono }\n");
 
     assert!(success);
     assert_eq!(

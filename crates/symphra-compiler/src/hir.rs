@@ -262,6 +262,10 @@ pub enum InstrumentKind {
         source: String,
         preset: String,
     },
+    Vst3 {
+        source: String,
+        preset: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

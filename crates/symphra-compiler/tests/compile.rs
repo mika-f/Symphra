@@ -1937,6 +1937,102 @@ song "EmptySoundFontPreset" {
 }
 
 #[test]
+fn compile_should_lower_vst3_instruments_with_preset() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Vst3" {
+  tempo 120bpm meter 4/4 key C major
+  arrangement { phrase with lead }
+  instrument lead = vst3 { source "instruments/synth.vst3" preset "Warm Pad" }
+  pattern phrase = sequence { note C4 for 1/4 }
+}
+"#,
+    );
+
+    let program = compile(&parsed.file).expect("vst3 instrument should compile");
+
+    assert_eq!(
+        program.songs[0]
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| pattern_occurrences(arrangement).first())
+            .map(|occurrence| &occurrence.instrument),
+        Some(&InstrumentKind::Vst3 {
+            source: "instruments/synth.vst3".to_owned(),
+            preset: Some("Warm Pad".to_owned()),
+        })
+    );
+}
+
+#[test]
+fn compile_should_lower_vst3_instruments_without_preset() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Vst3" {
+  tempo 120bpm meter 4/4 key C major
+  arrangement { phrase with lead }
+  instrument lead = vst3 { source "instruments/synth.vst3" }
+  pattern phrase = sequence { note C4 for 1/4 }
+}
+"#,
+    );
+
+    let program = compile(&parsed.file).expect("vst3 instrument should compile");
+
+    assert_eq!(
+        program.songs[0]
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| pattern_occurrences(arrangement).first())
+            .map(|occurrence| &occurrence.instrument),
+        Some(&InstrumentKind::Vst3 {
+            source: "instruments/synth.vst3".to_owned(),
+            preset: None,
+        })
+    );
+}
+
+#[test]
+fn compile_should_reject_empty_vst3_source_path() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "EmptyVst3Source" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = vst3 { source "" preset "Warm Pad" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty vst3 source should fail");
+
+    assert_eq!(diagnostics[0].message, "vst3 source path must not be empty");
+}
+
+#[test]
+fn compile_should_reject_empty_vst3_preset_name() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "EmptyVst3Preset" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = vst3 { source "instruments/synth.vst3" preset "" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty vst3 preset should fail");
+
+    assert_eq!(diagnostics[0].message, "vst3 preset name must not be empty");
+}
+
+#[test]
 fn compile_should_lower_sampler_packs() {
     let parsed = parse(
         SourceId(0),

@@ -325,6 +325,17 @@ pub enum InstrumentBody {
         preset: QuotedString,
         span: SourceSpan,
     },
+    /// `vst3 { source "..." [preset "..."] }`. A pitched instrument backed
+    /// by a live VST3 plug-in instance, rendered whole-track rather than
+    /// per-note (see `symphra-vst3`/`symphra-render`). `preset`, unlike
+    /// `soundfont`'s (required), is optional — not every plugin exposes a
+    /// useful named program list, and absent it the plugin's own default
+    /// program applies.
+    Vst3 {
+        source: QuotedString,
+        preset: Option<QuotedString>,
+        span: SourceSpan,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

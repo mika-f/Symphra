@@ -9,8 +9,9 @@ use std::process::ExitCode;
 use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
 use symphra_engine::{
     DecodeError, EngineError, SampleLibrary, SampleSelector, Score, SoundFontDecodeError,
-    SoundFontLibrary, SourceId, SourceSpan, SourceText, compile_source, decode_soundfont,
-    decode_wav, named_sample_source, packed_sample_source, render_score_with_assets,
+    SoundFontLibrary, SourceId, SourceSpan, SourceText, Vst3Error, Vst3Library, compile_source,
+    decode_soundfont, decode_wav, named_sample_source, packed_sample_source,
+    render_score_with_assets, validate_plugin,
 };
 use symphra_export::{ExportError, encode_wav};
 
@@ -56,7 +57,8 @@ fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
     let base = source_path.parent().unwrap_or_else(|| Path::new(""));
     let samples = load_samples(&score, base)?;
     let soundfonts = load_soundfonts(&score, base)?;
-    let audio = render_score_with_assets(&score, 0, &samples, &soundfonts)
+    let vst3s = load_vst3s(&score, base)?;
+    let audio = render_score_with_assets(&score, 0, &samples, &soundfonts, &vst3s)
         .map_err(|error| engine_error(&source, error))?;
     encode_wav(&audio).map_err(CliError::Export)
 }
@@ -120,6 +122,33 @@ fn load_soundfonts(score: &Score, base: &Path) -> Result<SoundFontLibrary, CliEr
         soundfonts.insert(source.to_owned(), std::sync::Arc::new(font));
     }
     Ok(soundfonts)
+}
+
+/// Validates every `.vst3` plugin a `vst3` instrument references, mirroring
+/// `load_soundfonts`'s "one entry per unique source path" shape. Unlike
+/// `SoundFontLibrary`/`SampleLibrary`, `Vst3Library` only caches the
+/// validated path, not the loaded plugin itself — a `vst3_host::Plugin`
+/// owns an exclusive native module and can't be preloaded and shared the
+/// way decoded sample/soundfont data can; the real, per-track
+/// instantiation happens later, in `symphra-render`.
+fn load_vst3s(score: &Score, base: &Path) -> Result<Vst3Library, CliError> {
+    let mut vst3s = Vst3Library::default();
+    for (source, _preset) in score.vst3_sources() {
+        if vst3s.contains(source) {
+            continue;
+        }
+        let relative = Path::new(source);
+        if relative.is_absolute() {
+            return Err(CliError::AbsoluteVst3Path(source.to_owned()));
+        }
+        let path = base.join(relative);
+        validate_plugin(&path.display().to_string()).map_err(|error| CliError::Vst3Load {
+            path: path.display().to_string(),
+            source: error,
+        })?;
+        vst3s.insert(source.to_owned());
+    }
+    Ok(vst3s)
 }
 
 fn engine_error(source: &SourceText, error: EngineError) -> CliError {
@@ -194,6 +223,14 @@ enum CliError {
         path: String,
         #[source]
         source: SoundFontDecodeError,
+    },
+    #[error("vst3 plugin path must be relative: `{0}`")]
+    AbsoluteVst3Path(String),
+    #[error("failed to load vst3 plugin `{path}`: {source}")]
+    Vst3Load {
+        path: String,
+        #[source]
+        source: Vst3Error,
     },
     #[error(transparent)]
     Export(ExportError),
@@ -383,6 +420,32 @@ song "SoundFont" {{
         .expect_err("an absolute soundfont path should be rejected");
 
         assert!(matches!(error, CliError::AbsoluteSoundFontPath(_)));
+    }
+
+    #[test]
+    fn source_to_wav_should_reject_an_absolute_vst3_path() {
+        let absolute = if cfg!(windows) {
+            r"C:\synth.vst3"
+        } else {
+            "/etc/synth.vst3"
+        };
+        let error = source_to_wav(
+            "song.sym".to_owned(),
+            format!(
+                r#"
+project {{ seed 1 sample_rate 8khz output mono }}
+song "Vst3" {{
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = vst3 {{ source "{absolute}" }}
+  pattern phrase = sequence {{ note C4 for 1/4 }}
+  arrangement {{ phrase with lead }}
+}}
+"#
+            ),
+        )
+        .expect_err("an absolute vst3 path should be rejected");
+
+        assert!(matches!(error, CliError::AbsoluteVst3Path(_)));
     }
 
     fn wav(samples: &[i16], sample_rate_hz: u32) -> Vec<u8> {

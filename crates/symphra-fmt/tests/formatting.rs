@@ -711,6 +711,41 @@ fn formats_arrangement_play_section_entries() {
 }
 
 #[test]
+fn formats_vst3_instrument_with_preset() {
+    let input = r#"song "S" {
+  instrument lead = vst3 { source "synth.vst3" preset "Warm Pad" }
+}
+"#;
+
+    let expected = r#"song "S" {
+  instrument lead = vst3 {
+    source "synth.vst3"
+    preset "Warm Pad"
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_vst3_instrument_without_preset() {
+    let input = r#"song "S" {
+  instrument lead = vst3 { source "synth.vst3" }
+}
+"#;
+
+    let expected = r#"song "S" {
+  instrument lead = vst3 {
+    source "synth.vst3"
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_master_limiter() {
     let input = r#"song "S" {
   master { limiter { ceiling -0.3db } }
@@ -774,6 +809,7 @@ song "S" {
   instrument piano = sampled { source "piano.wav" root C4 }
   instrument voice = sampler { pack "numbers" }
   instrument music_box = soundfont { source "gm.sf2" preset "gm_music_box" }
+  instrument synth_lead = vst3 { source "synth.vst3" preset "Warm Pad" }
   rhythm stabs resolution 1/4 { hit rest hit rest }
   pattern harmony = sequence { chord C4 E4 G4 for 1/1 }
   track chords role harmony {

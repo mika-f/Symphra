@@ -14,6 +14,7 @@ use symphra_score::{
     TimeError, Track,
 };
 use symphra_soundfont::{SoundFontLibrary, SoundFontVoice, find_preset};
+use symphra_vst3::{Vst3Library, Vst3Note, render_vst3_track};
 
 const MAX_NOTE_GAIN: f32 = 0.2;
 /// Amplitude below which a delay's decaying echo repeats are considered
@@ -69,6 +70,13 @@ pub enum RenderError {
     MissingSoundFont(String),
     #[error("soundfont `{font_source}` has no preset named `{preset}`")]
     MissingSoundFontPreset { font_source: String, preset: String },
+    #[error("vst3 plugin `{0}` was not loaded")]
+    MissingVst3Plugin(String),
+    #[error("vst3 plugin `{plugin_source}` failed: {message}")]
+    Vst3PluginFailed {
+        plugin_source: String,
+        message: String,
+    },
     #[error(transparent)]
     Time(#[from] TimeError),
 }
@@ -99,21 +107,24 @@ pub fn render_song_with_samples(
         song_index,
         sample_library,
         &SoundFontLibrary::default(),
+        &Vst3Library::default(),
     )
 }
 
-/// Renders one song using preloaded sample and `SoundFont` assets.
+/// Renders one song using preloaded sample, `SoundFont`, and VST3 assets.
 ///
 /// # Errors
 ///
 /// Returns [`RenderError`] for an invalid score, a referenced sample that is
-/// absent from `sample_library`, or a referenced SoundFont/preset that is
-/// absent from `soundfont_library`.
+/// absent from `sample_library`, a referenced SoundFont/preset that is
+/// absent from `soundfont_library`, or a referenced VST3 plugin that is
+/// absent from `vst3_library` (or fails to load/process).
 pub fn render_song_with_assets(
     score: &Score,
     song_index: usize,
     sample_library: &SampleLibrary,
     soundfont_library: &SoundFontLibrary,
+    vst3_library: &Vst3Library,
 ) -> Result<AudioBuffer, RenderError> {
     let song = score
         .songs
@@ -160,6 +171,11 @@ pub fn render_song_with_assets(
         .checked_mul(u64::from(channels))
         .and_then(|count| usize::try_from(count).ok())
         .ok_or(RenderError::AudioTooLarge)?;
+    let libraries = AssetLibraries {
+        samples: sample_library,
+        soundfonts: soundfont_library,
+        vst3: vst3_library,
+    };
     let mut samples = vec![0.0; sample_count];
     for track in &song.tracks {
         if let Some(effect) = track.effect {
@@ -169,8 +185,7 @@ pub fn render_song_with_assets(
                 song.tempo_bpm,
                 score.sample_rate_hz,
                 channels,
-                sample_library,
-                soundfont_library,
+                &libraries,
                 &mut track_samples,
             )?;
             apply_track_effect(
@@ -190,8 +205,7 @@ pub fn render_song_with_assets(
                 song.tempo_bpm,
                 score.sample_rate_hz,
                 channels,
-                sample_library,
-                soundfont_library,
+                &libraries,
                 &mut samples,
             )?;
         }
@@ -369,32 +383,134 @@ fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
     })
 }
 
+/// The preloaded, caller-supplied assets a track's instrument may need,
+/// bundled into one struct so `render_track` stays under clippy's
+/// `too_many_arguments` threshold now that a track can reference three
+/// independent asset kinds.
+struct AssetLibraries<'a> {
+    samples: &'a SampleLibrary,
+    soundfonts: &'a SoundFontLibrary,
+    vst3: &'a Vst3Library,
+}
+
 fn render_track(
     track: &Track,
     tempo_bpm: f64,
     sample_rate_hz: u32,
     channels: u16,
-    sample_library: &SampleLibrary,
-    soundfont_library: &SoundFontLibrary,
+    libraries: &AssetLibraries<'_>,
     samples: &mut [f32],
 ) -> Result<(), RenderError> {
-    render_track_notes(
-        track,
-        tempo_bpm,
-        sample_rate_hz,
-        channels,
-        sample_library,
-        soundfont_library,
-        samples,
-    )?;
+    if matches!(track.instrument, InstrumentKind::Vst3 { .. }) {
+        render_track_vst3(
+            track,
+            tempo_bpm,
+            sample_rate_hz,
+            channels,
+            libraries.vst3,
+            samples,
+        )?;
+    } else {
+        render_track_notes(
+            track,
+            tempo_bpm,
+            sample_rate_hz,
+            channels,
+            libraries.samples,
+            libraries.soundfonts,
+            samples,
+        )?;
+    }
     render_track_samples(
         track,
         tempo_bpm,
         sample_rate_hz,
         channels,
-        sample_library,
+        libraries.samples,
         samples,
     )
+}
+
+/// Renders a `vst3`-instrument track through one persistent plugin instance
+/// for the whole track, rather than one independent [`Voice`] per note (see
+/// [`symphra_vst3`]'s module docs for why). `track.gain` still applies as a
+/// scalar; `track.pan` is applied as **one static value for the whole
+/// rendered buffer** (`track.pan.percent(0)`) rather than alternated per
+/// note — once the plugin has mixed every note into one continuous stream
+/// there is no discrete per-note segment left to alternate across.
+fn render_track_vst3(
+    track: &Track,
+    tempo_bpm: f64,
+    sample_rate_hz: u32,
+    channels: u16,
+    vst3_library: &Vst3Library,
+    samples: &mut [f32],
+) -> Result<(), RenderError> {
+    let InstrumentKind::Vst3 { source, preset } = &track.instrument else {
+        return Ok(());
+    };
+    let sample_rate = NonZeroU32::new(sample_rate_hz).ok_or(RenderError::InvalidSampleRate)?;
+    if !vst3_library.contains(source) {
+        return Err(RenderError::MissingVst3Plugin(source.clone()));
+    }
+
+    let total_frames = time_to_frame(track.end, tempo_bpm, sample_rate_hz)?;
+    let notes = track
+        .notes
+        .iter()
+        .map(|note| {
+            Ok(Vst3Note {
+                start_frame: time_to_frame(note.start, tempo_bpm, sample_rate_hz)?,
+                end_frame: time_to_frame(
+                    note.start.checked_add(note.duration)?,
+                    tempo_bpm,
+                    sample_rate_hz,
+                )?,
+                midi_pitch: note.midi_pitch,
+                velocity: note.velocity,
+            })
+        })
+        .collect::<Result<Vec<_>, RenderError>>()?;
+
+    let rendered = render_vst3_track(source, preset.as_deref(), sample_rate, total_frames, &notes)
+        .map_err(|error| RenderError::Vst3PluginFailed {
+            plugin_source: source.clone(),
+            message: error.to_string(),
+        })?;
+
+    // The plugin already renders a genuinely stereo signal, unlike every
+    // other instrument kind's mono-under-one-pan model — so `pan` is
+    // applied here as a per-channel gain trim on top of that stereo output
+    // (the same role a mixing console channel strip's pan knob plays on an
+    // already-stereo channel), not as `mix_sample`'s "spread a mono source
+    // across stereo" behavior.
+    let pan = track.pan.percent(0);
+    let left_trim = if pan > 0 {
+        1.0 - f32::from(pan) / 100.0
+    } else {
+        1.0
+    };
+    let right_trim = if pan < 0 {
+        1.0 + f32::from(pan) / 100.0
+    } else {
+        1.0
+    };
+    for frame in 0..total_frames {
+        let frame_index = usize::try_from(frame).map_err(|_| RenderError::AudioTooLarge)?;
+        let left = rendered[frame_index * 2] * track.gain;
+        let right = rendered[frame_index * 2 + 1] * track.gain;
+        let first_sample = frame
+            .checked_mul(u64::from(channels))
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or(RenderError::AudioTooLarge)?;
+        if channels == 2 {
+            samples[first_sample] += left * left_trim;
+            samples[first_sample + 1] += right * right_trim;
+        } else {
+            samples[first_sample] += f32::midpoint(left, right) * left_trim;
+        }
+    }
+    Ok(())
 }
 
 fn render_track_notes(
@@ -540,6 +656,9 @@ fn note_voice<'a>(
             .map_err(|_| RenderError::MissingSoundFont(source.clone()))?;
             Ok((Voice::SoundFont(Box::new(voice)), 1.0, None))
         }
+        InstrumentKind::Vst3 { .. } => {
+            unreachable!("render_track routes Vst3 instruments to render_track_vst3, never here")
+        }
     }
 }
 
@@ -563,7 +682,8 @@ fn render_track_samples(
         | InstrumentKind::Triangle { .. }
         | InstrumentKind::Supersaw { .. }
         | InstrumentKind::Sampled { .. }
-        | InstrumentKind::SoundFont { .. } => {
+        | InstrumentKind::SoundFont { .. }
+        | InstrumentKind::Vst3 { .. } => {
             return Err(RenderError::SampleEventsRequireSampler);
         }
     };
@@ -777,6 +897,23 @@ mod tests {
         assert_eq!(
             error,
             RenderError::MissingSoundFont("instruments/gm.sf2".to_owned())
+        );
+    }
+
+    #[test]
+    fn render_song_should_reject_notes_for_an_unloaded_vst3_plugin() {
+        let error = render_song(
+            &score(InstrumentKind::Vst3 {
+                source: "instruments/synth.vst3".to_owned(),
+                preset: None,
+            }),
+            0,
+        )
+        .expect_err("an unloaded vst3 plugin should be rejected");
+
+        assert_eq!(
+            error,
+            RenderError::MissingVst3Plugin("instruments/synth.vst3".to_owned())
         );
     }
 

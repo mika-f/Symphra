@@ -805,6 +805,10 @@ fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
             source: source.clone(),
             preset: preset.clone(),
         },
+        hir::InstrumentKind::Vst3 { source, preset } => InstrumentKind::Vst3 {
+            source: source.clone(),
+            preset: preset.clone(),
+        },
     }
 }
 

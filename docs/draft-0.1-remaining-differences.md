@@ -93,6 +93,23 @@ playback speed`). Since then, two further slices landed:
   `SoundFontVoice` that plugs into `symphra-render`'s existing per-note
   `Voice` abstraction). VST3 (the other half of §5) remains unimplemented —
   see §5 below for why they were split and the SoundFont design decisions.
+- A twelfth slice, in a new session on 2026-08-10, closes out §5 by adding
+  `instrument x = vst3 { source "..." [preset "..."] }`: a pitched
+  instrument backed by a live VST3 plug-in instance, the last item on this
+  document's continuation-order list. It was originally assumed this would
+  need the GPLv3 `vst3-sys` bindings (matching the Steinberg VST3 SDK's own
+  historical license), but this slice instead uses `vst3-host` (MIT), an
+  independently reimplemented VST3 host built on the `vst3` bindings crate
+  (dual MIT/Apache-2.0) rather than any vendored Steinberg SDK source — so
+  the whole workspace stays MIT-licensed, with no GPL boundary or feature
+  flag needed. A VST3 instrument is architecturally unlike every other
+  instrument kind: it is a persistent, stateful plug-in instance rather than
+  an independent per-note voice, so it is rendered through a new
+  `render_track_vst3` path parallel to (not a new arm inside) the existing
+  per-note `render_track_notes`. See §5 below for the full design (why one
+  plugin instance per track, the static-pan simplification, and why
+  end-to-end audio testing is a permanent — not just currently missing — gap
+  for this instrument kind).
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -175,7 +192,12 @@ the adjusted syntax described later:
 - `instrument x = soundfont { source "..." preset "..." }`: a pitched
   instrument backed by a `.sf2` `SoundFont` preset, synthesized offline via
   `rustysynth` and mixed down to mono under the same track-level `Pan` every
-  other instrument kind uses.
+  other instrument kind uses;
+- `instrument x = vst3 { source "..." [preset "..."] }`: a pitched
+  instrument backed by a live VST3 plug-in instance, rendered through one
+  persistent plugin per track fed the track's full note-event sequence
+  (rather than one independent voice per note, the model every other
+  instrument kind uses), via the MIT-licensed `vst3-host` crate.
 
 ## Remaining language and runtime gaps
 
@@ -451,30 +473,36 @@ gained a `Voice::Supersaw` arm alongside `Voice::Oscillator`/`Voice::Sample`;
 **Still missing:** SoundFont and VST3 instruments (§5) — separate,
 larger, external-dependency-heavy backends left for their own slice.
 
-### 5. SoundFont and VST3 instruments — SoundFont done, VST3 still missing
+### 5. SoundFont and VST3 instruments — both done
 
 ```symphra
 instrument music_box = soundfont {
   source "instruments/gm.sf2"
   preset "gm_music_box"
 }
+
+instrument lead = vst3 {
+  source "instruments/synth.vst3"
+  preset "Warm Pad"
+}
 ```
 
-is implemented (the `source` field is a repo addition — see the
-intentional-differences table). VST3 remains entirely unimplemented: there is
-no language-level VST3 instrument declaration or offline render path for a
-VST3 plug-in.
+are both implemented (`soundfont`'s `source` field is a repo addition — see
+the intentional-differences table; `vst3`'s `preset` is optional, unlike
+`soundfont`'s required one — see below).
 
-**Why SoundFont and VST3 stayed split.** The original groups both under one
-heading, but they are unrelated engineering problems: SoundFont is a static
-sample-and-envelope *asset format* with several mature pure-Rust parsers
-already available, while VST3 is a *live plug-in protocol* (Steinberg's SDK,
-C++, dual-licensed GPLv3/proprietary) requiring FFI bindings, a plug-in host
-implementation, and license-compliance decisions — an order of magnitude
-more work with no shared code between the two. Doing SoundFont first, alone,
-was a scoping decision made with the user rather than an oversight; VST3 is
-left for its own future slice once wanted (see the recommended continuation
-order).
+**Why SoundFont and VST3 stayed split (across sessions, not in the grammar).**
+The original groups both under one heading, but they are unrelated
+engineering problems: SoundFont is a static sample-and-envelope *asset
+format* with several mature pure-Rust parsers already available, while VST3
+is a *live plug-in protocol* requiring a host implementation and
+license-compliance decisions — an order of magnitude more work with no
+shared code between the two. Doing SoundFont first, alone, was a scoping
+decision made with the user rather than an oversight; VST3 was picked up in
+a later session once wanted (see the recommended continuation order). The
+language surface reflects this too: `soundfont` and `vst3` are two entirely
+separate `InstrumentBody`/`InstrumentKind` variants with no shared grammar
+production, exactly as `sampled`/`sampler`/`drum_machine` already are.
 
 **Dependency decision.** `rustysynth` (MIT-licensed, pure Rust, actively
 maintained, no `unsafe` at this crate's call boundary) was chosen over
@@ -606,11 +634,162 @@ already used for `Sampler`/`DrumMachine` (an unloaded soundfont's
 `RenderError::MissingSoundFont`), since `find_preset`/decode correctness
 is already covered directly in `symphra-soundfont`.
 
-**Still missing:** VST3 instruments (a separate, much larger slice — see
-above), and automating any `soundfont` parameter (not applicable today,
-since `soundfont` has no automatable parameter of its own — `.sf2` presets
-are static assets, not song-declared values like `effect filter`'s
-`cutoff`).
+**Still missing (SoundFont only):** automating any `soundfont` parameter
+(not applicable today, since `soundfont` has no automatable parameter of its
+own — `.sf2` presets are static assets, not song-declared values like
+`effect filter`'s `cutoff`).
+
+#### VST3
+
+```symphra
+instrument lead = vst3 {
+  source "instruments/synth.vst3"
+  preset "Warm Pad"
+}
+```
+
+is implemented via a new `symphra-vst3` crate wrapping the external
+`vst3-host` crate — a real offline VST3 host, not a stub. `preset` is
+optional (unlike `soundfont`'s required one): not every plugin exposes a
+useful named program list, and absent it the plugin's own default program
+applies.
+
+**Dependency decision.** The obvious path — `vst3-sys`, hand-generated
+bindings to Steinberg's own VST3 SDK — is GPLv3-licensed, which would have
+forced either a license-boundary split (a GPLv3 `symphra-vst3` crate behind
+an opt-in feature flag, kept out of the default MIT build) or accepting
+GPLv3 for the whole workspace. Neither was needed: `vst3-host` (MIT) is
+built on `vst3` (dual MIT/Apache-2.0), an independently reimplemented set of
+VST3 COM interface bindings that does not vendor or link against Steinberg's
+own SDK source. This keeps the workspace's existing all-MIT licensing intact
+with no split, and — like `rustysynth` for SoundFont — `vst3-host` is a
+dependency of the new `symphra-vst3` crate only; no other crate in the
+workspace depends on it directly. `vst3-host`'s public API also has zero
+`unsafe` code (it does the FFI/COM work internally), so this slice needed no
+exception to the workspace's `unsafe_code = "deny"` lint.
+
+**Grammar.** `instrument x = vst3 { source "..." [preset "..."] }` is a new
+`InstrumentBody::Vst3 { source, preset: Option<QuotedString>, span }`
+variant, parsed like `soundfont` (a dedicated `vst3` keyword opening a
+brace-delimited body) but with `preset` optional rather than required —
+parsed only if the `preset` keyword follows `source`, the same optional-
+trailing-field shape `envelope` already uses after an oscillator body. Only
+one new keyword token, `Vst3`, was needed; `source`/`preset` reuse the
+existing tokens `sampled`/`soundfont` already established.
+
+**Validation.** `source` must be non-empty; `preset`, if present, must also
+be non-empty — the same checks `soundfont` uses, `preset` just being
+optional here. Neither the plugin's existence nor a named preset's presence
+inside it can be checked at compile time, the same "only checked once
+actually loaded, at render time" precedent every other asset kind in this
+document already established.
+
+**Design: VST3 does not fit the per-note `Voice` model.** Every other
+pitched instrument (`Sine`, `Triangle`, `Supersaw`, `Sampled`, `SoundFont`)
+is rendered as one independent, fresh `Voice` per `NoteEvent`
+(`note_voice`/`render_track_notes`), with the renderer applying its own
+fade/envelope, gain, velocity, and per-event pan uniformly on top. A VST3
+plug-in is a persistent, *stateful* object: it must receive every note-on
+and note-off for a track through one long-lived instance so polyphony,
+voice-stealing, and the plugin's own internal effects behave correctly —
+instantiating a fresh plugin per note (as the existing model would) would
+silently break chords (three simultaneous notes would become three
+unrelated plugin instances that can't interact) and any state a plugin
+keeps across notes, on top of being far too expensive to actually do per
+note. So `vst3` instruments get their own render path,
+`render_track_vst3`, called by `render_track` *instead of*
+`render_track_notes` (not a new arm inside it) — it builds one plugin
+instance for the whole track, feeds it every note in the track as
+note-on/note-off pairs, and renders the track's full frame range in a
+single pass. Per-note host-side shaping does not apply here — the plugin
+owns its own amplitude envelope entirely (the same reasoning `soundfont`
+already established for why it ignores the configured `envelope` feature).
+`track.gain` still applies as a scalar; `track.pan`, however, is applied as
+**one static value for the whole rendered buffer**
+(`track.pan.percent(0)`), not alternated per note — once the plugin has
+mixed every note into one continuous stream there is no discrete per-note
+segment left to alternate across. Unlike every other instrument kind (which
+mixes down to mono before panning), the plugin's own genuinely stereo
+output is preserved: `pan` is applied as a per-channel gain trim on top of
+that stereo signal (the same role a mixing console channel strip's pan
+knob plays on an already-stereo channel), only downmixing to mono for a
+`Channels::Mono` song.
+
+**The "beat = frame" trick.** `vst3-host`'s `Timeline`/`MidiClip` schedule
+MIDI events at *beat* positions and drive a plugin block by block
+(`Timeline::drive_block`). Rather than adding a second tempo/meter
+conversion path alongside the render pipeline's existing
+`time_to_frame`-based one, `symphra-vst3` picks
+`bpm = sample_rate_hz * 60` for its internal `Timeline`, which makes
+`samples_per_beat == 1` — so a "beat" position *is* a frame index, and the
+already-resolved `start_frame`/`end_frame` values `render_track_vst3`
+computes via the same `time_to_frame` every other instrument kind uses feed
+straight into `MidiClip::with` with no new unit conversion in this crate at
+all.
+
+**`symphra-vst3` (new crate).** `Vst3Library` is a cache of *validated
+source paths*, not loaded plugins — unlike `Arc<SoundFont>` or decoded
+sample data, a `vst3_host::Plugin` owns an exclusive loaded native module
+and live COM instance, so it cannot be `Clone`d or shared across tracks the
+way every other preloaded asset in this workspace can be. `validate_plugin`
+loads a plugin once (via `vst3_host::simple::get_plugin_info`) just to
+confirm it's loadable, then drops it — this is what `apps/symphra-cli`'s
+new `load_vst3s` calls per unique source before rendering, so a broken
+plugin path still surfaces as a clean preload error rather than a
+mid-render one, matching `load_soundfonts`'s contract even though the real
+plugin instantiation is unavoidably deferred to render time.
+`render_vst3_track(source, preset, sample_rate_hz, total_frames, notes)` is
+the whole-track render entry point described above; `preset` resolves to a
+program index via `Plugin::get_units()`'s exact-name match over each unit's
+program list, then `Plugin::select_program`.
+
+**Render integration.** `render_song_with_assets` gained a `vst3_library`
+parameter alongside `sample_library`/`soundfont_library` — bundled with them
+into a small `AssetLibraries` struct so `render_track` stays under clippy's
+`too_many_arguments` threshold now that a track can reference three
+independent asset kinds. `render_track` branches on the instrument kind
+before calling into notes/samples rendering, exactly the "declared-track-
+only" dispatch precedent every other instrument-kind-specific behavior in
+this document already follows. `song_frames` needed no change — like
+`soundfont`, a `vst3` track has no known decaying tail to extend the buffer
+for; it renders exactly the track's existing frame window and is cut off
+there, the same "fixed event window" precedent `soundfont` established.
+
+**API surface.** Exactly the additive-only shape `soundfont` established:
+`render_song`/`render_song_with_samples` keep their prior signatures
+unchanged (defaulting to an empty `Vst3Library`, so an unrendered `vst3`
+instrument simply errors with `RenderError::MissingVst3Plugin`, the same
+shape `MissingSoundFont` already has); `render_song_with_assets` and
+`symphra-engine`'s `render_score_with_assets` gained the new
+`vst3_library`/`vst3s` parameter as their one richer entry point.
+`apps/symphra-cli` calls it with the new `load_vst3s` alongside
+`load_samples`/`load_soundfonts` (same relative-path resolution and
+absolute-path rejection).
+
+**Testing — a permanent gap, not a currently-missing one.** Every other
+asset-backed instrument in this document (WAV samples, `.sf2` SoundFonts)
+is a documented, byte-level file format this workspace's tests can
+hand-build a minimal fixture for entirely in Rust — see `fn wav` and
+`minimal_soundfont` across `symphra-sampler`/`symphra-soundfont`/
+`symphra-cli`'s own tests. A `.vst3` plugin is compiled native code (a
+platform dynamic library inside a bundle), not a format with a minimal
+valid byte sequence that can be authored by hand — there is no equivalent
+fixture to build, in this environment or any other, without an actual
+compiled plugin binary. So `symphra-vst3`, `symphra-render`, and
+`apps/symphra-cli`'s tests all stay on the "error-path only, no real audio"
+side (a nonexistent plugin path rejected by `validate_plugin`/
+`render_vst3_track`; `RenderError::MissingVst3Plugin` for an unloaded
+`vst3` instrument; an absolute-path rejection in the CLI) — unlike
+SoundFont, `apps/symphra-cli` does **not** get a real end-to-end "loads a
+file and renders audible audio" test for `vst3`, because there is no
+fixture-building path to it. Verifying real VST3 audio requires manually
+pointing `symphra-cli` at an actual installed plugin outside this
+environment.
+
+**Still missing:** automating any `vst3` parameter (not applicable — a VST3
+plugin's own parameters are not exposed as song-declared values the way
+`effect filter`'s `cutoff` is), and this document's continuation-order list
+has no further numbered phase after this one.
 
 ### 6. Layers and per-layer instruments — done
 
@@ -1196,13 +1375,25 @@ original intent before expanding degree-based harmony.
     other slice in this document combined. `source` is a repo addition (the
     original never names a `.sf2` file), mirroring `sampled`'s `source`
     field.
-19. The next milestone, if wanted, is VST3 instruments — the largest
-    remaining piece (a live plug-in protocol needing FFI bindings, a host
-    implementation, and license-compliance decisions, not just an asset
-    format), left for last as originally planned. Automating parameters
-    other than `filter`'s `cutoff` (delay/reverb mix, resonance, envelope
-    stages, supersaw detune/spread, etc.) remains unimplemented and could be
-    picked up at any point once wanted — see §7's "still missing" note.
+19. ~~Add VST3 instruments.~~ Done, in a new session on 2026-08-10 —
+    `instrument x = vst3 { source "..." [preset "..."] }` is implemented via
+    a new `symphra-vst3` crate wrapping the external `vst3-host` crate
+    (MIT-licensed, built on the independently-reimplemented `vst3` bindings
+    rather than Steinberg's own GPLv3 SDK bindings, so the workspace stays
+    all-MIT with no license-boundary split). Unlike every other instrument
+    kind, a VST3 plug-in is a persistent, stateful object rather than an
+    independent per-note voice, so it renders through a new
+    `render_track_vst3` path (one plugin instance per track, fed the whole
+    track's note sequence) parallel to — not inside — the existing per-note
+    `render_track_notes`. See §5 for the full design, including why
+    end-to-end audio testing is a permanent gap for this instrument kind
+    (a `.vst3` plugin is compiled native code, unlike every other asset kind
+    in this document, none of which has a hand-buildable byte-level
+    fixture). This was the last item on this document's continuation-order
+    list — automating parameters other than `filter`'s `cutoff`
+    (delay/reverb mix, resonance, envelope stages, supersaw detune/spread,
+    etc.) remains the one open, unscheduled extension, pickable up at any
+    point once wanted (see §7's "still missing" note).
 
 ## Verification notes
 
@@ -1367,4 +1558,44 @@ and the note-to-`Voice` instrument dispatch in `render_track_notes` was
 extracted into a new `note_voice` helper (`too_many_lines`, after adding the
 `SoundFont` arm). `cargo fmt --all -- --check` is clean except for the same
 two pre-existing, unrelated differences.
+
+The same also holds for the VST3 slice added in a new session on
+2026-08-10: `cargo build --workspace --all-targets`, `cargo test
+--workspace` (with `symphra-lsp` run separately via `cargo test -p
+symphra-lsp --target-dir <alternate-dir>`), and `cargo clippy --workspace
+--all-targets -- -D warnings` all pass — a new `symphra-vst3` crate with 3
+unit tests (nonexistent-plugin-path rejection for both `validate_plugin` and
+`render_vst3_track`, and `Vst3Library` insert/contains), 2 new parser tests
+(`crates/symphra-syntax/tests/syntax.rs`, with and without `preset`), 4 new
+compiler tests (`crates/symphra-compiler/tests/compile.rs`: lowering with
+and without `preset`, empty-source rejection, empty-preset rejection), 1
+new render error-path test (`crates/symphra-render/src/lib.rs`:
+`MissingVst3Plugin` for an unloaded plugin — no real plugin needed, the same
+"error-path only" convention `MissingSoundFont`'s own test already uses), 2
+new formatter round-trip tests plus one idempotency source line addition
+(`crates/symphra-fmt/tests/formatting.rs`), 1 new LSP completion assertion
+(`apps/symphra-lsp/src/main.rs`, extending the existing
+`completes_instrument_body_keywords` test rather than a new test function),
+and 1 new `apps/symphra-cli` test (an absolute-vst3-path rejection,
+mirroring the existing absolute-soundfont-path one) were added. Unlike
+SoundFont, there is no real end-to-end "loads a file and renders audible
+audio" test anywhere in this slice — see "Testing" under §5's VST3
+subsection for why that gap is permanent rather than closable. Four
+mechanical, behavior-preserving changes were needed to satisfy strict
+clippy after the new variant/parameter landed: `render_track` in
+`crates/symphra-render/src/lib.rs` had its `sample_library`/
+`soundfont_library`/new `vst3_library` parameters bundled into a small
+`AssetLibraries` struct (`too_many_arguments`, once a track could reference
+three independent asset kinds); `fn instrument` in
+`crates/symphra-syntax/src/parser/mod.rs` gained a `vst3_instrument_body`
+helper, `fn instrument_kind` in `crates/symphra-compiler/src/lib.rs` gained
+a `vst3_instrument_kind` helper, and `fn print_instrument` in
+`crates/symphra-fmt/src/format.rs` gained a `print_vst3_instrument` helper
+— all three the same `too_many_lines` extraction precedent every prior
+instrument-kind addition in this document already established. `cargo fmt
+--all -- --check` is now fully clean, including the two pre-existing,
+unrelated differences this document previously called out
+(`apps/symphra-formatter/tests/stdin.rs` and the empty
+`crates/symphra-syntax/src/parser/literal.rs` stub) — running `cargo fmt
+--all` for this slice happened to resolve both as a side effect.
 

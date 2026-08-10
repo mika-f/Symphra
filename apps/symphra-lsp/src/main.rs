@@ -385,6 +385,7 @@ enum CompletionBlock {
     Sampler,
     DrumMachine,
     SoundFont,
+    Vst3,
     Chance,
     Oscillator,
     Supersaw,
@@ -439,6 +440,7 @@ fn completion_labels(
                 "sampler",
                 "drum_machine",
                 "soundfont",
+                "vst3",
             ]
         } else {
             &["sequence", "steps"]
@@ -567,7 +569,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Sampled) => &["source", "root"],
         Some(CompletionBlock::Sampler) => &["pack"],
         Some(CompletionBlock::DrumMachine) => &["bank"],
-        Some(CompletionBlock::SoundFont) => &["source", "preset"],
+        Some(CompletionBlock::SoundFont | CompletionBlock::Vst3) => &["source", "preset"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
         Some(CompletionBlock::Oscillator) => &["envelope"],
         Some(CompletionBlock::Supersaw) => &["voices", "detune", "spread", "envelope"],
@@ -701,6 +703,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
             TokenKind::DrumMachine => pending = Some(CompletionBlock::DrumMachine),
             TokenKind::Soundfont => pending = Some(CompletionBlock::SoundFont),
+            TokenKind::Vst3 => pending = Some(CompletionBlock::Vst3),
             TokenKind::Chance => pending = Some(CompletionBlock::Chance),
             TokenKind::Supersaw => pending = Some(CompletionBlock::Supersaw),
             TokenKind::Envelope => pending = Some(CompletionBlock::Envelope),
@@ -1126,13 +1129,14 @@ const fn keyword_description_playback(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Sampler => "declares an instrument backed by a sample pack.",
         TokenKind::DrumMachine => "declares an instrument backed by named drum voices.",
         TokenKind::Soundfont => "declares a pitched instrument backed by a SoundFont preset.",
+        TokenKind::Vst3 => "declares a pitched instrument backed by a live VST3 plug-in.",
         TokenKind::Source => {
-            "sets the WAV or SoundFont file used by a sampled/soundfont instrument."
+            "sets the WAV, SoundFont, or VST3 plugin file used by a sampled/soundfont/vst3 instrument."
         }
         TokenKind::Root => "sets the sample's original pitch, such as `C4`.",
         TokenKind::Pack => "sets the sample pack used by a sampler instrument.",
         TokenKind::Bank => "sets the drum bank used by a drum machine instrument.",
-        TokenKind::Preset => "sets the SoundFont preset name used by a soundfont instrument.",
+        TokenKind::Preset => "sets the preset/program name used by a soundfont or vst3 instrument.",
         TokenKind::Drum => "selects a named voice from the current drum bank.",
         _ => return None,
     })
@@ -1347,7 +1351,8 @@ mod tests {
                 "sampled",
                 "sampler",
                 "drum_machine",
-                "soundfont"
+                "soundfont",
+                "vst3"
             ]
         );
         assert_eq!(
@@ -1380,6 +1385,10 @@ mod tests {
                 2,
                 4
             ),
+            ["source", "preset"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\n  instrument lead = vst3 {\n    ", 2, 4),
             ["source", "preset"]
         );
     }
@@ -1763,8 +1772,8 @@ mod tests {
         );
         let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
 
-        let pad = definition(&source, &uri, Position::new(8, 17))
-            .expect("play track pad should resolve");
+        let pad =
+            definition(&source, &uri, Position::new(8, 17)).expect("play track pad should resolve");
         assert_eq!(pad.uri, uri);
         assert_eq!(
             pad.range,

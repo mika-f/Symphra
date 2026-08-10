@@ -1526,20 +1526,59 @@ impl Compiler {
                 }
             }
             InstrumentBody::SoundFont { source, preset, .. } => {
-                if source.value.is_empty() {
-                    self.error("soundfont source path must not be empty", source.span);
-                    None
-                } else if preset.value.is_empty() {
-                    self.error("soundfont preset name must not be empty", preset.span);
-                    None
-                } else {
-                    Some(InstrumentKind::SoundFont {
-                        source: source.value.clone(),
-                        preset: preset.value.clone(),
-                    })
-                }
+                self.soundfont_instrument_kind(source, preset)
+            }
+            InstrumentBody::Vst3 { source, preset, .. } => {
+                self.vst3_instrument_kind(source, preset.as_ref())
             }
         }
+    }
+
+    /// `source`/`preset` must both be non-empty. Split out of
+    /// [`Self::instrument_kind`] to stay under clippy's `too_many_lines`
+    /// threshold — a mechanical extraction, not a behavior change.
+    fn soundfont_instrument_kind(
+        &mut self,
+        source: &QuotedString,
+        preset: &QuotedString,
+    ) -> Option<InstrumentKind> {
+        if source.value.is_empty() {
+            self.error("soundfont source path must not be empty", source.span);
+            return None;
+        }
+        if preset.value.is_empty() {
+            self.error("soundfont preset name must not be empty", preset.span);
+            return None;
+        }
+        Some(InstrumentKind::SoundFont {
+            source: source.value.clone(),
+            preset: preset.value.clone(),
+        })
+    }
+
+    /// `source` must be non-empty; `preset`, if present, must also be
+    /// non-empty. Split out of [`Self::instrument_kind`] to stay under
+    /// clippy's `too_many_lines` threshold — a mechanical extraction, not a
+    /// behavior change.
+    fn vst3_instrument_kind(
+        &mut self,
+        source: &QuotedString,
+        preset: Option<&QuotedString>,
+    ) -> Option<InstrumentKind> {
+        if source.value.is_empty() {
+            self.error("vst3 source path must not be empty", source.span);
+            return None;
+        }
+        if let Some(preset) = preset
+            && preset.value.is_empty()
+        {
+            self.error("vst3 preset name must not be empty", preset.span);
+            return None;
+        }
+        Some(InstrumentKind::Vst3 {
+            source: source.value.clone(),
+            preset: preset.map(|preset| preset.value.clone()),
+        })
     }
 
     /// `attack`/`decay`/`release` must carry an `ms` unit and be finite,

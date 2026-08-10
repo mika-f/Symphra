@@ -307,6 +307,8 @@ impl Parser {
                 preset,
                 span: soundfont_start.cover(end.span),
             }
+        } else if self.at(TokenKind::Vst3) {
+            self.vst3_instrument_body()?
         } else if self.at(TokenKind::Synth) {
             self.supersaw_instrument_body()?
         } else {
@@ -318,9 +320,33 @@ impl Parser {
             | InstrumentBody::Sampled { span, .. }
             | InstrumentBody::Sampler { span, .. }
             | InstrumentBody::DrumMachine { span, .. }
-            | InstrumentBody::SoundFont { span, .. } => start.cover(*span),
+            | InstrumentBody::SoundFont { span, .. }
+            | InstrumentBody::Vst3 { span, .. } => start.cover(*span),
         };
         Some(InstrumentDeclaration { name, body, span })
+    }
+
+    /// `vst3 { source "..." [preset "..."] }`.
+    fn vst3_instrument_body(&mut self) -> Option<InstrumentBody> {
+        let vst3_start = self.bump().span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `vst3`")?;
+        self.required(TokenKind::Source, "expected `source` in vst3 instrument")?;
+        let source = self.string("expected a quoted vst3 plugin source path")?;
+        let preset = if self.at(TokenKind::Preset) {
+            self.bump();
+            Some(self.string("expected a quoted preset name")?)
+        } else {
+            None
+        };
+        let end = self.required(
+            TokenKind::RightBrace,
+            "expected `}` to close vst3 instrument",
+        )?;
+        Some(InstrumentBody::Vst3 {
+            source,
+            preset,
+            span: vst3_start.cover(end.span),
+        })
     }
 
     /// `synth supersaw { voices N detune D spread S [envelope { ... }] }`.

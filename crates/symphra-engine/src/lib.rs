@@ -13,6 +13,7 @@ pub use symphra_soundfont::{
     DecodeError as SoundFontDecodeError, SoundFontLibrary, decode_soundfont,
 };
 pub use symphra_syntax::{SourceId, SourceSpan, SourceText};
+pub use symphra_vst3::{Vst3Error, Vst3Library, validate_plugin};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
 pub enum EngineError {
@@ -65,19 +66,22 @@ pub fn render_score(
     render_song_with_samples(score, song_index, samples).map_err(EngineError::Render)
 }
 
-/// Renders a compiled score using preloaded sample and `SoundFont` assets.
+/// Renders a compiled score using preloaded sample, `SoundFont`, and VST3
+/// assets.
 ///
 /// # Errors
 ///
-/// Returns [`EngineError::Render`] when the score, sample library, or
-/// soundfont library cannot be rendered.
+/// Returns [`EngineError::Render`] when the score, sample library,
+/// soundfont library, or vst3 library cannot be rendered.
 pub fn render_score_with_assets(
     score: &Score,
     song_index: usize,
     samples: &SampleLibrary,
     soundfonts: &SoundFontLibrary,
+    vst3s: &Vst3Library,
 ) -> Result<AudioBuffer, EngineError> {
-    render_song_with_assets(score, song_index, samples, soundfonts).map_err(EngineError::Render)
+    render_song_with_assets(score, song_index, samples, soundfonts, vst3s)
+        .map_err(EngineError::Render)
 }
 
 #[cfg(test)]

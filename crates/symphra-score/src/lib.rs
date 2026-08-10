@@ -215,6 +215,10 @@ pub enum InstrumentKind {
         source: String,
         preset: String,
     },
+    Vst3 {
+        source: String,
+        preset: Option<String>,
+    },
 }
 
 impl Score {
@@ -229,7 +233,8 @@ impl Score {
                 | InstrumentKind::Supersaw { .. }
                 | InstrumentKind::Sampler { .. }
                 | InstrumentKind::DrumMachine { .. }
-                | InstrumentKind::SoundFont { .. } => None,
+                | InstrumentKind::SoundFont { .. }
+                | InstrumentKind::Vst3 { .. } => None,
             })
     }
 
@@ -245,7 +250,8 @@ impl Score {
                     | InstrumentKind::Triangle { .. }
                     | InstrumentKind::Supersaw { .. }
                     | InstrumentKind::Sampled { .. }
-                    | InstrumentKind::SoundFont { .. } => None,
+                    | InstrumentKind::SoundFont { .. }
+                    | InstrumentKind::Vst3 { .. } => None,
                 };
                 track.samples.iter().filter_map(move |sample| {
                     container.map(|container| (container, &sample.selector))
@@ -271,7 +277,31 @@ impl Score {
                 | InstrumentKind::Supersaw { .. }
                 | InstrumentKind::Sampled { .. }
                 | InstrumentKind::Sampler { .. }
-                | InstrumentKind::DrumMachine { .. } => None,
+                | InstrumentKind::DrumMachine { .. }
+                | InstrumentKind::Vst3 { .. } => None,
+            })
+    }
+
+    /// `(source, preset)` pairs for every declared `vst3` instrument,
+    /// mirroring `soundfont_sources`'s "asset locations the caller must
+    /// preload" contract. `preset` is optional here (unlike
+    /// `soundfont_sources`'s required one) since not every plugin exposes a
+    /// useful named program list.
+    pub fn vst3_sources(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
+        self.songs
+            .iter()
+            .flat_map(|song| &song.tracks)
+            .filter_map(|track| match &track.instrument {
+                InstrumentKind::Vst3 { source, preset } => {
+                    Some((source.as_str(), preset.as_deref()))
+                }
+                InstrumentKind::Sine { .. }
+                | InstrumentKind::Triangle { .. }
+                | InstrumentKind::Supersaw { .. }
+                | InstrumentKind::Sampled { .. }
+                | InstrumentKind::Sampler { .. }
+                | InstrumentKind::DrumMachine { .. }
+                | InstrumentKind::SoundFont { .. } => None,
             })
     }
 }

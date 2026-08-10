@@ -31,6 +31,7 @@ symphra-export = { path = "crates/symphra-export" }
 symphra-dsp = { path = "crates/symphra-dsp" }
 symphra-sampler = { path = "crates/symphra-sampler" }
 symphra-soundfont = { path = "crates/symphra-soundfont" }
+symphra-vst3 = { path = "crates/symphra-vst3" }
 symphra-engine = { path = "crates/symphra-engine" }
 
 [workspace.lints.rust]

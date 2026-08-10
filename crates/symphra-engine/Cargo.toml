@@ -16,4 +16,5 @@ symphra-render.workspace = true
 symphra-score.workspace = true
 symphra-sampler.workspace = true
 symphra-soundfont.workspace = true
+symphra-vst3.workspace = true
 symphra-syntax.workspace = true

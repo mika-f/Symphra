@@ -669,7 +669,41 @@ fn print_instrument(ctx: &mut Ctx<'_>, decl: &InstrumentDeclaration) {
                 },
             );
         }
+        InstrumentBody::Vst3 { source, preset, .. } => {
+            print_vst3_instrument(ctx, &name, source, preset.as_ref(), decl.span);
+        }
     }
+}
+
+fn print_vst3_instrument(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    source: &QuotedString,
+    preset: Option<&QuotedString>,
+    span: SourceSpan,
+) {
+    let header = format!("instrument {name} = vst3");
+    let mut items = vec![Vst3Field::Source(source)];
+    if let Some(preset) = preset {
+        items.push(Vst3Field::Preset(preset));
+    }
+    print_block(
+        ctx,
+        &header,
+        span,
+        &items,
+        vst3_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            Vst3Field::Source(source) => ctx
+                .printer
+                .line(format!("source {}", ctx.text(source.span))),
+            Vst3Field::Preset(preset) => ctx
+                .printer
+                .line(format!("preset {}", ctx.text(preset.span))),
+        },
+    );
 }
 
 enum SoundFontField<'a> {
@@ -680,6 +714,18 @@ enum SoundFontField<'a> {
 fn soundfont_field_span(field: &SoundFontField<'_>) -> SourceSpan {
     match field {
         SoundFontField::Source(source) | SoundFontField::Preset(source) => source.span,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Vst3Field<'a> {
+    Source(&'a QuotedString),
+    Preset(&'a QuotedString),
+}
+
+fn vst3_field_span(field: Vst3Field<'_>) -> SourceSpan {
+    match field {
+        Vst3Field::Source(source) | Vst3Field::Preset(source) => source.span,
     }
 }
 

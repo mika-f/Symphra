@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
-use symphra_syntax::ast::{ArrangementEntry, Declaration, PatternBody, SequenceItem, SongDeclaration, SongStatement, TrackBody};
+use symphra_syntax::ast::{
+    ArrangementEntry, Declaration, Identifier, PatternBody, PlaySource, PlayStatement,
+    SequenceItem, SongDeclaration, SongStatement, TrackBody,
+};
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
 };
@@ -873,7 +876,10 @@ fn definition_in_song(song: &SongDeclaration, offset: u32) -> Option<SourceSpan>
     if let Some(span) = definition_from_arrangement_pattern(song, offset) {
         return Some(span);
     }
-    definition_from_track_instrument(song, offset)
+    if let Some(span) = definition_from_track_instrument(song, offset) {
+        return Some(span);
+    }
+    definition_from_track_play_pattern(song, offset)
 }
 
 /// `arrangement { play <section> }` → section name span.
@@ -978,6 +984,36 @@ fn definition_from_track_instrument(song: &SongDeclaration, offset: u32) -> Opti
         };
         (instrument.name.text == instrument_name.text).then_some(instrument.name.span)
     })
+}
+
+/// `track { play <pattern> }` / `use <instrument> { play <pattern> }` → pattern name span.
+fn definition_from_track_play_pattern(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    let pattern_name = song.statements.iter().find_map(|statement| {
+        let SongStatement::Track(track) = statement else {
+            return None;
+        };
+        match &track.body {
+            TrackBody::Single { play, .. } => play_pattern_at(play, offset),
+            TrackBody::Layers { uses, .. } => uses
+                .iter()
+                .find_map(|layer| play_pattern_at(&layer.play, offset)),
+        }
+    })?;
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Pattern(pattern) = statement else {
+            return None;
+        };
+        (pattern.name.text == pattern_name.text).then_some(pattern.name.span)
+    })
+}
+
+fn play_pattern_at(play: &PlayStatement, offset: u32) -> Option<&Identifier> {
+    match &play.source {
+        PlaySource::Pattern(name) if name.span.start <= offset && offset < name.span.end => {
+            Some(name)
+        }
+        _ => None,
+    }
 }
 
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
@@ -1775,6 +1811,70 @@ mod tests {
             location.range,
             Range::new(Position::new(1, 13), Position::new(1, 17))
         );
+    }
+
+    #[test]
+    fn finds_pattern_definitions_from_track_play() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  pattern melody = sequence {}\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  pattern bassline = sequence {}\n",
+                "  instrument lead = triangle\n",
+                "  track chords role harmony {\n",
+                "    instrument lead\n",
+                "    play melody\n",
+                "  }\n",
+                "  track bass role low {\n",
+                "    layer {\n",
+                "      use lead { play bassline }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        // `play melody` inside a single-body track.
+        let single = definition(&source, &uri, Position::new(9, 9))
+            .expect("track play pattern should resolve");
+        assert_eq!(single.uri, uri);
+        assert_eq!(
+            single.range,
+            Range::new(Position::new(4, 10), Position::new(4, 16))
+        );
+
+        // `play bassline` inside a layered track.
+        let layered = definition(&source, &uri, Position::new(13, 22))
+            .expect("layer play pattern should resolve");
+        assert_eq!(
+            layered.range,
+            Range::new(Position::new(5, 10), Position::new(5, 18))
+        );
+
+        // Same pattern name in another song must not be chosen from a declaration site.
+        assert!(definition(&source, &uri, Position::new(1, 10)).is_none());
+
+        // Unresolved pattern names return no location.
+        let missing = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  instrument lead = triangle\n",
+                "  track chords role harmony {\n",
+                "    instrument lead\n",
+                "    play missing\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        assert!(definition(&missing, &uri, Position::new(4, 9)).is_none());
     }
 
     #[test]

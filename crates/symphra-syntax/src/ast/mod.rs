@@ -10,8 +10,9 @@ pub use expression::{
 };
 pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, RateLiteral};
 pub use statement::{
-    ArrangementOccurrence, ChanceExpression, ChanceTransformExpression, ChooseSampleExpression,
-    GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration, PanExpression,
-    PlaySource, PlayStatement, ProjectStatement, RepeatExpression, RhythmDeclaration, RhythmItem,
-    SongStatement, SpeedExpression, TrackDeclaration, TransposeExpression, VolumeExpression,
+    ArrangementOccurrence, AtExpression, ChanceExpression, ChanceTransformExpression,
+    ChooseSampleExpression, GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration,
+    PanExpression, PlaySource, PlayStatement, ProjectStatement, RepeatExpression,
+    RhythmDeclaration, RhythmItem, SongStatement, SpeedExpression, TrackDeclaration,
+    TransposeExpression, VolumeExpression,
 };

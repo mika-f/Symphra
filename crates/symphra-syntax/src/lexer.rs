@@ -82,6 +82,7 @@ impl Lexer<'_> {
             '(' => self.push(TokenKind::LeftParen, start),
             ')' => self.push(TokenKind::RightParen, start),
             ',' => self.push(TokenKind::Comma, start),
+            ':' => self.push(TokenKind::Colon, start),
             '|' if self.peek() == Some('>') => {
                 self.bump();
                 self.push(TokenKind::PipeGreater, start);

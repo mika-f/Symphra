@@ -270,6 +270,27 @@ fn formats_choose_sample_range() {
 }
 
 #[test]
+fn formats_at_bar_beat_placement() {
+    let input = r#"song "S" {
+  track crash role fx {
+    instrument tr909
+    at 2:1 play drum "cr" with one_hit
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track crash role fx {
+    instrument tr909
+    at 2:1 play drum "cr" with one_hit
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_play_drum_with_rhythm_shorthand() {
     let input = r#"song "S" {
   track drums role beat {

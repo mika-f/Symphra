@@ -480,14 +480,23 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
 }
 
 fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
-    let mut line = match &play.source {
-        PlaySource::Pattern(identifier) => format!("play {}", ctx.text(identifier.span)),
-        PlaySource::Drum { name, rhythm, .. } => format!(
-            "play drum {} with {}",
-            ctx.text(name.span),
-            ctx.text(rhythm.span)
-        ),
+    let mut line = match &play.at {
+        Some(at) => format!("at {}:{} ", at.bar, at.beat),
+        None => String::new(),
     };
+    match &play.source {
+        PlaySource::Pattern(identifier) => {
+            let _ = write!(line, "play {}", ctx.text(identifier.span));
+        }
+        PlaySource::Drum { name, rhythm, .. } => {
+            let _ = write!(
+                line,
+                "play drum {} with {}",
+                ctx.text(name.span),
+                ctx.text(rhythm.span)
+            );
+        }
+    }
     if let Some(trigger_with) = &play.trigger_with {
         line.push_str(" |> trigger_with ");
         line.push_str(ctx.text(trigger_with.span));

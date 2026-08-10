@@ -509,7 +509,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::DrumMachine) => &["bank"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
         Some(CompletionBlock::Rhythm) => &["hit", "rest"],
-        Some(CompletionBlock::Track) => &["instrument", "volume", "play"],
+        Some(CompletionBlock::Track) => &["instrument", "volume", "play", "at"],
         Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
     }
 }
@@ -627,11 +627,13 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Alternate
                     | TokenKind::Chance
                     | TokenKind::ChooseSample
+                    | TokenKind::At
                     | TokenKind::PipeGreater
                     | TokenKind::Percent
                     | TokenKind::LeftParen
                     | TokenKind::RightParen
                     | TokenKind::Comma
+                    | TokenKind::Colon
                     | TokenKind::Plus
                     | TokenKind::Minus
                     | TokenKind::Pattern
@@ -816,6 +818,7 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::ChooseSample => {
             "deterministically picks a new sample index per event from a range."
         }
+        TokenKind::At => "places a track's play statement at an absolute `bar:beat` position.",
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
         TokenKind::With => {
@@ -1098,7 +1101,7 @@ mod tests {
         assert_eq!(labels("song \"Test\" {\n  track lead ", 1, 13), ["role"]);
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
-            ["instrument", "volume", "play"]
+            ["instrument", "volume", "play", "at"]
         );
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  play ", 2, 7),

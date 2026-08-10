@@ -1,14 +1,14 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, ChanceExpression, ChanceTransformExpression, ChooseSampleExpression,
-    ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression, GateExpression,
-    Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
-    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration, TransposeExpression,
-    VelocityExpression, VolumeExpression,
+    ArrangementOccurrence, AtExpression, ChanceExpression, ChanceTransformExpression,
+    ChooseSampleExpression, ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression,
+    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
+    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
+    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
+    TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -422,9 +422,15 @@ impl Parser {
     }
 
     fn play(&mut self) -> Option<PlayStatement> {
-        let play_start = self
+        let at = if self.at(TokenKind::At) {
+            Some(self.at_expression()?)
+        } else {
+            None
+        };
+        let keyword_span = self
             .required(TokenKind::Play, "expected `play` in track")?
             .span;
+        let play_start = at.as_ref().map_or(keyword_span, |at| at.span);
         let source = if self.at(TokenKind::Drum) {
             self.play_drum_source()?
         } else {
@@ -446,50 +452,14 @@ impl Parser {
             match self.current().kind {
                 TokenKind::TriggerWith => play_end = self.trigger_with(&mut trigger_with)?,
                 TokenKind::Gate => play_end = self.gate(&mut gate)?,
-                TokenKind::Transpose => {
-                    let expression = self.transpose()?;
-                    play_end = expression.span;
-                    if transpose.replace(expression).is_some() {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "`transpose` may only appear once in a play pipeline",
-                            play_end,
-                        ));
-                    }
-                }
-                TokenKind::Gain => {
-                    let expression = self.gain()?;
-                    play_end = expression.span;
-                    if gain.replace(expression).is_some() {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "`gain` may only appear once in a play pipeline",
-                            expression.span,
-                        ));
-                    }
-                }
-                TokenKind::Repeat => {
-                    let expression = self.repeat()?;
-                    play_end = expression.span;
-                    if repeat.replace(expression).is_some() {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "`repeat` may only appear once in a play pipeline",
-                            expression.span,
-                        ));
-                    }
-                }
+                TokenKind::Transpose => play_end = self.play_transpose(&mut transpose)?,
+                TokenKind::Gain => play_end = self.play_gain(&mut gain)?,
+                TokenKind::Repeat => play_end = self.play_repeat(&mut repeat)?,
                 TokenKind::Reverse => {
                     let span = self.reverse(&mut reverse);
                     play_end = span;
                 }
-                TokenKind::Pan => {
-                    let expression = self.pan()?;
-                    play_end = expression.span();
-                    if pan.replace(expression).is_some() {
-                        self.diagnostics.push(Diagnostic::syntax(
-                            "`pan` may only appear once in a play pipeline",
-                            expression.span(),
-                        ));
-                    }
-                }
+                TokenKind::Pan => play_end = self.play_pan(&mut pan)?,
                 TokenKind::Chance => play_end = self.chance(&mut chance)?,
                 TokenKind::Speed => play_end = self.speed(&mut speed)?,
                 TokenKind::Alternate => play_end = self.alternate_speed(&mut speed)?,
@@ -505,6 +475,7 @@ impl Parser {
             }
         }
         Some(PlayStatement {
+            at,
             source,
             trigger_with,
             gate,
@@ -518,6 +489,68 @@ impl Parser {
             choose_sample,
             span: play_start.cover(play_end),
         })
+    }
+
+    fn at_expression(&mut self) -> Option<AtExpression> {
+        let start = self.bump().span;
+        let bar_token = self.required(TokenKind::Integer, "expected a bar number after `at`")?;
+        self.required(TokenKind::Colon, "expected `:` in `at` position")?;
+        let beat_token = self.required(TokenKind::Integer, "expected a beat number after `:`")?;
+        let bar = self.parse_u32(&bar_token)?;
+        let beat = self.parse_u32(&beat_token)?;
+        Some(AtExpression {
+            bar,
+            beat,
+            span: start.cover(beat_token.span),
+        })
+    }
+
+    fn play_transpose(
+        &mut self,
+        transpose: &mut Option<TransposeExpression>,
+    ) -> Option<SourceSpan> {
+        let expression = self.transpose()?;
+        let span = expression.span;
+        if transpose.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`transpose` may only appear once in a play pipeline",
+                span,
+            ));
+        }
+        Some(span)
+    }
+
+    fn play_gain(&mut self, gain: &mut Option<GainExpression>) -> Option<SourceSpan> {
+        let expression = self.gain()?;
+        if gain.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`gain` may only appear once in a play pipeline",
+                expression.span,
+            ));
+        }
+        Some(expression.span)
+    }
+
+    fn play_repeat(&mut self, repeat: &mut Option<RepeatExpression>) -> Option<SourceSpan> {
+        let expression = self.repeat()?;
+        if repeat.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`repeat` may only appear once in a play pipeline",
+                expression.span,
+            ));
+        }
+        Some(expression.span)
+    }
+
+    fn play_pan(&mut self, pan: &mut Option<PanExpression>) -> Option<SourceSpan> {
+        let expression = self.pan()?;
+        if pan.replace(expression).is_some() {
+            self.diagnostics.push(Diagnostic::syntax(
+                "`pan` may only appear once in a play pipeline",
+                expression.span(),
+            ));
+        }
+        Some(expression.span())
     }
 
     fn play_drum_source(&mut self) -> Option<PlaySource> {

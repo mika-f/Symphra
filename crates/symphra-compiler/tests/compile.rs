@@ -1283,6 +1283,133 @@ song "Drums" {
 }
 
 #[test]
+fn schedule_should_place_track_at_bar_beat() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "At" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    at 2:1 play melody
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("at placement should compile");
+
+    let score = schedule(&program).expect("at placement should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0].notes[0].start,
+        MusicalTime::new(1, 1).expect("whole note should be valid")
+    );
+}
+
+#[test]
+fn schedule_should_apply_at_after_repeat_and_reverse() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "At" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 note D4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    at 1:2 play melody |> repeat 2 |> reverse
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("at with repeat/reverse should compile");
+
+    let score = schedule(&program).expect("at with repeat/reverse should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .notes
+            .iter()
+            .map(|note| (note.midi_pitch, note.start))
+            .collect::<Vec<_>>(),
+        [
+            (
+                62,
+                MusicalTime::new(1, 4).expect("quarter note should be valid")
+            ),
+            (
+                60,
+                MusicalTime::new(1, 2).expect("half note should be valid")
+            ),
+            (
+                62,
+                MusicalTime::new(3, 4).expect("three quarter notes should be valid")
+            ),
+            (
+                60,
+                MusicalTime::new(1, 1).expect("whole note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_bar_or_beat() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "At" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    at 0:1 play melody
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero bar should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "`at` bar and beat are 1-indexed and must be at least 1"
+    );
+}
+
+#[test]
+fn compile_should_reject_beat_beyond_meter() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "At" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    at 1:5 play melody
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("beat beyond meter should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "`at` beat must not exceed the song's meter numerator"
+    );
+}
+
+#[test]
 fn schedule_should_play_drum_with_rhythm_shorthand() {
     let parsed = parse(
         SourceId(0),

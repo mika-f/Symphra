@@ -162,7 +162,25 @@ fn schedule_declared_track(
     if let Some(chance) = track.chance {
         apply_chance_speed(&mut scheduled, chance, seed);
     }
+    if let Some(offset) = track.at {
+        apply_at(&mut scheduled, musical_time(offset)?)?;
+    }
     Ok(scheduled)
+}
+
+/// Shifts every event and the track's end by `offset`, applied last so every
+/// earlier stage (`repeat`, `reverse`, ...) keeps operating in the pattern's
+/// own `[0, duration]` space and stays correct regardless of where the whole
+/// track ultimately lands in the song.
+fn apply_at(track: &mut Track, offset: MusicalTime) -> Result<(), TimeError> {
+    for note in &mut track.notes {
+        note.start = note.start.checked_add(offset)?;
+    }
+    for sample in &mut track.samples {
+        sample.start = sample.start.checked_add(offset)?;
+    }
+    track.end = track.end.checked_add(offset)?;
+    Ok(())
 }
 
 fn apply_choose_sample(track: &mut Track, range: hir::SampleRange, seed: u64) {

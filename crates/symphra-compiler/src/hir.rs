@@ -53,6 +53,7 @@ pub struct TrackDefinition {
     pub chance: Option<Chance>,
     pub speed: Speed,
     pub choose_sample: Option<SampleRange>,
+    pub at: Option<Duration>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

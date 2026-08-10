@@ -212,7 +212,7 @@ impl Compiler {
                 }
                 SongStatement::Track(track) => {
                     if self.declare_name(&mut track_names, &track.name, "track") {
-                        track_defs.push(track);
+                        track_defs.push(track.as_ref());
                     }
                 }
                 SongStatement::Arrangement { occurrences, span } => {
@@ -245,18 +245,13 @@ impl Compiler {
             .iter()
             .map(|pattern| self.pattern(pattern, settings.key.as_ref()))
             .collect::<Vec<_>>();
-        let mut tracks = Vec::with_capacity(track_defs.len());
-        for track in &track_defs {
-            let Some((definition, synthesized)) =
-                self.track(track, &patterns, &rhythms, &instruments)
-            else {
-                continue;
-            };
-            if let Some(pattern) = synthesized {
-                patterns.push(pattern);
-            }
-            tracks.push(definition);
-        }
+        let tracks = self.build_tracks(
+            &track_defs,
+            &mut patterns,
+            &rhythms,
+            &instruments,
+            settings.meter.as_ref(),
+        );
         if !tracks.is_empty() && arrangement.is_some() {
             self.error(
                 "track declarations cannot be combined with a pattern arrangement",
@@ -280,6 +275,29 @@ impl Compiler {
             }),
             _ => None,
         }
+    }
+
+    fn build_tracks(
+        &mut self,
+        track_defs: &[&TrackDeclaration],
+        patterns: &mut Vec<Pattern>,
+        rhythms: &[Rhythm],
+        instruments: &[(&str, Option<InstrumentKind>)],
+        meter: Option<&Meter>,
+    ) -> Vec<TrackDefinition> {
+        let mut tracks = Vec::with_capacity(track_defs.len());
+        for track in track_defs {
+            let Some((definition, synthesized)) =
+                self.track(track, patterns, rhythms, instruments, meter)
+            else {
+                continue;
+            };
+            if let Some(pattern) = synthesized {
+                patterns.push(pattern);
+            }
+            tracks.push(definition);
+        }
+        tracks
     }
 
     fn song_setting(&mut self, statement: &SongStatement, settings: &mut SongSettings) {
@@ -361,6 +379,7 @@ impl Compiler {
         patterns: &[Pattern],
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
+        meter: Option<&Meter>,
     ) -> Option<(TrackDefinition, Option<Pattern>)> {
         let instrument = instruments
             .iter()
@@ -400,6 +419,7 @@ impl Compiler {
             .ok();
         let speed = self.speed(declaration, instrument.as_ref());
         let choose_sample = self.choose_sample(declaration, instrument.as_ref()).ok();
+        let at = self.at_offset(declaration, meter).ok();
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern.as_ref(),
             transpose_semitones,
@@ -413,14 +433,14 @@ impl Compiler {
             .zip(transpose_semitones)
             .zip(gain)
             .zip(repeat_count)
-            .zip(pan.zip(chance).zip(speed).zip(choose_sample))
+            .zip(pan.zip(chance).zip(speed).zip(choose_sample).zip(at))
             .map(
                 |(
                     (
                         ((((pattern, instrument), gate_percent), transpose_semitones), gain),
                         repeat_count,
                     ),
-                    (((pan, chance), speed), choose_sample),
+                    ((((pan, chance), speed), choose_sample), at),
                 )| {
                     let definition = TrackDefinition {
                         id: self.id(),
@@ -438,10 +458,46 @@ impl Compiler {
                         chance,
                         speed,
                         choose_sample,
+                        at,
                     };
                     (definition, synthesized)
                 },
             )
+    }
+
+    fn at_offset(
+        &mut self,
+        declaration: &TrackDeclaration,
+        meter: Option<&Meter>,
+    ) -> Result<Option<Duration>, ()> {
+        let Some(expression) = declaration.play.at else {
+            return Ok(None);
+        };
+        if expression.bar == 0 || expression.beat == 0 {
+            self.error(
+                "`at` bar and beat are 1-indexed and must be at least 1",
+                expression.span,
+            );
+            return Err(());
+        }
+        let Some(meter) = meter else {
+            return Err(());
+        };
+        if expression.beat > meter.numerator {
+            self.error(
+                "`at` beat must not exceed the song's meter numerator",
+                expression.span,
+            );
+            return Err(());
+        }
+        let numerator = u64::from(expression.bar - 1) * u64::from(meter.numerator)
+            + u64::from(expression.beat - 1);
+        Ok(Some(Duration {
+            numerator: u32::try_from(numerator).map_err(|_| {
+                self.error("`at` position is out of range", expression.span);
+            })?,
+            denominator: meter.denominator,
+        }))
     }
 
     /// Resolves a track's `play` source into the pattern it should schedule.

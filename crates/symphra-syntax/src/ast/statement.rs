@@ -28,6 +28,7 @@ pub struct TrackDeclaration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayStatement {
+    pub at: Option<AtExpression>,
     pub source: PlaySource,
     pub trigger_with: Option<Identifier>,
     pub gate: Option<GateExpression>,
@@ -39,6 +40,13 @@ pub struct PlayStatement {
     pub chance: Option<ChanceExpression>,
     pub speed: Option<SpeedExpression>,
     pub choose_sample: Option<ChooseSampleExpression>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AtExpression {
+    pub bar: u32,
+    pub beat: u32,
     pub span: SourceSpan,
 }
 

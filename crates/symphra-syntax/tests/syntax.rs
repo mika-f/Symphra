@@ -553,6 +553,24 @@ fn parses_play_drum_with_rhythm_shorthand() {
 }
 
 #[test]
+fn parses_at_bar_beat_placement() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Track\" { track crash role fx { instrument tr909 at 1:1 play drum \"cr\" with one_hit } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let at = track.play.at.expect("at position should be present");
+
+    assert_eq!((at.bar, at.beat), (1, 1));
+}
+
+#[test]
 fn parses_alternating_sampler_speed() {
     let parsed = parse(
         SourceId(0),

@@ -63,6 +63,13 @@ playback speed`). Since then, two further slices landed:
   same way `delay`/`filter` already are. `EffectKind` gained a `Reverb { mix,
   size }` variant — another token-and-arm addition, no grammar rework. See §7
   below for the topology/tuning decisions and implementation details.
+- A ninth slice, in a new session on 2026-08-10, adds `automate cutoff { lfo
+  <sine|triangle> { range A..B rate N cycles/bar } }`: a track-scoped
+  parameter-automation block that sweeps an `effect filter`'s `cutoff`
+  between `range`'s bounds via an LFO, instead of holding it at its static
+  value. This is the first (and, so far, only) implemented case of the
+  original's general `automate { lfo ... }` mechanism. See §7 below for the
+  scoping/topology decisions and implementation details.
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -118,6 +125,11 @@ the adjusted syntax described later:
   allpass filter) Schroeder reverberator applied to that track's rendered
   audio, mutually exclusive with `delay`/`filter` (still at most one effect
   per track);
+- `automate cutoff { lfo <sine|triangle> { range A..B rate N cycles/bar } }`
+  on a track that also has `effect filter { ... }`: sweeps that filter's
+  `cutoff` between `range`'s bounds via an LFO synced to the song's tempo
+  (`N cycles/bar`), overriding the static `cutoff` value the same way
+  `chance { speed F }` overrides base `speed`;
 - `section <name> bars <N> { parallel [exact] { play track <name> ... } }`
   declaring a named, fixed-length, reusable group of declared tracks, and
   `arrangement { play <name> }` sequencing section references back-to-back by
@@ -365,7 +377,7 @@ scope; the original's inline `pattern phrase`/`pattern hats` declarations
 inside tracks remain unsupported (out of scope for this slice — layers only
 addressed multi-instrument mixing, not inline pattern declarations).
 
-### 7. Effects and automation — `delay`, `filter`, and `reverb` done; `automate` still a gap
+### 7. Effects and automation — `delay`, `filter`, `reverb`, and one `automate` case done
 
 The original declares effects and LFO-driven automation as blocks of their
 own, outside any track:
@@ -552,10 +564,83 @@ clamp for any final decaying resonance below the epsilon threshold, but only
 `delay`/`reverb` extend the buffer up front since only their known-tail
 length can be bounded ahead of render time.
 
-**Still missing:** the general `automate { lfo ... }` parameter-timeline
-block (which would also let `filter`'s `cutoff` sweep over time as the
-original example does), and any effect declared outside a track (there is
-no bus/master effect chain — see §10).
+**`automate cutoff { lfo <sine|triangle> { range A..B rate N cycles/bar } }`
+(added in a later session).** The original declares `automate` as a
+free-floating, song-scoped block naming a dotted parameter path
+(`filter.lowpass.cutoff`), independent of any track. Since every effect in
+this codebase is declared per track rather than through a bus/routing
+concept (see the intentional-differences table), a free-floating `automate`
+block has nothing to resolve its dotted path against. This adds `automate
+cutoff { ... }` as a second, optional block *inside* the same track that
+declares `effect filter { ... }` — mirroring exactly how `effect` itself
+already moved from free-floating to track-scoped — so `cutoff` unambiguously
+means "this track's filter's cutoff" without needing a dotted path at all.
+`cutoff` is the only automatable target implemented, since it is the
+original's only worked `automate` example; automating `delay`/`reverb`
+parameters, or `filter`'s `resonance`, is a natural but unimplemented
+extension (see "still missing" below).
+
+**Validation.** `automate cutoff` requires the same track to declare
+`effect filter { ... }` — a compile error names what was found instead
+(`no effect block`, `` `effect delay` ``, or `` `effect reverb` ``) when it
+doesn't. `lfo`'s waveform is validated as plain identifier text (`"sine"` or
+`"triangle"`), the same way `instrument x = sine` already is, not via a
+dedicated keyword token. `range`'s two bounds reuse `frequency_hz` — the
+same `hz`/`khz`-unit, positive-frequency check `cutoff` itself uses,
+factored out of the filter-effect resolver into a shared helper
+parameterized by an error-message `context` string. `rate`'s `N` must be finite and greater
+than zero (a non-positive rate would either stall the sweep or run it
+backwards nonsensically).
+
+**Design: `cutoff` stays static-plus-override, not automate-only.** The
+original has no static `cutoff` at all when `automate` drives it — `effect
+filter.lowpass { resonance 0.40 }` never mentions `cutoff`. This
+implementation's `effect filter { cutoff C resonance R }` still requires a
+`cutoff`, even when paired with `automate cutoff`, and the LFO's swept value
+simply supersedes it at render time — the same override-always-wins pattern
+`chance { speed F }` already established over the base `speed` stage. This
+was chosen over making `cutoff` optional (and required only when `automate`
+is absent) because it keeps `effect filter`'s own grammar and validation
+completely unchanged by this slice — `automate` layers on top as a pure
+addition rather than reopening a settled feature's contract.
+
+**`N cycles/bar` stays tempo/meter-agnostic through HIR.** Resolving a
+`cycles/bar` rate to an LFO frequency in Hz needs both the song's tempo and
+meter, neither of which is in scope where `effect`/`automate` are compiled
+(song-level settings and per-track declarations are resolved separately).
+Rather than threading tempo through track compilation for this one case,
+`hir::FilterAutomation`/`score::FilterAutomation` carry the raw
+`cycles_per_bar: f32` unresolved — mirroring exactly how `DelayEffect.time`
+stays a tempo-agnostic `Duration` until `symphra-render`'s `time_to_frame`
+resolves it. A new `automation_rate_hz` in `symphra-render` performs the
+equivalent conversion: one bar is `meter.numerator / meter.denominator`
+whole notes, and one whole note lasts `240 / tempo_bpm` seconds (the same
+relationship `time_to_frame` uses), so `rate_hz = cycles_per_bar *
+meter.denominator * tempo_bpm / (240 * meter.numerator)`.
+
+**DSP.** `apply_filter`'s biquad-coefficient math was factored out into
+`lowpass_biquad_coefficients`, shared with a new `apply_filter_automated`.
+The latter precomputes the LFO's per-frame cutoff trajectory once up front
+(so a stereo buffer sweeps identically on both channels, rather than each
+channel running its own independent LFO phase), then recomputes biquad
+coefficients from scratch on every single frame from that trajectory —
+unlike a real-time plugin, which would only recompute periodically to save
+CPU, offline rendering has no such constraint, so recomputing at audio rate
+keeps the implementation simple without a correctness trade-off. `triangle`
+reuses the same `sin(x).asin() * 2/pi` shaping the existing oscillator
+already uses for its own triangle waveform.
+
+**Render integration.** `apply_track_effect`'s `Filter` arm now branches on
+`filter.automation`: `None` calls `apply_filter` exactly as before (the
+existing static-cutoff behavior, unchanged); `Some` computes `lfo_rate_hz`
+via `automation_rate_hz` and calls `apply_filter_automated` instead. Like a
+static filter, automation adds no tail — `song_frames` is unaffected.
+
+**Still missing:** automating any parameter other than `filter`'s `cutoff`
+(the original's own general dotted-path `automate` mechanism would cover
+`delay`/`reverb`/`resonance` too, but only `cutoff` has a worked example to
+implement against), and any effect declared outside a track (there is no
+bus/master effect chain — see §10).
 
 ### 8. Bar durations and bracketed chords — bar durations done, brackets intentionally not restored
 
@@ -725,6 +810,8 @@ not compile without translation:
 | `layer { use x { pattern phrase ... play ... } }` with inline patterns | `layer { use x { play ... } }` — layers supported, but patterns must still be declared at song scope |
 | drum velocity such as `0.55` | `drum "name"`/`sample N` step velocity is now supported, as an integer `0..127` (matching note/chord), not a decimal |
 | arbitrary-looking pipeline chain | each supported stage may appear once and is normalized into fixed scheduling phases |
+| `automate filter.lowpass.cutoff { ... }` — free-floating, dotted parameter path | `automate cutoff { ... }` nested inside the same `track` that declares `effect filter { ... }` — no dotted path, since the track scoping already resolves which filter |
+| `effect filter.lowpass { resonance 0.40 }` with no `cutoff` (driven entirely by `automate`) | `effect filter { cutoff C resonance R }` still requires `cutoff`; `automate cutoff` overrides it at render time rather than replacing it |
 
 `degree N octave O` currently treats `N` as a chromatic semitone offset from
 the song tonic, not a diatonic scale index. Confirm that this matches the
@@ -803,12 +890,24 @@ original intent before expanding degree-based harmony.
     `Reverb { mix, size }` variant, another token-and-arm addition. Unlike
     `filter`, no design gap needed filling — the original's `mix`/`size`
     parameters are exactly what this implements.
-16. The next milestone, if wanted, is §7's remaining `automate`/LFO block
-    (needs its own ownership decisions, as `delay`, `filter`, `reverb`, and
-    `limiter` all did — it would also be what finally lets `filter`'s
-    `cutoff` sweep over time, matching the original example); then §4 synth
-    envelopes/supersaw (needs a configurable ADSR envelope designed first);
-    then §5 SoundFont/VST3 (largest, most external-dependency-heavy, last).
+16. ~~Add `automate { lfo ... }` parameter automation, at least for
+    `filter`'s `cutoff`.~~ Done, in a new session on 2026-08-10 — `automate
+    cutoff { lfo <sine|triangle> { range A..B rate N cycles/bar } }` is
+    nested inside the same track as `effect filter { ... }` (no dotted
+    parameter path — track scoping already resolves which filter), and
+    overrides the filter's static `cutoff` at render time, the same
+    override-always-wins pattern `chance { speed F }` already established.
+    `cutoff` is the only automatable target, matching the original's one
+    worked `automate` example; `N cycles/bar` stays tempo/meter-agnostic
+    through HIR/score and is resolved to Hz only in `symphra-render`, the
+    same boundary `DelayEffect.time` already crosses.
+17. The next milestone, if wanted, is §4 synth envelopes/supersaw (needs a
+    configurable ADSR envelope designed first, before automating any of its
+    parameters); then §5 SoundFont/VST3 (largest, most
+    external-dependency-heavy, last). Automating parameters other than
+    `filter`'s `cutoff` (delay/reverb mix, resonance, etc.) remains
+    unimplemented and could be picked up at any point once wanted — see
+    §7's "still missing" note.
 
 ## Verification notes
 
@@ -895,4 +994,28 @@ its `effect`-body completion assertions split into a new
 `completes_effect_body_keywords` test — neither changes what is asserted.
 `cargo fmt --all -- --check` is clean except for the same two pre-existing,
 unrelated differences.
+
+The same also holds for the `automate cutoff` slice added in a new session
+on 2026-08-10: `cargo build --workspace --all-targets`, `cargo test
+--workspace` (with `symphra-lsp` run separately via `cargo test -p
+symphra-lsp --target-dir <alternate-dir>`), and `cargo clippy --workspace
+--all-targets -- -D warnings` all pass — 4 new DSP unit tests
+(`crates/symphra-dsp/src/lib.rs`, covering `apply_filter_automated`), 1 new
+parser test (`crates/symphra-syntax/tests/syntax.rs`), 7 new compiler tests
+(`crates/symphra-compiler/tests/compile.rs`), 1 new render test
+(`crates/symphra-render/src/lib.rs`), and 1 new formatter round-trip test
+plus one idempotency source addition
+(`crates/symphra-fmt/tests/formatting.rs`) were added. Adding `range` as a
+new reserved keyword broke one pre-existing compiler test that happened to
+name its pattern `range`
+(`schedule_should_accept_full_midi_pitch_range`) — renamed to
+`pitch_range`, the same kind of identifier collision every new keyword in
+this language risks, not a logic bug. Two more mechanical test-only
+refactors were needed to stay under clippy's `too_many_lines` threshold:
+`idempotency_sources` in `crates/symphra-fmt/tests/formatting.rs` was split
+further into `idempotency_sources_core`/`idempotency_sources_effects`, and
+`keyword_description` in `apps/symphra-lsp/src/main.rs` was split into
+`keyword_description_declarations`/`keyword_description_playback`; neither
+changes behavior. `cargo fmt --all -- --check` is clean except for the same
+two pre-existing, unrelated differences.
 

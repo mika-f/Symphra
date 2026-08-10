@@ -771,6 +771,35 @@ fn parses_track_effect_reverb() {
     assert!((size.value - 0.80).abs() < f32::EPSILON);
 }
 
+#[test]
+fn parses_track_automate_cutoff() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Track\" { ",
+            "track drums role beat { ",
+            "instrument tr909 play kit ",
+            "effect filter { cutoff 600hz resonance 0.40 } ",
+            "automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } } ",
+            "} }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let automate = track.automate.as_ref().expect("automate should be present");
+
+    assert_eq!(automate.lfo.waveform.text, "sine");
+    assert!((automate.lfo.range_start.value.value - 600.0).abs() < f64::EPSILON);
+    assert_eq!(automate.lfo.range_start.unit.text, "hz");
+    assert!((automate.lfo.range_end.value.value - 2_800.0).abs() < f64::EPSILON);
+    assert!((automate.lfo.rate.value - 2.0).abs() < f64::EPSILON);
+}
+
 /// Unwraps a track's single-instrument body, panicking if it is a `layer`.
 fn single_layer(
     body: &symphra_syntax::ast::TrackBody,

@@ -1,11 +1,11 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
+    ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
     GainExpression, GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse,
-    MasterDeclaration, NoteExpression, NumberLiteral, PanExpression, PatternBody,
+    LfoDeclaration, MasterDeclaration, NoteExpression, NumberLiteral, PanExpression, PatternBody,
     PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
     QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
     SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
@@ -457,6 +457,11 @@ impl Parser {
         } else {
             None
         };
+        let automate = if self.at(TokenKind::Automate) {
+            Some(self.automate()?)
+        } else {
+            None
+        };
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close track")?
             .span;
@@ -466,6 +471,7 @@ impl Parser {
             volume,
             body,
             effect,
+            automate,
             span: start.cover(end),
         })
     }
@@ -540,6 +546,66 @@ impl Parser {
         Some(EffectFactor {
             value: value_number,
             span: start.cover(value.span),
+        })
+    }
+
+    /// `automate cutoff { lfo <waveform> { ... } }`. `cutoff` is the only
+    /// automatable target accepted today.
+    fn automate(&mut self) -> Option<AutomateDeclaration> {
+        let start = self.bump().span;
+        self.required(TokenKind::Cutoff, "expected `cutoff` after `automate`")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after `automate cutoff`")?;
+        let lfo = self.lfo()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close automate")?
+            .span;
+        Some(AutomateDeclaration {
+            lfo,
+            span: start.cover(end),
+        })
+    }
+
+    /// `lfo <sine|triangle> { range A..B rate N cycles/bar }`. `sine`/
+    /// `triangle` are plain identifiers here (validated at compile time),
+    /// mirroring how `instrument x = sine` is not a dedicated keyword
+    /// either.
+    fn lfo(&mut self) -> Option<LfoDeclaration> {
+        let start = self
+            .required(TokenKind::Lfo, "expected `lfo` in automate")?
+            .span;
+        let waveform = self.identifier("expected `sine` or `triangle` after `lfo`")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after `lfo`")?;
+        self.required(TokenKind::Range, "expected `range` in lfo")?;
+        let range_start = self.rate()?;
+        self.required(TokenKind::DotDot, "expected `..` in range")?;
+        let range_end = self.rate()?;
+        self.required(TokenKind::Rate, "expected `rate` after range")?;
+        let rate_token = self.required_any(
+            &[TokenKind::Integer, TokenKind::Decimal],
+            "expected a number for rate",
+        )?;
+        let Ok(rate_value) = rate_token.text.parse::<f64>() else {
+            self.diagnostics.push(Diagnostic::syntax(
+                "number is out of range",
+                rate_token.span,
+            ));
+            return None;
+        };
+        self.required(TokenKind::Cycles, "expected `cycles` after rate value")?;
+        self.required(TokenKind::Slash, "expected `/` after `cycles`")?;
+        self.required(TokenKind::Bar, "expected `bar` after `cycles/`")?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close lfo")?
+            .span;
+        Some(LfoDeclaration {
+            waveform,
+            range_start,
+            range_end,
+            rate: NumberLiteral {
+                value: rate_value,
+                span: rate_token.span,
+            },
+            span: start.cover(end),
         })
     }
 

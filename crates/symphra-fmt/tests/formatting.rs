@@ -265,6 +265,39 @@ fn formats_track_effect_reverb() {
 }
 
 #[test]
+fn formats_track_automate_cutoff() {
+    let input = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect filter { cutoff 600hz resonance 0.40 }
+    automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect filter {
+      cutoff 600hz
+      resonance 0.4
+    }
+    automate cutoff {
+      lfo sine {
+        range 600hz..2800hz
+        rate 2 cycles/bar
+      }
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_track_with_layer_uses() {
     let input = r#"song "S" {
   track bass role low {
@@ -644,10 +677,11 @@ fn refuses_to_format_source_with_syntax_diagnostics() {
     assert!(!error.diagnostics().is_empty());
 }
 
-/// Split out of `is_idempotent_across_every_grammar_construct` so that test
-/// stays under clippy's `too_many_lines` threshold as new grammar constructs
-/// get their own idempotency source appended.
-fn idempotency_sources() -> [&'static str; 6] {
+/// Split out of `is_idempotent_across_every_grammar_construct` (and further
+/// split from `idempotency_sources_effects` below) so that test stays under
+/// clippy's `too_many_lines` threshold as new grammar constructs get their
+/// own idempotency source appended.
+fn idempotency_sources_core() -> [&'static str; 4] {
     [
         r#"project { seed 1 sample_rate 48khz output stereo }
 song "First Song" {
@@ -722,6 +756,13 @@ song "Sections" {
   }
 }
 "#,
+    ]
+}
+
+/// Effect-related idempotency sources, split out of
+/// `idempotency_sources_core` to stay under clippy's `too_many_lines`.
+fn idempotency_sources_effects() -> [&'static str; 3] {
+    [
         r#"project { seed 1 sample_rate 8khz output mono }
 song "FilterEffect" {
   tempo 120bpm meter 4/4 key C major
@@ -746,12 +787,28 @@ song "ReverbEffect" {
   }
 }
 "#,
+        r#"project { seed 1 sample_rate 8khz output mono }
+song "FilterAutomation" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 600hz resonance 0.4 }
+    automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
     ]
 }
 
 #[test]
 fn is_idempotent_across_every_grammar_construct() {
-    for source in idempotency_sources() {
+    for source in idempotency_sources_core()
+        .into_iter()
+        .chain(idempotency_sources_effects())
+    {
         let once = format(source);
         let twice = format(&once);
         assert_eq!(

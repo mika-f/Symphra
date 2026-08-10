@@ -128,33 +128,22 @@ pub fn apply_delay(buffer: &mut [f32], channels: u16, delay_frames: u64, mix: f3
     }
 }
 
-/// Applies an in-place resonant lowpass biquad filter (RBJ Audio EQ
-/// Cookbook coefficients) to an interleaved audio buffer, independently per
-/// channel. This is offline rendering, so coefficients are computed once up
-/// front and applied as a direct-form-I difference equation over the whole
-/// buffer; there is no need for the block-based coefficient smoothing a
-/// real-time filter would use.
-///
-/// `resonance` (`0.0` to `1.0`) maps to filter Q: `0.0` gives a gentle
-/// Butterworth-like response (`Q ~= 0.7`) and `1.0` approaches a sharp
-/// resonant peak (`Q = 10`) just short of self-oscillation. `cutoff_hz` is
-/// clamped to `(0, nyquist)` so the filter always stays numerically stable
-/// regardless of what the caller passes in — this is the only place that
-/// knows the render sample rate, so it is also the only place that can
-/// bounds-check `cutoff_hz` against the Nyquist frequency.
-pub fn apply_filter(
-    buffer: &mut [f32],
-    channels: u16,
+/// Computes normalized RBJ Audio EQ Cookbook lowpass biquad coefficients
+/// `(b0, b1, b2, a1, a2)`. `resonance` (`0.0` to `1.0`) maps to filter Q:
+/// `0.0` gives a gentle Butterworth-like response (`Q ~= 0.7`) and `1.0`
+/// approaches a sharp resonant peak (`Q = 10`) just short of
+/// self-oscillation. `cutoff_hz` is clamped to `(0, nyquist)` so the filter
+/// always stays numerically stable regardless of what the caller passes in.
+/// Shared by [`apply_filter`] (coefficients computed once) and
+/// [`apply_filter_automated`] (recomputed every frame, since `cutoff_hz`
+/// there is swept by an LFO rather than constant).
+fn lowpass_biquad_coefficients(
+    cutoff_hz: f64,
     sample_rate_hz: u32,
-    cutoff_hz: f32,
     resonance: f32,
-) {
-    let channel_count = usize::from(channels);
-    if channel_count == 0 || buffer.is_empty() || sample_rate_hz == 0 {
-        return;
-    }
+) -> (f64, f64, f64, f64, f64) {
     let nyquist = f64::from(sample_rate_hz) / 2.0;
-    let cutoff = f64::from(cutoff_hz).clamp(1.0, nyquist * 0.999);
+    let cutoff = cutoff_hz.clamp(1.0, nyquist * 0.999);
     let q = 0.7 + f64::from(resonance.clamp(0.0, 1.0)) * 9.3;
     let w0 = TAU * cutoff / f64::from(sample_rate_hz);
     let (sin_w0, cos_w0) = w0.sin_cos();
@@ -166,6 +155,30 @@ pub fn apply_filter(
     let b1 = b1 / a0;
     let a1 = (-2.0 * cos_w0) / a0;
     let a2 = (1.0 - alpha) / a0;
+    (b0, b1, b2, a1, a2)
+}
+
+/// Applies an in-place resonant lowpass biquad filter to an interleaved
+/// audio buffer, independently per channel. This is offline rendering, so
+/// coefficients are computed once up front (see
+/// [`lowpass_biquad_coefficients`]) and applied as a direct-form-I
+/// difference equation over the whole buffer; there is no need for the
+/// block-based coefficient smoothing a real-time filter would use. This is
+/// the only place that knows the render sample rate, so it is also the only
+/// place that can bounds-check `cutoff_hz` against the Nyquist frequency.
+pub fn apply_filter(
+    buffer: &mut [f32],
+    channels: u16,
+    sample_rate_hz: u32,
+    cutoff_hz: f32,
+    resonance: f32,
+) {
+    let channel_count = usize::from(channels);
+    if channel_count == 0 || buffer.is_empty() || sample_rate_hz == 0 {
+        return;
+    }
+    let (b0, b1, b2, a1, a2) =
+        lowpass_biquad_coefficients(f64::from(cutoff_hz), sample_rate_hz, resonance);
 
     for channel in 0..channel_count {
         let (mut x1, mut x2, mut y1, mut y2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
@@ -185,6 +198,72 @@ pub fn apply_filter(
             y2 = y1;
             y1 = y0;
             frame += channel_count;
+        }
+    }
+}
+
+/// Same resonant lowpass biquad as [`apply_filter`], but `cutoff_hz` is
+/// swept continuously by an LFO between `range_hz`'s two bounds (in either
+/// order) instead of held constant — this is what a "swept filter"
+/// (wah-style) effect sounds like. The LFO's trajectory is precomputed once
+/// up front (so a stereo buffer sweeps identically on both channels — the
+/// same swept cutoff at a given time instant, not independent per-channel
+/// phases) and biquad coefficients are recomputed from scratch every frame
+/// from [`lowpass_biquad_coefficients`]; because rendering is offline, this
+/// is not a performance concern the way recomputing coefficients at audio
+/// rate would be for a real-time plugin (which would instead only
+/// recompute periodically, to save CPU).
+pub fn apply_filter_automated(
+    buffer: &mut [f32],
+    channels: u16,
+    sample_rate_hz: u32,
+    resonance: f32,
+    waveform: Waveform,
+    range_hz: (f32, f32),
+    lfo_rate_hz: f32,
+) {
+    let channel_count = usize::from(channels);
+    if channel_count == 0 || buffer.is_empty() || sample_rate_hz == 0 {
+        return;
+    }
+    let frames = buffer.len() / channel_count;
+    let low = f64::from(range_hz.0.min(range_hz.1));
+    let high = f64::from(range_hz.0.max(range_hz.1));
+    let center = f64::midpoint(low, high);
+    let half_range = (high - low) / 2.0;
+    let phase_step = TAU * f64::from(lfo_rate_hz) / f64::from(sample_rate_hz);
+    let mut phase = 0.0f64;
+    let cutoffs: Vec<f64> = (0..frames)
+        .map(|_| {
+            let lfo_value = match waveform {
+                Waveform::Sine => phase.sin(),
+                Waveform::Triangle => phase.sin().asin() * std::f64::consts::FRAC_2_PI,
+            };
+            let cutoff = center + half_range * lfo_value;
+            phase = (phase + phase_step).rem_euclid(TAU);
+            cutoff
+        })
+        .collect();
+
+    for channel in 0..channel_count {
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (frame, &cutoff) in cutoffs.iter().enumerate() {
+            let (b0, b1, b2, a1, a2) =
+                lowpass_biquad_coefficients(cutoff, sample_rate_hz, resonance);
+            let index = frame * channel_count + channel;
+            let x0 = f64::from(buffer[index]);
+            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a resonant filter's output is clamped downstream by the renderer's final safety clamp"
+            )]
+            {
+                buffer[index] = y0 as f32;
+            }
+            x2 = x1;
+            x1 = x0;
+            y2 = y1;
+            y1 = y0;
         }
     }
 }
@@ -354,8 +433,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        Oscillator, SineOscillator, Waveform, apply_delay, apply_filter, apply_limiter,
-        apply_reverb, fade_gain, reverb_tail_frames,
+        Oscillator, SineOscillator, Waveform, apply_delay, apply_filter, apply_filter_automated,
+        apply_limiter, apply_reverb, fade_gain, reverb_tail_frames,
     };
 
     #[test]
@@ -536,6 +615,109 @@ mod tests {
         assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
 
         apply_filter(&mut buffer, 1, 0, 1_000.0, 0.0);
+        assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn apply_filter_automated_should_match_apply_filter_when_the_lfo_range_is_flat() {
+        let dry: Vec<f32> = (0..500)
+            .map(|frame| if frame % 7 == 0 { 1.0 } else { -0.3 })
+            .collect();
+
+        let mut automated = dry.clone();
+        apply_filter_automated(
+            &mut automated,
+            1,
+            48_000,
+            0.3,
+            Waveform::Sine,
+            (1_000.0, 1_000.0),
+            4.0,
+        );
+        let mut constant = dry.clone();
+        apply_filter(&mut constant, 1, 48_000, 1_000.0, 0.3);
+
+        assert!(
+            automated
+                .iter()
+                .zip(&constant)
+                .all(|(a, c)| (a - c).abs() < 1e-4),
+            "{automated:?}\n{constant:?}"
+        );
+    }
+
+    #[test]
+    fn apply_filter_automated_should_differ_from_a_static_filter_over_a_nontrivial_range() {
+        let dry: Vec<f32> = (0..2_000)
+            .map(|frame| if frame % 3 == 0 { 1.0 } else { -0.5 })
+            .collect();
+
+        let mut automated = dry.clone();
+        apply_filter_automated(
+            &mut automated,
+            1,
+            48_000,
+            0.0,
+            Waveform::Sine,
+            (100.0, 8_000.0),
+            10.0,
+        );
+        let mut constant = dry.clone();
+        apply_filter(&mut constant, 1, 48_000, 4_050.0, 0.0);
+
+        assert!(
+            automated
+                .iter()
+                .zip(&constant)
+                .any(|(a, c)| (a - c).abs() > 1e-3)
+        );
+    }
+
+    #[test]
+    fn apply_filter_automated_should_leave_a_silent_channel_untouched() {
+        let frames = 500;
+        let mut buffer: Vec<f32> = (0..frames)
+            .flat_map(|frame| [if frame % 5 == 0 { 1.0 } else { -0.4 }, 0.0])
+            .collect();
+
+        apply_filter_automated(
+            &mut buffer,
+            2,
+            48_000,
+            0.5,
+            Waveform::Triangle,
+            (200.0, 6_000.0),
+            3.0,
+        );
+
+        let silent_channel: Vec<f32> = buffer.iter().skip(1).step_by(2).copied().collect();
+        assert!(silent_channel.iter().all(|&sample| sample == 0.0));
+    }
+
+    #[test]
+    fn apply_filter_automated_should_be_a_no_op_for_zero_channels_or_sample_rate() {
+        let mut buffer = vec![1.0, 2.0, 3.0];
+
+        apply_filter_automated(
+            &mut buffer,
+            0,
+            48_000,
+            0.0,
+            Waveform::Sine,
+            (100.0, 2_000.0),
+            1.0,
+        );
+        assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
+
+        apply_filter_automated(
+            &mut buffer,
+            1,
+            0,
+            0.0,
+            Waveform::Sine,
+            (100.0, 2_000.0),
+            1.0,
+        );
         assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
     }
 

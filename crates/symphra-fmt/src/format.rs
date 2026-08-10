@@ -2,14 +2,14 @@ use std::fmt::Write as _;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementEntry, ArrangementOccurrence, ChanceTransformExpression, ChordExpression,
-    Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor,
-    EffectKind, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, MasterDeclaration,
-    NoteExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, VolumeExpression,
+    ArrangementEntry, ArrangementOccurrence, AutomateDeclaration, ChanceTransformExpression,
+    ChordExpression, Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration,
+    EffectFactor, EffectKind, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse,
+    LfoDeclaration, MasterDeclaration, NoteExpression, NumberLiteral, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -529,6 +529,7 @@ enum TrackField<'a> {
     Play(&'a PlayStatement),
     Layer(&'a [LayerUse], SourceSpan),
     Effect(&'a EffectDeclaration),
+    Automate(&'a AutomateDeclaration),
 }
 
 fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
@@ -538,6 +539,7 @@ fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
         TrackField::Play(play) => play.span,
         TrackField::Layer(_, span) => *span,
         TrackField::Effect(effect) => effect.span,
+        TrackField::Automate(automate) => automate.span,
     }
 }
 
@@ -566,6 +568,9 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
     if let Some(effect) = &decl.effect {
         fields.push(TrackField::Effect(effect));
     }
+    if let Some(automate) = &decl.automate {
+        fields.push(TrackField::Automate(automate));
+    }
     let items: Vec<&TrackField<'_>> = fields.iter().collect();
     print_block(
         ctx,
@@ -587,6 +592,7 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
             TrackField::Play(play) => print_play(ctx, play),
             TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
             TrackField::Effect(effect) => print_effect(ctx, effect),
+            TrackField::Automate(automate) => print_automate(ctx, automate),
         },
     );
 }
@@ -664,6 +670,71 @@ fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
             }
             EffectField::Size(factor) => {
                 ctx.printer.line(format!("size {}", factor.value));
+            }
+        },
+    );
+}
+
+fn print_automate(ctx: &mut Ctx<'_>, decl: &AutomateDeclaration) {
+    let items: Vec<&AutomateDeclaration> = vec![decl];
+    print_block(
+        ctx,
+        "automate cutoff",
+        decl.span,
+        &items,
+        |decl: &AutomateDeclaration| decl.span,
+        |_| 0,
+        Reorder::No,
+        print_lfo,
+    );
+}
+
+#[derive(Clone, Copy)]
+enum LfoField<'a> {
+    Range {
+        start: &'a RateLiteral,
+        end: &'a RateLiteral,
+        span: SourceSpan,
+    },
+    Rate(&'a NumberLiteral),
+}
+
+fn lfo_field_span(field: LfoField<'_>) -> SourceSpan {
+    match field {
+        LfoField::Range { span, .. } => span,
+        LfoField::Rate(rate) => rate.span,
+    }
+}
+
+fn print_lfo(ctx: &mut Ctx<'_>, decl: &AutomateDeclaration) {
+    let lfo: &LfoDeclaration = &decl.lfo;
+    let header = format!("lfo {}", ctx.text(lfo.waveform.span));
+    let items = [
+        LfoField::Range {
+            start: &lfo.range_start,
+            end: &lfo.range_end,
+            span: lfo.range_start.span.cover(lfo.range_end.span),
+        },
+        LfoField::Rate(&lfo.rate),
+    ];
+    print_block(
+        ctx,
+        &header,
+        lfo.span,
+        &items,
+        lfo_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            LfoField::Range { start, end, .. } => {
+                ctx.printer.line(format!(
+                    "range {}..{}",
+                    rate_text(ctx, start),
+                    rate_text(ctx, end)
+                ));
+            }
+            LfoField::Rate(rate) => {
+                ctx.printer.line(format!("rate {} cycles/bar", rate.value));
             }
         },
     );

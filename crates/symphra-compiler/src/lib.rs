@@ -4,20 +4,22 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementEntry, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    DurationExpression, EffectDeclaration, EffectKind, Identifier, InstrumentBody,
-    MasterDeclaration, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RhythmDeclaration, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
+    ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, Declaration,
+    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind, FrequencyLiteral,
+    Identifier, InstrumentBody, MasterDeclaration, PanExpression, PatternBody, PatternDeclaration,
+    PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
+    RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
-    Duration, Effect, FilterEffect, InstrumentKind, Key, MasterLimiter, Meter, Mode, NodeId, Note,
-    Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, ReverbEffect,
-    Rhythm, RhythmItem, SampleChoice, SampleRange, SampleSelector, SampleTrigger, Section,
-    SectionOccurrence, Song, Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
+    Duration, Effect, FilterAutomation, FilterEffect, InstrumentKind, Key, LfoWaveform,
+    MasterLimiter, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
+    PitchClass, Program, Project, Rest, ReverbEffect, Rhythm, RhythmItem, SampleChoice,
+    SampleRange, SampleSelector, SampleTrigger, Section, SectionOccurrence, Song, Speed,
+    TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -569,7 +571,11 @@ impl Compiler {
         // Resolved once per declaration (not per layer) so an invalid effect
         // is reported once, not once per `use`.
         let effect = self
-            .effect(declaration.effect.as_ref(), meter)
+            .effect(
+                declaration.effect.as_ref(),
+                declaration.automate.as_ref(),
+                meter,
+            )
             .ok()
             .flatten();
         match &declaration.body {
@@ -1049,23 +1055,31 @@ impl Compiler {
     }
 
     /// Resolves a track's `effect delay { ... }`, `effect filter { ... }`, or
-    /// `effect reverb { ... }`. Delay `feedback` is capped at `0.95` (not the
-    /// theoretical stability limit of `1.0`) so a delay's echo tail — which
-    /// the renderer must extend the song's audio buffer to fit — always
-    /// decays to silence within a bounded number of repeats. Filter `cutoff`
-    /// is only checked for being a positive, finite frequency here; checking
-    /// it against the Nyquist limit needs the project's sample rate, which is
-    /// not in scope during song/track compilation, so the renderer clamps it
-    /// defensively at render time instead (mirroring the existing
-    /// defensive-revalidation precedent for a hand-constructed
-    /// [`MasterLimiter`]). Reverb `size` needs no such cross-namespace check —
-    /// it is a plain `0.0..=1.0` factor, not a frequency or duration.
+    /// `effect reverb { ... }`, together with an optional `automate cutoff {
+    /// ... }` (which only combines with `effect filter`). Delay `feedback`
+    /// is capped at `0.95` (not the theoretical stability limit of `1.0`) so
+    /// a delay's echo tail — which the renderer must extend the song's audio
+    /// buffer to fit — always decays to silence within a bounded number of
+    /// repeats. Filter `cutoff` (and `automate`'s `range`) is only checked
+    /// for being a positive, finite frequency here; checking it against the
+    /// Nyquist limit needs the project's sample rate, which is not in scope
+    /// during song/track compilation, so the renderer clamps it defensively
+    /// at render time instead (mirroring the existing defensive-revalidation
+    /// precedent for a hand-constructed [`MasterLimiter`]). Reverb `size`
+    /// needs no such cross-namespace check — it is a plain `0.0..=1.0`
+    /// factor, not a frequency or duration.
     fn effect(
         &mut self,
-        declaration: Option<&EffectDeclaration>,
+        effect_declaration: Option<&EffectDeclaration>,
+        automate_declaration: Option<&AutomateDeclaration>,
         meter: Option<&Meter>,
     ) -> Result<Option<Effect>, ()> {
-        let Some(declaration) = declaration else {
+        let automation = self.filter_automation(automate_declaration)?;
+        let Some(declaration) = effect_declaration else {
+            if automation.is_some() {
+                self.automate_requires_filter_error(automate_declaration, "no `effect` block");
+                return Err(());
+            }
             return Ok(None);
         };
         match &declaration.kind {
@@ -1074,6 +1088,10 @@ impl Compiler {
                 time,
                 feedback,
             } => {
+                if automation.is_some() {
+                    self.automate_requires_filter_error(automate_declaration, "`effect delay`");
+                    return Err(());
+                }
                 if !mix.value.is_finite() || !(0.0..=1.0).contains(&mix.value) {
                     self.error("effect mix must be from 0.0 to 1.0", mix.span);
                     return Err(());
@@ -1092,22 +1110,7 @@ impl Compiler {
                 })))
             }
             EffectKind::Filter { cutoff, resonance } => {
-                let multiplier = match cutoff.unit.text.as_str() {
-                    "hz" => 1.0,
-                    "khz" => 1_000.0,
-                    _ => {
-                        self.error(
-                            "effect filter cutoff unit must be `hz` or `khz`",
-                            cutoff.span,
-                        );
-                        return Err(());
-                    }
-                };
-                let cutoff_hz = cutoff.value.value * multiplier;
-                if !cutoff_hz.is_finite() || cutoff_hz <= 0.0 {
-                    self.error("effect filter cutoff must be greater than 0hz", cutoff.span);
-                    return Err(());
-                }
+                let cutoff_hz = self.frequency_hz(cutoff, "effect filter cutoff")?;
                 if !resonance.value.is_finite() || !(0.0..=1.0).contains(&resonance.value) {
                     self.error(
                         "effect filter resonance must be from 0.0 to 1.0",
@@ -1115,17 +1118,17 @@ impl Compiler {
                     );
                     return Err(());
                 }
-                #[expect(
-                    clippy::cast_possible_truncation,
-                    reason = "cutoff_hz is validated finite and positive before conversion"
-                )]
-                let cutoff_hz = cutoff_hz as f32;
                 Ok(Some(Effect::Filter(FilterEffect {
                     cutoff_hz,
                     resonance: resonance.value,
+                    automation,
                 })))
             }
             EffectKind::Reverb { mix, size } => {
+                if automation.is_some() {
+                    self.automate_requires_filter_error(automate_declaration, "`effect reverb`");
+                    return Err(());
+                }
                 if !mix.value.is_finite() || !(0.0..=1.0).contains(&mix.value) {
                     self.error("effect mix must be from 0.0 to 1.0", mix.span);
                     return Err(());
@@ -1140,6 +1143,97 @@ impl Compiler {
                 })))
             }
         }
+    }
+
+    fn automate_requires_filter_error(
+        &mut self,
+        automate_declaration: Option<&AutomateDeclaration>,
+        found: &str,
+    ) {
+        let span = automate_declaration
+            .expect("automate_requires_filter_error is only called when automation is Some")
+            .span;
+        self.error(
+            &format!("automate cutoff requires `effect filter` on the same track, found {found}"),
+            span,
+        );
+    }
+
+    /// Resolves a positive, finite `hz`/`khz` [`FrequencyLiteral`] to plain
+    /// hertz. Shared by `effect filter { cutoff ... }` and `automate cutoff
+    /// { lfo { range ... } }`, which both accept the same literal grammar;
+    /// `context` (such as `"effect filter cutoff"`) names the field being
+    /// resolved in error messages.
+    fn frequency_hz(&mut self, literal: &FrequencyLiteral, context: &str) -> Result<f32, ()> {
+        let multiplier = match literal.unit.text.as_str() {
+            "hz" => 1.0,
+            "khz" => 1_000.0,
+            _ => {
+                self.error(
+                    &format!("{context} unit must be `hz` or `khz`"),
+                    literal.span,
+                );
+                return Err(());
+            }
+        };
+        let hz = literal.value.value * multiplier;
+        if !hz.is_finite() || hz <= 0.0 {
+            self.error(&format!("{context} must be greater than 0hz"), literal.span);
+            return Err(());
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "hz is validated finite and positive before conversion"
+        )]
+        let hz = hz as f32;
+        Ok(hz)
+    }
+
+    /// Resolves a track's `automate cutoff { lfo <waveform> { range A..B
+    /// rate N cycles/bar } }`. `waveform` is validated the same way
+    /// `instrument x = sine` is (plain identifier text, not a keyword
+    /// token). `rate`'s `N cycles/bar` is kept tempo/meter-agnostic here —
+    /// resolving it to an LFO frequency in Hz needs the song's tempo, which
+    /// (like [`DelayEffect`]'s `time`) is not available until render time.
+    fn filter_automation(
+        &mut self,
+        declaration: Option<&AutomateDeclaration>,
+    ) -> Result<Option<FilterAutomation>, ()> {
+        let Some(declaration) = declaration else {
+            return Ok(None);
+        };
+        let lfo = &declaration.lfo;
+        let waveform = match lfo.waveform.text.as_str() {
+            "sine" => LfoWaveform::Sine,
+            "triangle" => LfoWaveform::Triangle,
+            _ => {
+                self.error(
+                    "lfo waveform must be `sine` or `triangle`",
+                    lfo.waveform.span,
+                );
+                return Err(());
+            }
+        };
+        let range_start_hz = self.frequency_hz(&lfo.range_start, "automate range")?;
+        let range_end_hz = self.frequency_hz(&lfo.range_end, "automate range")?;
+        if !lfo.rate.value.is_finite() || lfo.rate.value <= 0.0 {
+            self.error(
+                "automate rate must be greater than zero cycles per bar",
+                lfo.rate.span,
+            );
+            return Err(());
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "lfo.rate.value is validated finite and positive before conversion"
+        )]
+        let cycles_per_bar = lfo.rate.value as f32;
+        Ok(Some(FilterAutomation {
+            waveform,
+            range_start_hz,
+            range_end_hz,
+            cycles_per_bar,
+        }))
     }
 
     fn track_gain(&mut self, declaration: &TrackDeclaration, play: &PlayStatement) -> Option<f32> {

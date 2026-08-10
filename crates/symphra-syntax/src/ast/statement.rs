@@ -1,5 +1,6 @@
 use super::{
-    DurationExpression, FrequencyLiteral, Identifier, PatternDeclaration, QuotedString, RateLiteral,
+    DurationExpression, FrequencyLiteral, Identifier, NumberLiteral, PatternDeclaration,
+    QuotedString, RateLiteral,
 };
 use crate::SourceSpan;
 
@@ -25,6 +26,7 @@ pub struct TrackDeclaration {
     pub volume: Option<Box<VolumeExpression>>,
     pub body: TrackBody,
     pub effect: Option<EffectDeclaration>,
+    pub automate: Option<AutomateDeclaration>,
     pub span: SourceSpan,
 }
 
@@ -32,7 +34,7 @@ pub struct TrackDeclaration {
 /// ... }`, applied to the track's rendered audio (after every layer's
 /// events have been synthesized) before it is summed into the master mix.
 /// `delay`, `filter`, and `reverb` are the only effect kinds implemented so
-/// far; general `automate` blocks are not part of this slice.
+/// far.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectDeclaration {
     pub kind: EffectKind,
@@ -46,11 +48,10 @@ pub enum EffectKind {
         time: DurationExpression,
         feedback: EffectFactor,
     },
-    /// A resonant lowpass filter. The original Draft 0.1 example paired
-    /// `filter.lowpass { resonance ... }` with a separate `automate { lfo
-    /// ... }` block that swept the cutoff over time; since general
-    /// parameter automation is not implemented yet, this adds a static
-    /// `cutoff` alongside `resonance` so the filter is usable on its own.
+    /// A resonant lowpass filter. `cutoff` is a static value unless the
+    /// track also has an `automate cutoff { ... }` block (see
+    /// [`AutomateDeclaration`]), in which case it is swept by an LFO
+    /// instead.
     Filter {
         cutoff: FrequencyLiteral,
         resonance: EffectFactor,
@@ -61,6 +62,32 @@ pub enum EffectKind {
         mix: EffectFactor,
         size: EffectFactor,
     },
+}
+
+/// `automate cutoff { lfo <sine|triangle> { range A..B rate N cycles/bar }
+/// }`, applied to a track's `effect filter { ... }` cutoff, sweeping it
+/// between `range`'s bounds instead of holding it at its static value.
+/// `cutoff` is the only automatable target implemented so far — the
+/// original Draft 0.1 example's one worked case — and requires an `effect
+/// filter` block on the same track (checked at compile time, not here,
+/// since `effect` and `automate` are independent grammar productions).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutomateDeclaration {
+    pub lfo: LfoDeclaration,
+    pub span: SourceSpan,
+}
+
+/// `sine` or `triangle` (`waveform.text`, validated at compile time like
+/// `instrument x = sine` already is, not via a dedicated keyword token),
+/// oscillating between `range_start` and `range_end` at a rate of `rate`
+/// full cycles per bar.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LfoDeclaration {
+    pub waveform: Identifier,
+    pub range_start: FrequencyLiteral,
+    pub range_end: FrequencyLiteral,
+    pub rate: NumberLiteral,
+    pub span: SourceSpan,
 }
 
 /// A dimensionless 0.0-to-1.0-ish ratio, such as `mix`/`feedback`.

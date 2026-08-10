@@ -11,10 +11,10 @@ pub use expression::{
 };
 pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, RateLiteral};
 pub use statement::{
-    ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
+    ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, EffectDeclaration, EffectFactor, EffectKind,
     GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration, LayerUse,
-    MasterDeclaration, PanExpression, PlaySource, PlayStatement, ProjectStatement,
+    LfoDeclaration, MasterDeclaration, PanExpression, PlaySource, PlayStatement, ProjectStatement,
     RepeatExpression, RhythmDeclaration, RhythmItem, SectionDeclaration, SongStatement,
     SpeedExpression, TrackBody, TrackDeclaration, TransposeExpression, VolumeExpression,
 };

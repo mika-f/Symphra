@@ -106,11 +106,36 @@ pub struct DelayEffect {
 /// `cutoff_hz` is already resolved from the source `hz`/`khz` literal to
 /// plain hertz; converting it (together with the render sample rate) into
 /// biquad filter coefficients happens in `symphra-dsp`, the same boundary
-/// where `time` becomes sample frames for [`DelayEffect`].
+/// where `time` becomes sample frames for [`DelayEffect`]. When `automation`
+/// is present, `cutoff_hz` is superseded by the LFO's swept value at render
+/// time — the same "override always wins" pattern `chance { speed F }`
+/// already established over the base `speed` stage — rather than being
+/// removed from the grammar, so `effect filter { cutoff C ... }` keeps
+/// working unchanged whether or not a track also has `automate cutoff`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilterEffect {
     pub cutoff_hz: f32,
     pub resonance: f32,
+    pub automation: Option<FilterAutomation>,
+}
+
+/// `automate cutoff { lfo <waveform> { range A..B rate N cycles/bar } }`.
+/// `cycles_per_bar` is left tempo/meter-agnostic here (like `Duration`) and
+/// resolved to an LFO frequency in Hz only at render time, once both the
+/// song's tempo and sample rate are known — the same boundary `time`/
+/// `cutoff_hz` already cross for [`DelayEffect`]/[`FilterEffect`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterAutomation {
+    pub waveform: LfoWaveform,
+    pub range_start_hz: f32,
+    pub range_end_hz: f32,
+    pub cycles_per_bar: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LfoWaveform {
+    Sine,
+    Triangle,
 }
 
 /// A Schroeder reverberator applied to the track's rendered audio. `size`

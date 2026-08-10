@@ -3,13 +3,13 @@
 use std::num::NonZeroU32;
 
 use symphra_dsp::{
-    Oscillator, Waveform, apply_delay, apply_filter, apply_limiter, apply_reverb, fade_gain,
-    reverb_tail_frames,
+    Oscillator, Waveform, apply_delay, apply_filter, apply_filter_automated, apply_limiter,
+    apply_reverb, fade_gain, reverb_tail_frames,
 };
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
-    Channels, DelayEffect, Effect, FilterEffect, InstrumentKind, MasterLimiter, MusicalTime,
-    ReverbEffect, SampleSelector, Score, Song, TimeError, Track,
+    Channels, DelayEffect, Effect, FilterEffect, InstrumentKind, LfoWaveform, MasterLimiter, Meter,
+    MusicalTime, ReverbEffect, SampleSelector, Score, Song, TimeError, Track,
 };
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -149,6 +149,7 @@ pub fn render_song_with_samples(
                 &mut track_samples,
                 channels,
                 song.tempo_bpm,
+                song.meter,
                 score.sample_rate_hz,
             )?;
             for (mixed, dry) in samples.iter_mut().zip(&track_samples) {
@@ -189,6 +190,7 @@ fn apply_track_effect(
     track_samples: &mut [f32],
     channels: u16,
     tempo_bpm: f64,
+    meter: Meter,
     sample_rate_hz: u32,
 ) -> Result<(), RenderError> {
     match effect {
@@ -202,15 +204,38 @@ fn apply_track_effect(
                 delay.feedback,
             );
         }
-        Effect::Filter(filter) => {
-            apply_filter(
-                track_samples,
-                channels,
-                sample_rate_hz,
-                filter.cutoff_hz,
-                filter.resonance,
-            );
-        }
+        Effect::Filter(filter) => match filter.automation {
+            None => {
+                apply_filter(
+                    track_samples,
+                    channels,
+                    sample_rate_hz,
+                    filter.cutoff_hz,
+                    filter.resonance,
+                );
+            }
+            Some(automation) => {
+                let waveform = match automation.waveform {
+                    LfoWaveform::Sine => Waveform::Sine,
+                    LfoWaveform::Triangle => Waveform::Triangle,
+                };
+                let lfo_rate_hz = automation_rate_hz(automation.cycles_per_bar, tempo_bpm, meter);
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "lfo_rate_hz is derived from a positive, finite cycles_per_bar"
+                )]
+                let lfo_rate_hz = lfo_rate_hz as f32;
+                apply_filter_automated(
+                    track_samples,
+                    channels,
+                    sample_rate_hz,
+                    filter.resonance,
+                    waveform,
+                    (automation.range_start_hz, automation.range_end_hz),
+                    lfo_rate_hz,
+                );
+            }
+        },
         Effect::Reverb(reverb) => {
             apply_reverb(
                 track_samples,
@@ -537,6 +562,17 @@ fn time_to_frame(
     }
 }
 
+/// Converts `automate`'s `N cycles/bar` rate into an LFO frequency in Hz.
+/// One bar is `meter.numerator / meter.denominator` whole notes, and one
+/// whole note lasts `240 / tempo_bpm` seconds (the same relationship
+/// [`time_to_frame`] uses for note/sample durations), so a bar lasts `240 *
+/// meter.numerator / (meter.denominator * tempo_bpm)` seconds; the LFO
+/// frequency is `cycles_per_bar` divided by that bar duration.
+fn automation_rate_hz(cycles_per_bar: f32, tempo_bpm: f64, meter: Meter) -> f64 {
+    f64::from(cycles_per_bar) * f64::from(meter.denominator) * tempo_bpm
+        / (240.0 * f64::from(meter.numerator))
+}
+
 #[cfg(test)]
 mod tests {
     use symphra_score::{
@@ -642,6 +678,7 @@ mod tests {
             Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
                 cutoff_hz: 200.0,
                 resonance: 0.0,
+                automation: None,
             }));
         let filtered = render_song(&with_effect, 0).expect("filtered score should render");
 
@@ -663,11 +700,56 @@ mod tests {
             Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
                 cutoff_hz: 0.0,
                 resonance: 0.0,
+                automation: None,
             }));
 
         let error = render_song(&invalid, 0).expect_err("zero cutoff should be rejected");
 
         assert_eq!(error, RenderError::InvalidEffectParameters);
+    }
+
+    #[test]
+    fn render_song_should_apply_filter_automation() {
+        let mut with_automation = score(InstrumentKind::Sine);
+        with_automation.sample_rate_hz = 8_000;
+        with_automation.songs[0].tracks[0].end =
+            MusicalTime::new(2, 1).expect("two whole notes should be valid");
+        with_automation.songs[0].tracks[0].notes[0].duration =
+            MusicalTime::new(2, 1).expect("two whole notes should be valid");
+
+        let mut with_static_filter = with_automation.clone();
+        with_static_filter.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
+                cutoff_hz: 1_700.0,
+                resonance: 0.0,
+                automation: None,
+            }));
+        let static_filtered =
+            render_song(&with_static_filter, 0).expect("statically filtered score should render");
+
+        with_automation.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
+                cutoff_hz: 1_700.0,
+                resonance: 0.0,
+                automation: Some(symphra_score::FilterAutomation {
+                    waveform: symphra_score::LfoWaveform::Sine,
+                    range_start_hz: 400.0,
+                    range_end_hz: 3_000.0,
+                    cycles_per_bar: 4.0,
+                }),
+            }));
+        let automated =
+            render_song(&with_automation, 0).expect("automated filter score should render");
+
+        assert_eq!(
+            automated.samples.len(),
+            static_filtered.samples.len(),
+            "automation sweeps an existing filter, it does not add its own tail"
+        );
+        assert_ne!(
+            automated.samples, static_filtered.samples,
+            "a swept cutoff should audibly differ from holding cutoff at its static value"
+        );
     }
 
     #[test]

@@ -250,6 +250,17 @@ fn schedule_declared_track(
                 symphra_score::Effect::Filter(symphra_score::FilterEffect {
                     cutoff_hz: filter.cutoff_hz,
                     resonance: filter.resonance,
+                    automation: filter.automation.map(|automation| {
+                        symphra_score::FilterAutomation {
+                            waveform: match automation.waveform {
+                                hir::LfoWaveform::Sine => symphra_score::LfoWaveform::Sine,
+                                hir::LfoWaveform::Triangle => symphra_score::LfoWaveform::Triangle,
+                            },
+                            range_start_hz: automation.range_start_hz,
+                            range_end_hz: automation.range_end_hz,
+                            cycles_per_bar: automation.cycles_per_bar,
+                        }
+                    }),
                 })
             }
             hir::Effect::Reverb(reverb) => {

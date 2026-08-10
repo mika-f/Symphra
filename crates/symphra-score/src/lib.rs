@@ -102,11 +102,33 @@ pub struct DelayEffect {
 /// A resonant lowpass filter applied to a track's rendered audio before it
 /// is summed into the master mix. `cutoff_hz` is plain hertz; converting it
 /// to biquad filter coefficients (which also needs the render sample rate)
-/// happens in `symphra-dsp`.
+/// happens in `symphra-dsp`. When `automation` is present, `cutoff_hz` is
+/// superseded by the LFO's swept value at render time (the same
+/// override-always-wins pattern `chance { speed F }` already established).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FilterEffect {
     pub cutoff_hz: f32,
     pub resonance: f32,
+    pub automation: Option<FilterAutomation>,
+}
+
+/// `automate cutoff { lfo <waveform> { range A..B rate N cycles/bar } }`.
+/// `cycles_per_bar` is tempo/meter-agnostic; resolving it to an LFO
+/// frequency in Hz needs both the song's tempo and meter, so — like `time`
+/// becoming sample frames for [`DelayEffect`] — that conversion happens in
+/// `symphra-render`, not here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterAutomation {
+    pub waveform: LfoWaveform,
+    pub range_start_hz: f32,
+    pub range_end_hz: f32,
+    pub cycles_per_bar: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LfoWaveform {
+    Sine,
+    Triangle,
 }
 
 /// A Schroeder reverberator applied to a track's rendered audio before it

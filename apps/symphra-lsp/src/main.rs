@@ -370,6 +370,8 @@ enum CompletionBlock {
     Effect,
     Filter,
     Reverb,
+    Automate,
+    Lfo,
     Section,
     Parallel,
     Master,
@@ -437,6 +439,10 @@ fn completion_labels(
         &["alternate"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
         &["delay", "filter", "reverb"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Automate) {
+        &["cutoff"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Lfo) {
+        &["sine", "triangle"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Master) {
         &["limiter"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Parallel) {
@@ -549,12 +555,22 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::DrumMachine) => &["bank"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
         Some(CompletionBlock::Rhythm) => &["hit", "rest"],
-        Some(CompletionBlock::Track) => &["instrument", "volume", "play", "layer", "effect", "at"],
+        Some(CompletionBlock::Track) => &[
+            "instrument",
+            "volume",
+            "play",
+            "layer",
+            "effect",
+            "automate",
+            "at",
+        ],
         Some(CompletionBlock::Layer) => &["use"],
         Some(CompletionBlock::Use) => &["play", "at"],
         Some(CompletionBlock::Effect) => &["mix", "time", "feedback"],
         Some(CompletionBlock::Filter) => &["cutoff", "resonance"],
         Some(CompletionBlock::Reverb) => &["mix", "size"],
+        Some(CompletionBlock::Automate) => &["lfo"],
+        Some(CompletionBlock::Lfo) => &["range", "rate"],
         Some(CompletionBlock::Section) => &["parallel"],
         Some(CompletionBlock::Parallel) => &["play"],
         Some(CompletionBlock::Master) => &["limiter"],
@@ -646,6 +662,8 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Delay => pending = Some(CompletionBlock::Effect),
             TokenKind::Filter => pending = Some(CompletionBlock::Filter),
             TokenKind::Reverb => pending = Some(CompletionBlock::Reverb),
+            TokenKind::Automate => pending = Some(CompletionBlock::Automate),
+            TokenKind::Lfo => pending = Some(CompletionBlock::Lfo),
             TokenKind::Section => pending = Some(CompletionBlock::Section),
             TokenKind::Parallel => pending = Some(CompletionBlock::Parallel),
             TokenKind::Master => pending = Some(CompletionBlock::Master),
@@ -707,6 +725,11 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Resonance
                     | TokenKind::Reverb
                     | TokenKind::Size
+                    | TokenKind::Automate
+                    | TokenKind::Lfo
+                    | TokenKind::Range
+                    | TokenKind::Rate
+                    | TokenKind::Cycles
                     | TokenKind::Play
                     | TokenKind::TriggerWith
                     | TokenKind::Gate
@@ -916,7 +939,16 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
     None
 }
 
+/// Delegates to two halves so each stays under clippy's `too_many_lines`
+/// threshold as new keywords are documented.
 const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
+    if let Some(description) = keyword_description_declarations(kind) {
+        return Some(description);
+    }
+    keyword_description_playback(kind)
+}
+
+const fn keyword_description_declarations(kind: TokenKind) -> Option<&'static str> {
     Some(match kind {
         TokenKind::Project => "starts the project-wide settings block.",
         TokenKind::Song => "starts a named song block.",
@@ -953,6 +985,19 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Size => {
             "sets a reverb effect's room size, `0.0` (short tail) to `1.0` (long tail)."
         }
+        TokenKind::Automate => {
+            "sweeps a track's `effect filter` cutoff over time instead of holding it fixed."
+        }
+        TokenKind::Lfo => "a low-frequency oscillator driving an `automate` target.",
+        TokenKind::Range => "sets an `lfo`'s sweep bounds, such as `600hz..2800hz`.",
+        TokenKind::Rate => "sets an `lfo`'s speed, such as `2 cycles/bar`.",
+        TokenKind::Cycles => "used in `rate N cycles/bar` to set an `lfo`'s speed.",
+        _ => return None,
+    })
+}
+
+const fn keyword_description_playback(kind: TokenKind) -> Option<&'static str> {
+    Some(match kind {
         TokenKind::Play => {
             "selects the pattern played by a track, or references a track/section elsewhere."
         }
@@ -1287,7 +1332,15 @@ mod tests {
         assert_eq!(labels("song \"Test\" {\n  track lead ", 1, 13), ["role"]);
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
-            ["instrument", "volume", "play", "layer", "effect", "at"]
+            [
+                "instrument",
+                "volume",
+                "play",
+                "layer",
+                "effect",
+                "automate",
+                "at"
+            ]
         );
         assert_eq!(
             labels(
@@ -1390,6 +1443,52 @@ mod tests {
                 4
             ),
             ["mix", "size"]
+        );
+    }
+
+    #[test]
+    fn completes_automate_body_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  automate ",
+                2,
+                11
+            ),
+            ["cutoff"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  automate cutoff {\n    ",
+                3,
+                4
+            ),
+            ["lfo"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  automate cutoff { lfo ",
+                2,
+                24
+            ),
+            ["sine", "triangle"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  automate cutoff { lfo sine {\n    ",
+                3,
+                4
+            ),
+            ["range", "rate"]
         );
     }
 

@@ -1017,7 +1017,7 @@ fn schedule_should_accept_full_midi_pitch_range() {
 project { seed 1 sample_rate 48khz output stereo }
 song "Range" {
   tempo 120bpm meter 4/4 key C major
-  pattern range = sequence { chord C-1 G9 for 1/4 }
+  pattern pitch_range = sequence { chord C-1 G9 for 1/4 }
 }
 "#,
     );
@@ -1347,6 +1347,42 @@ song "Reverb" {
 }
 
 #[test]
+fn schedule_should_apply_filter_automation() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Automate" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 600hz resonance 0.40 }
+    automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("track automate should compile");
+
+    let score = schedule(&program).expect("track automate should schedule");
+    let effect = score.songs[0].tracks[0]
+        .effect
+        .expect("effect should be scheduled");
+    let Effect::Filter(effect) = effect else {
+        panic!("effect should be a filter");
+    };
+    let automation = effect.automation.expect("automation should be scheduled");
+
+    assert_eq!(automation.waveform, symphra_score::LfoWaveform::Sine);
+    assert!((automation.range_start_hz - 600.0).abs() < 1e-3);
+    assert!((automation.range_end_hz - 2_800.0).abs() < 1e-3);
+    assert!((automation.cycles_per_bar - 2.0).abs() < 1e-6);
+}
+
+#[test]
 fn compile_should_reject_out_of_range_effect_mix() {
     let parsed = parse(
         SourceId(0),
@@ -1515,6 +1551,185 @@ song "BadUnit" {
     assert!(
         diagnostics.iter().any(|diagnostic| {
             diagnostic.message == "effect filter cutoff unit must be `hz` or `khz`"
+        }),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_automate_without_effect() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "NoEffect" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("automate without effect should fail");
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("automate cutoff requires `effect filter`")),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_automate_with_effect_delay() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "WrongEffect" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect delay { mix 0.40 time 1/4 feedback 0.25 }
+    automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("automate with a delay effect should fail");
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("automate cutoff requires `effect filter`")),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_invalid_lfo_waveform() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "BadWaveform" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 600hz resonance 0.40 }
+    automate cutoff { lfo square { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("invalid lfo waveform should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "lfo waveform must be `sine` or `triangle`"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_invalid_automate_range_unit() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "BadRangeUnit" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 600hz resonance 0.40 }
+    automate cutoff { lfo sine { range 600db..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("invalid range unit should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "automate range unit must be `hz` or `khz`"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_automate_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "ZeroRange" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 600hz resonance 0.40 }
+    automate cutoff { lfo sine { range 0hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero range bound should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "automate range must be greater than 0hz"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_automate_rate() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "ZeroRate" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 600hz resonance 0.40 }
+    automate cutoff { lfo sine { range 600hz..2800hz rate 0 cycles/bar } }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero rate should fail");
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "automate rate must be greater than zero cycles per bar"
         }),
         "{diagnostics:#?}"
     );

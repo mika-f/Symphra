@@ -79,7 +79,16 @@ pub struct TrackDefinition {
     pub speed: Speed,
     pub choose_sample: Option<SampleRange>,
     pub at: Option<Duration>,
-    pub effect: Option<DelayEffect>,
+    pub effect: Option<Effect>,
+}
+
+/// A track's single post-render effect: either a feedback delay or a
+/// resonant lowpass filter. `delay` and `filter` are the only kinds
+/// implemented so far.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Effect {
+    Delay(DelayEffect),
+    Filter(FilterEffect),
 }
 
 /// A feedback delay line applied to the track's rendered audio. `time` is a
@@ -90,6 +99,17 @@ pub struct DelayEffect {
     pub mix: f32,
     pub time: Duration,
     pub feedback: f32,
+}
+
+/// A resonant lowpass filter applied to the track's rendered audio.
+/// `cutoff_hz` is already resolved from the source `hz`/`khz` literal to
+/// plain hertz; converting it (together with the render sample rate) into
+/// biquad filter coefficients happens in `symphra-dsp`, the same boundary
+/// where `time` becomes sample frames for [`DelayEffect`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterEffect {
+    pub cutoff_hz: f32,
+    pub resonance: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -4,9 +4,9 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ArrangementOccurrence, ChanceTransformExpression, ChordExpression,
     Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor,
-    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, MasterDeclaration, NoteExpression,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
+    EffectKind, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, MasterDeclaration,
+    NoteExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
     SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
     SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
     TrackDeclaration, VolumeExpression,
@@ -592,28 +592,49 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
 }
 
 #[derive(Clone, Copy)]
-enum EffectField {
+enum EffectField<'a> {
     Mix(EffectFactor),
     Time(DurationExpression),
     Feedback(EffectFactor),
+    Cutoff(&'a RateLiteral),
+    Resonance(EffectFactor),
 }
 
-fn effect_field_span(field: EffectField) -> SourceSpan {
+fn effect_field_span(field: EffectField<'_>) -> SourceSpan {
     match field {
-        EffectField::Mix(factor) | EffectField::Feedback(factor) => factor.span,
+        EffectField::Mix(factor)
+        | EffectField::Feedback(factor)
+        | EffectField::Resonance(factor) => factor.span,
         EffectField::Time(duration) => duration.span(),
+        EffectField::Cutoff(cutoff) => cutoff.span,
     }
 }
 
 fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
-    let items = [
-        EffectField::Mix(effect.mix),
-        EffectField::Time(effect.time),
-        EffectField::Feedback(effect.feedback),
-    ];
+    let (header, items): (&str, Vec<EffectField<'_>>) = match &effect.kind {
+        EffectKind::Delay {
+            mix,
+            time,
+            feedback,
+        } => (
+            "effect delay",
+            vec![
+                EffectField::Mix(*mix),
+                EffectField::Time(*time),
+                EffectField::Feedback(*feedback),
+            ],
+        ),
+        EffectKind::Filter { cutoff, resonance } => (
+            "effect filter",
+            vec![
+                EffectField::Cutoff(cutoff),
+                EffectField::Resonance(*resonance),
+            ],
+        ),
+    };
     print_block(
         ctx,
-        "effect delay",
+        header,
         effect.span,
         &items,
         effect_field_span,
@@ -627,6 +648,13 @@ fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
             }
             EffectField::Feedback(factor) => {
                 ctx.printer.line(format!("feedback {}", factor.value));
+            }
+            EffectField::Cutoff(cutoff) => {
+                ctx.printer
+                    .line(format!("cutoff {}", rate_text(ctx, cutoff)));
+            }
+            EffectField::Resonance(factor) => {
+                ctx.printer.line(format!("resonance {}", factor.value));
             }
         },
     );

@@ -50,6 +50,13 @@ playback speed`). Since then, two further slices landed:
   limiter applied to the whole summed master buffer before the renderer's
   final `[-1, 1]` safety clamp and PCM output conversion. See §10 below for
   the ordering/algorithm decisions and implementation details.
+- A seventh slice, in a new session on 2026-08-10, adds a second `effect`
+  kind: `effect filter { cutoff C resonance R }`, a resonant lowpass biquad
+  filter applied to a track's rendered audio the same way `effect delay`
+  already was. `EffectDeclaration` was generalized into an `EffectKind::Delay
+  | Filter` enum (mirroring the `ChanceTransform` precedent) rather than a
+  grammar rework, exactly as §7 had anticipated. See §7 below for the
+  cutoff/resonance design decisions and implementation details.
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -98,6 +105,9 @@ the adjusted syntax described later:
   line applied to that track's rendered audio (mix/dry-wet blend, meter-aware
   echo time, feedback-decayed repeats) before it is summed into the master
   mix;
+- `effect filter { cutoff C resonance R }` on a track: a resonant lowpass
+  biquad filter applied to that track's rendered audio the same way `effect
+  delay` is, mutually exclusive with it (a track has at most one effect);
 - `section <name> bars <N> { parallel [exact] { play track <name> ... } }`
   declaring a named, fixed-length, reusable group of declared tracks, and
   `arrangement { play <name> }` sequencing section references back-to-back by
@@ -345,7 +355,7 @@ scope; the original's inline `pattern phrase`/`pattern hats` declarations
 inside tracks remain unsupported (out of scope for this slice — layers only
 addressed multi-instrument mixing, not inline pattern declarations).
 
-### 7. Effects and automation — one effect (`delay`) done; `filter`/`reverb`/`automate` still gaps
+### 7. Effects and automation — `delay` and `filter` done; `reverb`/`automate` still gaps
 
 The original declares effects and LFO-driven automation as blocks of their
 own, outside any track:
@@ -390,13 +400,14 @@ once per layer). `at` and `chance`'s per-track gating already established this
 "declared-track-only" precedent — `effect` follows it too; arrangement-only
 (undeclared) tracks have no way to attach an effect, same as gain/pan/chance.
 
-**Grammar.** `effect delay { mix M time T feedback F }`. `delay` is the only
-accepted effect kind — `TokenKind::Delay`/`Mix`/`Time`/`Feedback` are real
-keywords (mirroring how `sampler`/`drum_machine` are dedicated instrument-kind
-keywords, not compared as plain identifiers), so accepting `filter`/`reverb`
-later is a token-and-arm addition, not a grammar rework. `time` reuses the
-note/chord/rest `DurationExpression` (`1/4` or `1bar`) introduced in §8;
-`mix`/`feedback` are bare floats via a new `EffectFactor { value: f32, span }`.
+**Grammar.** `effect delay { mix M time T feedback F }`. At the time this was
+written, `delay` was the only accepted effect kind —
+`TokenKind::Delay`/`Mix`/`Time`/`Feedback` are real keywords (mirroring how
+`sampler`/`drum_machine` are dedicated instrument-kind keywords, not compared
+as plain identifiers), so accepting `filter`/`reverb` later is a
+token-and-arm addition, not a grammar rework. `time` reuses the note/chord/rest
+`DurationExpression` (`1/4` or `1bar`) introduced in §8; `mix`/`feedback` are
+bare floats via a new `EffectFactor { value: f32, span }`.
 
 **Validation.** `mix` must be finite and in `0.0..=1.0`. `feedback` must be
 finite and in `0.0..1.0` for stability, but is additionally capped at `0.95`
@@ -426,9 +437,61 @@ buffer first, gets `apply_delay`'d, and is then summed into the master
 buffer. `song_frames` (the function that sizes the master buffer) now also
 folds in each effected track's tail length, so echoes are never truncated.
 
-**Still missing:** `filter`/`reverb` effect kinds, the general `automate { lfo
-... }` parameter-timeline block, and any effect declared outside a track
-(there is no bus/master effect chain — see §10).
+**`effect filter { cutoff C resonance R }` (added in a later session).** The
+original pairs `effect filter.lowpass { resonance 0.40 }` with a separate
+`automate { lfo ... }` block that sweeps the cutoff over time. Since general
+parameter automation is not implemented (see "still missing" below), a filter
+with only `resonance` and no cutoff would not be independently usable, so this
+adds a static `cutoff` alongside `resonance` rather than waiting on
+`automate`. Only a lowpass response is implemented, matching the one filter
+type the original example shows — there is no `filter.highpass`/`.bandpass`
+variant and no dotted-name grammar; `filter` alone means lowpass, the same way
+`delay` alone means feedback delay.
+
+`EffectDeclaration` was generalized from a delay-only struct into `{ kind:
+EffectKind, span }`, where `EffectKind` is `Delay { mix, time, feedback } |
+Filter { cutoff, resonance }` — the token-and-arm addition §7 anticipated, not
+a grammar rework. A track still has at most one `effect` block, so `delay`
+and `filter` are mutually exclusive per track (not chainable); this mirrors
+how `chance`'s `Transpose | Retrigger | Speed` variants are also one-per-track.
+`cutoff` reuses the `hz`/`khz` `RateLiteral`/`FrequencyLiteral` grammar
+already used by `sample_rate`; `resonance` reuses `EffectFactor` like
+`mix`/`feedback`.
+
+**Validation.** `cutoff`'s unit must be `hz` or `khz` and its resolved hertz
+value must be finite and greater than zero; `resonance` must be finite and in
+`0.0..=1.0`. Checking `cutoff` against the Nyquist frequency needs the
+project's sample rate, which is a separate namespace from song/track
+compilation (project and song are compiled independently) — rather than
+threading sample rate through track compilation for this one check, the
+renderer clamps `cutoff` defensively at render time instead, the same
+defensive-revalidation precedent already established for a
+hand-constructed `MasterLimiter`.
+
+**DSP.** `symphra_dsp::apply_filter` is a new primitive: a standard RBJ Audio
+EQ Cookbook resonant lowpass biquad, computed per channel over the whole
+buffer as a direct-form-I difference equation (again offline, so no
+real-time coefficient-smoothing concern). `resonance` (`0.0` to `1.0`) maps
+linearly to filter Q (`0.7`, approximately Butterworth, to `10`, a sharp
+resonant peak short of self-oscillation). `cutoff_hz` is clamped to
+`(0, nyquist * 0.999)` inside `apply_filter` itself, since it is the only
+place that knows the render sample rate and can bounds-check against it.
+Unlike `apply_delay`, a resonant filter has no tail that needs the render
+buffer extended — its (theoretically infinite) impulse response decays
+within the buffer's own existing length, and any resonant overshoot is left
+to the renderer's final `[-1, 1]` safety clamp — so `song_frames` only grows
+the buffer for a `Delay` effect, never for `Filter`.
+
+**Render integration.** The delay-only branch in `render_song_with_samples`
+became `apply_track_effect`, a small helper matching on `Effect::Delay |
+Filter` and dispatching to `apply_delay`/`apply_filter` respectively, called
+once per effected track from the same loop. The no-effect fast path is
+unchanged.
+
+**Still missing:** `reverb` as an effect kind, the general `automate { lfo
+... }` parameter-timeline block (which would also let `filter`'s `cutoff`
+sweep over time as the original example does), and any effect declared
+outside a track (there is no bus/master effect chain — see §10).
 
 ### 8. Bar durations and bracketed chords — bar durations done, brackets intentionally not restored
 
@@ -661,11 +724,20 @@ original intent before expanding degree-based harmony.
     peak-detect-and-scale gain reduction (not clipping), confirmed via user
     Q&A since the doc had explicitly called out plain clamping as not being
     limiter behavior.
-14. The next milestone, if wanted, is §7's remaining `filter`/`reverb`
-    effect kinds and `automate`/LFO (each needs its own DSP/ownership
-    decisions, as `delay` and now `limiter` did); then §4 synth
-    envelopes/supersaw (needs a configurable ADSR envelope designed first);
-    then §5 SoundFont/VST3 (largest, most external-dependency-heavy, last).
+14. ~~Add a second `effect` kind (`filter`).~~ Done, in a new session on
+    2026-08-10 — `effect filter { cutoff C resonance R }` is a resonant
+    lowpass biquad (`symphra_dsp::apply_filter`), mutually exclusive with
+    `effect delay` per track (a track still has at most one effect).
+    `EffectDeclaration` generalized into `EffectKind::Delay | Filter` exactly
+    as §7 had anticipated. `cutoff` is a static `hz`/`khz` value rather than
+    LFO-automated, since general `automate` is not implemented yet; see §7.
+15. The next milestone, if wanted, is §7's remaining `reverb` effect kind and
+    `automate`/LFO (each needs its own DSP/ownership decisions, as `delay`,
+    `filter`, and `limiter` did — `automate` would also be what finally lets
+    `filter`'s `cutoff` sweep over time, matching the original example);
+    then §4 synth envelopes/supersaw (needs a configurable ADSR envelope
+    designed first); then §5 SoundFont/VST3 (largest, most
+    external-dependency-heavy, last).
 
 ## Verification notes
 
@@ -713,5 +785,22 @@ plus one idempotency source addition
 slice, to stay under clippy's `too_many_lines` threshold after adding
 `master` handling — a mechanical extraction, not a behavior change. `cargo
 fmt --all -- --check` is clean except for the same two pre-existing,
+unrelated differences.
+
+The same also holds for the `effect filter` slice added in a new session on
+2026-08-10: `cargo build --workspace --all-targets`, `cargo test --workspace`
+(with `symphra-lsp` run separately via `cargo test -p symphra-lsp
+--target-dir <alternate-dir>`), and `cargo clippy --workspace --all-targets
+-- -D warnings` all pass — 4 new DSP unit tests
+(`crates/symphra-dsp/src/lib.rs`), 1 new parser test
+(`crates/symphra-syntax/tests/syntax.rs`), 5 new compiler tests
+(`crates/symphra-compiler/tests/compile.rs`), 2 new render tests
+(`crates/symphra-render/src/lib.rs`), and 1 new formatter round-trip test
+plus one idempotency source addition (`crates/symphra-fmt/tests/formatting.rs`)
+were added. `render_song_with_samples` in `crates/symphra-render/src/lib.rs`
+was refactored to extract an `apply_track_effect` helper partway through this
+slice, to stay under clippy's `too_many_lines` threshold after adding the
+`Effect::Filter` branch — a mechanical extraction, not a behavior change.
+`cargo fmt --all -- --check` is clean except for the same two pre-existing,
 unrelated differences.
 

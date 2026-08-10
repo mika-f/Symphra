@@ -240,10 +240,18 @@ fn schedule_declared_track(
         apply_at(&mut scheduled, musical_time(offset)?)?;
     }
     if let Some(effect) = track.effect {
-        scheduled.effect = Some(symphra_score::DelayEffect {
-            mix: effect.mix,
-            time: musical_time(effect.time)?,
-            feedback: effect.feedback,
+        scheduled.effect = Some(match effect {
+            hir::Effect::Delay(delay) => symphra_score::Effect::Delay(symphra_score::DelayEffect {
+                mix: delay.mix,
+                time: musical_time(delay.time)?,
+                feedback: delay.feedback,
+            }),
+            hir::Effect::Filter(filter) => {
+                symphra_score::Effect::Filter(symphra_score::FilterEffect {
+                    cutoff_hz: filter.cutoff_hz,
+                    resonance: filter.resonance,
+                })
+            }
         });
     }
     Ok(scheduled)

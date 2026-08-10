@@ -3,14 +3,14 @@ mod literal;
 use crate::ast::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
-    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, GainExpression,
-    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, MasterDeclaration,
-    NoteExpression, NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource,
-    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
-    VelocityExpression, VolumeExpression,
+    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
+    GainExpression, GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse,
+    MasterDeclaration, NoteExpression, NumberLiteral, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -470,27 +470,48 @@ impl Parser {
         })
     }
 
-    /// `effect delay { mix M time T feedback F }`, applied to the whole
-    /// track (every layer) after its events are rendered to audio. `delay`
-    /// is the only effect kind accepted today.
+    /// `effect delay { mix M time T feedback F }` or `effect filter { cutoff
+    /// C resonance R }`, applied to the whole track (every layer) after its
+    /// events are rendered to audio. `delay` and `filter` are the only
+    /// effect kinds accepted today.
     fn effect(&mut self) -> Option<EffectDeclaration> {
         let start = self.bump().span;
-        self.required(TokenKind::Delay, "expected `delay` after `effect`")?;
-        self.required(TokenKind::LeftBrace, "expected `{` after `effect delay`")?;
-        let mix = self.effect_factor(TokenKind::Mix, "expected `mix` in effect")?;
-        self.required(TokenKind::Time, "expected `time` after `mix`")?;
-        let time = self.duration_expr("effect delay")?;
-        let feedback =
-            self.effect_factor(TokenKind::Feedback, "expected `feedback` after `time`")?;
-        let end = self
-            .required(TokenKind::RightBrace, "expected `}` to close effect")?
-            .span;
-        Some(EffectDeclaration {
-            mix,
-            time,
-            feedback,
-            span: start.cover(end),
-        })
+        let kind_token = self.required_any(
+            &[TokenKind::Delay, TokenKind::Filter],
+            "expected `delay` or `filter` after `effect`",
+        )?;
+        if kind_token.kind == TokenKind::Delay {
+            self.required(TokenKind::LeftBrace, "expected `{` after `effect delay`")?;
+            let mix = self.effect_factor(TokenKind::Mix, "expected `mix` in effect")?;
+            self.required(TokenKind::Time, "expected `time` after `mix`")?;
+            let time = self.duration_expr("effect delay")?;
+            let feedback =
+                self.effect_factor(TokenKind::Feedback, "expected `feedback` after `time`")?;
+            let end = self
+                .required(TokenKind::RightBrace, "expected `}` to close effect")?
+                .span;
+            Some(EffectDeclaration {
+                kind: EffectKind::Delay {
+                    mix,
+                    time,
+                    feedback,
+                },
+                span: start.cover(end),
+            })
+        } else {
+            self.required(TokenKind::LeftBrace, "expected `{` after `effect filter`")?;
+            self.required(TokenKind::Cutoff, "expected `cutoff` in effect")?;
+            let cutoff = self.rate()?;
+            let resonance =
+                self.effect_factor(TokenKind::Resonance, "expected `resonance` after `cutoff`")?;
+            let end = self
+                .required(TokenKind::RightBrace, "expected `}` to close effect")?
+                .span;
+            Some(EffectDeclaration {
+                kind: EffectKind::Filter { cutoff, resonance },
+                span: start.cover(end),
+            })
+        }
     }
 
     fn effect_factor(&mut self, keyword: TokenKind, message: &str) -> Option<EffectFactor> {

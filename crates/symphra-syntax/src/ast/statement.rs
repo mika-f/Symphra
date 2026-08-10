@@ -28,17 +28,33 @@ pub struct TrackDeclaration {
     pub span: SourceSpan,
 }
 
-/// `effect delay { mix M time T feedback F }`, applied to the track's
+/// `effect delay { ... }` or `effect filter { ... }`, applied to the track's
 /// rendered audio (after every layer's events have been synthesized) before
-/// it is summed into the master mix. `delay` is the only effect kind
-/// implemented so far; `filter`/`reverb` and general `automate` blocks are
-/// not part of this slice.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// it is summed into the master mix. `delay` and `filter` are the only
+/// effect kinds implemented so far; `reverb` and general `automate` blocks
+/// are not part of this slice.
+#[derive(Clone, Debug, PartialEq)]
 pub struct EffectDeclaration {
-    pub mix: EffectFactor,
-    pub time: DurationExpression,
-    pub feedback: EffectFactor,
+    pub kind: EffectKind,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EffectKind {
+    Delay {
+        mix: EffectFactor,
+        time: DurationExpression,
+        feedback: EffectFactor,
+    },
+    /// A resonant lowpass filter. The original Draft 0.1 example paired
+    /// `filter.lowpass { resonance ... }` with a separate `automate { lfo
+    /// ... }` block that swept the cutoff over time; since general
+    /// parameter automation is not implemented yet, this adds a static
+    /// `cutoff` alongside `resonance` so the filter is usable on its own.
+    Filter {
+        cutoff: FrequencyLiteral,
+        resonance: EffectFactor,
+    },
 }
 
 /// A dimensionless 0.0-to-1.0-ish ratio, such as `mix`/`feedback`.

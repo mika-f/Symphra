@@ -5,19 +5,19 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    DurationExpression, EffectDeclaration, Identifier, InstrumentBody, MasterDeclaration,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RhythmDeclaration, SampleChoiceAlternative,
+    DurationExpression, EffectDeclaration, EffectKind, Identifier, InstrumentBody,
+    MasterDeclaration, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RhythmDeclaration, SampleChoiceAlternative,
     SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
     SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
-    Duration, InstrumentKind, Key, MasterLimiter, Meter, Mode, NodeId, Note, Pan, Pattern,
-    PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Rhythm, RhythmItem,
-    SampleChoice, SampleRange, SampleSelector, SampleTrigger, Section, SectionOccurrence, Song,
-    Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
+    Duration, Effect, FilterEffect, InstrumentKind, Key, MasterLimiter, Meter, Mode, NodeId, Note,
+    Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Rhythm,
+    RhythmItem, SampleChoice, SampleRange, SampleSelector, SampleTrigger, Section,
+    SectionOccurrence, Song, Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -614,7 +614,7 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
-        effect: Option<DelayEffect>,
+        effect: Option<Effect>,
     ) -> Option<(TrackDefinition, Option<Pattern>)> {
         let instrument = instruments
             .iter()
@@ -1048,39 +1048,82 @@ impl Compiler {
         Ok(Some(chance))
     }
 
-    /// Resolves a track's `effect delay { ... }`. `feedback` is capped at
-    /// `0.95` (not the theoretical stability limit of `1.0`) so a delay's
-    /// echo tail — which the renderer must extend the song's audio buffer to
-    /// fit — always decays to silence within a bounded number of repeats.
+    /// Resolves a track's `effect delay { ... }` or `effect filter { ... }`.
+    /// Delay `feedback` is capped at `0.95` (not the theoretical stability
+    /// limit of `1.0`) so a delay's echo tail — which the renderer must
+    /// extend the song's audio buffer to fit — always decays to silence
+    /// within a bounded number of repeats. Filter `cutoff` is only checked
+    /// for being a positive, finite frequency here; checking it against the
+    /// Nyquist limit needs the project's sample rate, which is not in scope
+    /// during song/track compilation, so the renderer clamps it defensively
+    /// at render time instead (mirroring the existing defensive-revalidation
+    /// precedent for a hand-constructed [`MasterLimiter`]).
     fn effect(
         &mut self,
         declaration: Option<&EffectDeclaration>,
         meter: Option<&Meter>,
-    ) -> Result<Option<DelayEffect>, ()> {
+    ) -> Result<Option<Effect>, ()> {
         let Some(declaration) = declaration else {
             return Ok(None);
         };
-        if !declaration.mix.value.is_finite() || !(0.0..=1.0).contains(&declaration.mix.value) {
-            self.error("effect mix must be from 0.0 to 1.0", declaration.mix.span);
-            return Err(());
+        match &declaration.kind {
+            EffectKind::Delay {
+                mix,
+                time,
+                feedback,
+            } => {
+                if !mix.value.is_finite() || !(0.0..=1.0).contains(&mix.value) {
+                    self.error("effect mix must be from 0.0 to 1.0", mix.span);
+                    return Err(());
+                }
+                if !feedback.value.is_finite() || !(0.0..=0.95).contains(&feedback.value) {
+                    self.error("effect feedback must be from 0.0 to 0.95", feedback.span);
+                    return Err(());
+                }
+                let time = self
+                    .item_duration(time, meter, declaration.span, "effect delay")
+                    .ok_or(())?;
+                Ok(Some(Effect::Delay(DelayEffect {
+                    mix: mix.value,
+                    time,
+                    feedback: feedback.value,
+                })))
+            }
+            EffectKind::Filter { cutoff, resonance } => {
+                let multiplier = match cutoff.unit.text.as_str() {
+                    "hz" => 1.0,
+                    "khz" => 1_000.0,
+                    _ => {
+                        self.error(
+                            "effect filter cutoff unit must be `hz` or `khz`",
+                            cutoff.span,
+                        );
+                        return Err(());
+                    }
+                };
+                let cutoff_hz = cutoff.value.value * multiplier;
+                if !cutoff_hz.is_finite() || cutoff_hz <= 0.0 {
+                    self.error("effect filter cutoff must be greater than 0hz", cutoff.span);
+                    return Err(());
+                }
+                if !resonance.value.is_finite() || !(0.0..=1.0).contains(&resonance.value) {
+                    self.error(
+                        "effect filter resonance must be from 0.0 to 1.0",
+                        resonance.span,
+                    );
+                    return Err(());
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "cutoff_hz is validated finite and positive before conversion"
+                )]
+                let cutoff_hz = cutoff_hz as f32;
+                Ok(Some(Effect::Filter(FilterEffect {
+                    cutoff_hz,
+                    resonance: resonance.value,
+                })))
+            }
         }
-        if !declaration.feedback.value.is_finite()
-            || !(0.0..=0.95).contains(&declaration.feedback.value)
-        {
-            self.error(
-                "effect feedback must be from 0.0 to 0.95",
-                declaration.feedback.span,
-            );
-            return Err(());
-        }
-        let time = self
-            .item_duration(&declaration.time, meter, declaration.span, "effect delay")
-            .ok_or(())?;
-        Ok(Some(DelayEffect {
-            mix: declaration.mix.value,
-            time,
-            feedback: declaration.feedback.value,
-        }))
     }
 
     fn track_gain(&mut self, declaration: &TrackDeclaration, play: &PlayStatement) -> Option<f32> {

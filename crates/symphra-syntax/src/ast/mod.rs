@@ -12,7 +12,7 @@ pub use expression::{
 pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, RateLiteral};
 pub use statement::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
-    ChanceTransformExpression, ChooseSampleExpression, EffectDeclaration, EffectFactor,
+    ChanceTransformExpression, ChooseSampleExpression, EffectDeclaration, EffectFactor, EffectKind,
     GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration, LayerUse,
     MasterDeclaration, PanExpression, PlaySource, PlayStatement, ProjectStatement,
     RepeatExpression, RhythmDeclaration, RhythmItem, SectionDeclaration, SongStatement,

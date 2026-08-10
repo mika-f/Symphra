@@ -368,6 +368,7 @@ enum CompletionBlock {
     Layer,
     Use,
     Effect,
+    Filter,
     Section,
     Parallel,
     Master,
@@ -434,7 +435,7 @@ fn completion_labels(
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
         &["alternate"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
-        &["delay"]
+        &["delay", "filter"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Master) {
         &["limiter"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Parallel) {
@@ -551,6 +552,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Layer) => &["use"],
         Some(CompletionBlock::Use) => &["play", "at"],
         Some(CompletionBlock::Effect) => &["mix", "time", "feedback"],
+        Some(CompletionBlock::Filter) => &["cutoff", "resonance"],
         Some(CompletionBlock::Section) => &["parallel"],
         Some(CompletionBlock::Parallel) => &["play"],
         Some(CompletionBlock::Master) => &["limiter"],
@@ -640,6 +642,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Layer => pending = Some(CompletionBlock::Layer),
             TokenKind::Use => pending = Some(CompletionBlock::Use),
             TokenKind::Delay => pending = Some(CompletionBlock::Effect),
+            TokenKind::Filter => pending = Some(CompletionBlock::Filter),
             TokenKind::Section => pending = Some(CompletionBlock::Section),
             TokenKind::Parallel => pending = Some(CompletionBlock::Parallel),
             TokenKind::Master => pending = Some(CompletionBlock::Master),
@@ -696,6 +699,9 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Mix
                     | TokenKind::Time
                     | TokenKind::Feedback
+                    | TokenKind::Filter
+                    | TokenKind::Cutoff
+                    | TokenKind::Resonance
                     | TokenKind::Play
                     | TokenKind::TriggerWith
                     | TokenKind::Gate
@@ -927,11 +933,16 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         }
         TokenKind::Use => "declares one layer's instrument and play pipeline inside `layer`.",
         TokenKind::Effect => "applies an audio effect to the track's rendered output.",
-        TokenKind::Delay => "a feedback delay (echo); the only effect kind implemented so far.",
+        TokenKind::Delay => "a feedback delay (echo).",
         TokenKind::Mix => "blends dry (`0.0`) and delayed/wet (`1.0`) signal in an effect.",
         TokenKind::Time => "sets a delay effect's echo time, such as `1/4` or `1bar`.",
         TokenKind::Feedback => {
             "sets how much of a delay's echo feeds back into itself, `0.0` to `0.95`."
+        }
+        TokenKind::Filter => "a resonant lowpass filter.",
+        TokenKind::Cutoff => "sets a filter effect's lowpass cutoff frequency, such as `2000hz`.",
+        TokenKind::Resonance => {
+            "sets a filter effect's resonance/Q, `0.0` (gentle) to `1.0` (sharp peak)."
         }
         TokenKind::Play => {
             "selects the pattern played by a track, or references a track/section elsewhere."
@@ -1291,7 +1302,7 @@ mod tests {
                 2,
                 9
             ),
-            ["delay"]
+            ["delay", "filter"]
         );
         assert_eq!(
             labels(
@@ -1300,6 +1311,14 @@ mod tests {
                 4
             ),
             ["mix", "time", "feedback"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect filter {\n    ",
+                3,
+                4
+            ),
+            ["cutoff", "resonance"]
         );
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  play ", 2, 7),

@@ -2,11 +2,11 @@
 
 use std::num::NonZeroU32;
 
-use symphra_dsp::{Oscillator, Waveform, apply_delay, apply_limiter, fade_gain};
+use symphra_dsp::{Oscillator, Waveform, apply_delay, apply_filter, apply_limiter, fade_gain};
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
-    Channels, DelayEffect, InstrumentKind, MasterLimiter, MusicalTime, SampleSelector, Score, Song,
-    TimeError, Track,
+    Channels, DelayEffect, Effect, FilterEffect, InstrumentKind, MasterLimiter, MusicalTime,
+    SampleSelector, Score, Song, TimeError, Track,
 };
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -41,7 +41,9 @@ pub enum RenderError {
     InvalidTrackPan,
     #[error("sample speed must be finite and greater than zero")]
     InvalidSampleSpeed,
-    #[error("effect mix must be from 0.0 to 1.0 and feedback from 0.0 to less than 1.0")]
+    #[error(
+        "effect parameters must be in range (delay: mix 0.0 to 1.0, feedback 0.0 to less than 1.0; filter: cutoff greater than 0hz, resonance 0.0 to 1.0)"
+    )]
     InvalidEffectParameters,
     #[error("master ceiling must be finite and from 0.0 to 1.0")]
     InvalidMasterCeiling,
@@ -139,14 +141,13 @@ pub fn render_song_with_samples(
                 sample_library,
                 &mut track_samples,
             )?;
-            let delay_frames = time_to_frame(effect.time, song.tempo_bpm, score.sample_rate_hz)?;
-            apply_delay(
+            apply_track_effect(
+                effect,
                 &mut track_samples,
                 channels,
-                delay_frames,
-                effect.mix,
-                effect.feedback,
-            );
+                song.tempo_bpm,
+                score.sample_rate_hz,
+            )?;
             for (mixed, dry) in samples.iter_mut().zip(&track_samples) {
                 *mixed += dry;
             }
@@ -178,11 +179,58 @@ fn master_is_valid(master: MasterLimiter) -> bool {
     master.ceiling.is_finite() && (0.0..=1.0).contains(&master.ceiling)
 }
 
-fn effect_is_valid(effect: &DelayEffect) -> bool {
+/// Renders `effect` into `track_samples` in place, dispatching to the DSP
+/// primitive for its kind.
+fn apply_track_effect(
+    effect: Effect,
+    track_samples: &mut [f32],
+    channels: u16,
+    tempo_bpm: f64,
+    sample_rate_hz: u32,
+) -> Result<(), RenderError> {
+    match effect {
+        Effect::Delay(delay) => {
+            let delay_frames = time_to_frame(delay.time, tempo_bpm, sample_rate_hz)?;
+            apply_delay(
+                track_samples,
+                channels,
+                delay_frames,
+                delay.mix,
+                delay.feedback,
+            );
+        }
+        Effect::Filter(filter) => {
+            apply_filter(
+                track_samples,
+                channels,
+                sample_rate_hz,
+                filter.cutoff_hz,
+                filter.resonance,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn effect_is_valid(effect: &Effect) -> bool {
+    match effect {
+        Effect::Delay(delay) => delay_effect_is_valid(delay),
+        Effect::Filter(filter) => filter_effect_is_valid(*filter),
+    }
+}
+
+fn delay_effect_is_valid(effect: &DelayEffect) -> bool {
     effect.mix.is_finite()
         && (0.0..=1.0).contains(&effect.mix)
         && effect.feedback.is_finite()
         && (0.0..1.0).contains(&effect.feedback)
+}
+
+fn filter_effect_is_valid(effect: FilterEffect) -> bool {
+    effect.cutoff_hz.is_finite()
+        && effect.cutoff_hz > 0.0
+        && effect.resonance.is_finite()
+        && (0.0..=1.0).contains(&effect.resonance)
 }
 
 /// The extra frames a track's delay tail needs beyond its natural end, so
@@ -232,8 +280,8 @@ fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
                 sample_rate_hz,
             )?);
         }
-        if let Some(effect) = track.effect {
-            end = end.saturating_add(delay_tail_frames(&effect, song.tempo_bpm, sample_rate_hz)?);
+        if let Some(Effect::Delay(delay)) = track.effect {
+            end = end.saturating_add(delay_tail_frames(&delay, song.tempo_bpm, sample_rate_hz)?);
         }
         Ok(latest.max(end))
     })
@@ -522,11 +570,12 @@ mod tests {
         with_effect.sample_rate_hz = 1_000;
         let dry = render_song(&with_effect, 0).expect("dry score should render");
 
-        with_effect.songs[0].tracks[0].effect = Some(symphra_score::DelayEffect {
-            mix: 1.0,
-            time: MusicalTime::new(1, 4).expect("quarter note should be valid"),
-            feedback: 0.0,
-        });
+        with_effect.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Delay(symphra_score::DelayEffect {
+                mix: 1.0,
+                time: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+                feedback: 0.0,
+            }));
         let wet = render_song(&with_effect, 0).expect("wet score should render");
 
         assert!(
@@ -544,13 +593,52 @@ mod tests {
     #[test]
     fn render_song_should_reject_out_of_range_effect_parameters() {
         let mut invalid = score(InstrumentKind::Sine);
-        invalid.songs[0].tracks[0].effect = Some(symphra_score::DelayEffect {
-            mix: 1.0,
-            time: MusicalTime::new(1, 4).expect("quarter note should be valid"),
-            feedback: 1.0,
-        });
+        invalid.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Delay(symphra_score::DelayEffect {
+                mix: 1.0,
+                time: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+                feedback: 1.0,
+            }));
 
         let error = render_song(&invalid, 0).expect_err("feedback of 1.0 should be rejected");
+
+        assert_eq!(error, RenderError::InvalidEffectParameters);
+    }
+
+    #[test]
+    fn render_song_should_apply_track_filter_effect() {
+        let mut with_effect = score(InstrumentKind::Sine);
+        with_effect.sample_rate_hz = 8_000;
+        let dry = render_song(&with_effect, 0).expect("dry score should render");
+
+        with_effect.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
+                cutoff_hz: 200.0,
+                resonance: 0.0,
+            }));
+        let filtered = render_song(&with_effect, 0).expect("filtered score should render");
+
+        assert_eq!(
+            filtered.samples.len(),
+            dry.samples.len(),
+            "a filter has no echo tail, unlike delay, so it should not extend render length"
+        );
+        assert_ne!(
+            filtered.samples, dry.samples,
+            "the lowpass filter should audibly change the rendered signal"
+        );
+    }
+
+    #[test]
+    fn render_song_should_reject_out_of_range_effect_filter_parameters() {
+        let mut invalid = score(InstrumentKind::Sine);
+        invalid.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
+                cutoff_hz: 0.0,
+                resonance: 0.0,
+            }));
+
+        let error = render_song(&invalid, 0).expect_err("zero cutoff should be rejected");
 
         assert_eq!(error, RenderError::InvalidEffectParameters);
     }

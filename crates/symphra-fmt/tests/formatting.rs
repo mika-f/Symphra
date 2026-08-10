@@ -213,6 +213,32 @@ fn formats_track_effect_delay() {
 }
 
 #[test]
+fn formats_track_effect_filter() {
+    let input = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect filter { cutoff 2000hz resonance 0.40 }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect filter {
+      cutoff 2000hz
+      resonance 0.4
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_track_with_layer_uses() {
     let input = r#"song "S" {
   track bass role low {
@@ -665,6 +691,18 @@ song "Sections" {
     limiter {
       ceiling -0.3db
     }
+  }
+}
+"#,
+        r#"project { seed 1 sample_rate 8khz output mono }
+song "FilterEffect" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect filter { cutoff 2000hz resonance 0.4 }
   }
 }
 "#,

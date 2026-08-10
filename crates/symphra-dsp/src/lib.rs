@@ -128,6 +128,67 @@ pub fn apply_delay(buffer: &mut [f32], channels: u16, delay_frames: u64, mix: f3
     }
 }
 
+/// Applies an in-place resonant lowpass biquad filter (RBJ Audio EQ
+/// Cookbook coefficients) to an interleaved audio buffer, independently per
+/// channel. This is offline rendering, so coefficients are computed once up
+/// front and applied as a direct-form-I difference equation over the whole
+/// buffer; there is no need for the block-based coefficient smoothing a
+/// real-time filter would use.
+///
+/// `resonance` (`0.0` to `1.0`) maps to filter Q: `0.0` gives a gentle
+/// Butterworth-like response (`Q ~= 0.7`) and `1.0` approaches a sharp
+/// resonant peak (`Q = 10`) just short of self-oscillation. `cutoff_hz` is
+/// clamped to `(0, nyquist)` so the filter always stays numerically stable
+/// regardless of what the caller passes in — this is the only place that
+/// knows the render sample rate, so it is also the only place that can
+/// bounds-check `cutoff_hz` against the Nyquist frequency.
+pub fn apply_filter(
+    buffer: &mut [f32],
+    channels: u16,
+    sample_rate_hz: u32,
+    cutoff_hz: f32,
+    resonance: f32,
+) {
+    let channel_count = usize::from(channels);
+    if channel_count == 0 || buffer.is_empty() || sample_rate_hz == 0 {
+        return;
+    }
+    let nyquist = f64::from(sample_rate_hz) / 2.0;
+    let cutoff = f64::from(cutoff_hz).clamp(1.0, nyquist * 0.999);
+    let q = 0.7 + f64::from(resonance.clamp(0.0, 1.0)) * 9.3;
+    let w0 = TAU * cutoff / f64::from(sample_rate_hz);
+    let (sin_w0, cos_w0) = w0.sin_cos();
+    let alpha = sin_w0 / (2.0 * q);
+    let a0 = 1.0 + alpha;
+    let b1 = 1.0 - cos_w0;
+    let b0 = (b1 / 2.0) / a0;
+    let b2 = b0;
+    let b1 = b1 / a0;
+    let a1 = (-2.0 * cos_w0) / a0;
+    let a2 = (1.0 - alpha) / a0;
+
+    for channel in 0..channel_count {
+        let (mut x1, mut x2, mut y1, mut y2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut frame = channel;
+        while frame < buffer.len() {
+            let x0 = f64::from(buffer[frame]);
+            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a resonant filter's output is clamped downstream by the renderer's final safety clamp"
+            )]
+            {
+                buffer[frame] = y0 as f32;
+            }
+            x2 = x1;
+            x1 = x0;
+            y2 = y1;
+            y1 = y0;
+            frame += channel_count;
+        }
+    }
+}
+
 /// Scans `buffer` for its peak absolute sample value and, if it exceeds
 /// `ceiling`, uniformly scales every sample by `ceiling / peak` so the
 /// loudest sample lands exactly at `ceiling`. Unlike clipping, this
@@ -151,7 +212,9 @@ pub fn apply_limiter(buffer: &mut [f32], ceiling: f32) {
 mod tests {
     use std::num::NonZeroU32;
 
-    use super::{Oscillator, SineOscillator, Waveform, apply_delay, apply_limiter, fade_gain};
+    use super::{
+        Oscillator, SineOscillator, Waveform, apply_delay, apply_filter, apply_limiter, fade_gain,
+    };
 
     #[test]
     fn sine_oscillator_should_complete_one_cycle_in_four_samples() {
@@ -262,6 +325,76 @@ mod tests {
                 .zip([0.0, 1.0])
                 .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < f32::EPSILON)
         );
+    }
+
+    #[test]
+    fn apply_filter_should_pass_a_dc_signal_through_near_unity_gain() {
+        let mut buffer = vec![1.0f32; 200];
+
+        apply_filter(&mut buffer, 1, 48_000, 1_000.0, 0.0);
+
+        let settled = &buffer[180..];
+        assert!(
+            settled.iter().all(|sample| (sample - 1.0).abs() < 0.05),
+            "{settled:?}"
+        );
+    }
+
+    #[test]
+    fn apply_filter_should_attenuate_content_well_above_cutoff() {
+        let mut buffer: Vec<f32> = (0..100)
+            .map(|frame| if frame % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+
+        apply_filter(&mut buffer, 1, 48_000, 200.0, 0.0);
+
+        let settled = &buffer[80..];
+        assert!(
+            settled.iter().all(|sample| sample.abs() < 0.2),
+            "{settled:?}"
+        );
+    }
+
+    #[test]
+    fn apply_filter_should_process_each_channel_independently() {
+        let frames = 2_000;
+        let mut buffer: Vec<f32> = (0..frames)
+            .flat_map(|frame| [1.0, if frame % 2 == 0 { 1.0 } else { -1.0 }])
+            .collect();
+
+        apply_filter(&mut buffer, 2, 48_000, 200.0, 0.0);
+
+        let dc_channel: Vec<f32> = buffer
+            .iter()
+            .skip((frames - 50) * 2)
+            .step_by(2)
+            .copied()
+            .collect();
+        let nyquist_channel: Vec<f32> = buffer
+            .iter()
+            .skip((frames - 50) * 2 + 1)
+            .step_by(2)
+            .copied()
+            .collect();
+        assert!(
+            dc_channel.iter().all(|sample| (sample - 1.0).abs() < 0.05),
+            "{dc_channel:?}"
+        );
+        assert!(
+            nyquist_channel.iter().all(|sample| sample.abs() < 0.05),
+            "{nyquist_channel:?}"
+        );
+    }
+
+    #[test]
+    fn apply_filter_should_be_a_no_op_for_zero_channels_or_sample_rate() {
+        let mut buffer = vec![1.0, 2.0, 3.0];
+
+        apply_filter(&mut buffer, 0, 48_000, 1_000.0, 0.0);
+        assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
+
+        apply_filter(&mut buffer, 1, 0, 1_000.0, 0.0);
+        assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
     }
 
     #[test]

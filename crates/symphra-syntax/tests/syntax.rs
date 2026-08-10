@@ -1,5 +1,5 @@
 use symphra_syntax::ast::{
-    ArrangementEntry, Declaration, DurationExpression, InstrumentBody, PatternBody,
+    ArrangementEntry, Declaration, DurationExpression, EffectKind, InstrumentBody, PatternBody,
     ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
@@ -691,19 +691,56 @@ fn parses_track_effect_delay() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.expect("effect should be present");
+    let effect = track.effect.as_ref().expect("effect should be present");
+    let EffectKind::Delay {
+        mix,
+        time,
+        feedback,
+    } = &effect.kind
+    else {
+        panic!("effect should be a delay");
+    };
 
-    assert!((effect.mix.value - 0.40).abs() < f32::EPSILON);
-    assert!((effect.feedback.value - 0.25).abs() < f32::EPSILON);
+    assert!((mix.value - 0.40).abs() < f32::EPSILON);
+    assert!((feedback.value - 0.25).abs() < f32::EPSILON);
     let DurationExpression::Fraction {
         numerator,
         denominator,
         ..
-    } = effect.time
+    } = *time
     else {
         panic!("effect delay time should be a fraction");
     };
     assert_eq!((numerator, denominator), (1, 4));
+}
+
+#[test]
+fn parses_track_effect_filter() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Track\" { ",
+            "track drums role beat { ",
+            "instrument tr909 play kit ",
+            "effect filter { cutoff 2000hz resonance 0.40 } ",
+            "} }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let effect = track.effect.as_ref().expect("effect should be present");
+    let EffectKind::Filter { cutoff, resonance } = &effect.kind else {
+        panic!("effect should be a filter");
+    };
+
+    assert!((cutoff.value.value - 2000.0).abs() < f64::EPSILON);
+    assert_eq!(cutoff.unit.text, "hz");
+    assert!((resonance.value - 0.40).abs() < f32::EPSILON);
 }
 
 /// Unwraps a track's single-instrument body, panicking if it is a `layer`.

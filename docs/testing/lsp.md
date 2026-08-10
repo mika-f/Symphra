@@ -97,6 +97,10 @@ Exercise these cases by replacing the buffer contents without saving:
     `pad` in `play track pad` and run `:lua vim.lsp.buf.definition()`. The
     cursor should move to the name in the corresponding `track pad` declaration
     in the same song.
+12. With `instrument lead = triangle` and a track body that contains
+    `instrument lead` (or `use lead` inside `layer`), put the cursor on that
+    instrument name and run `:lua vim.lsp.buf.definition()`. The cursor should
+    move to the matching `instrument lead` declaration in the same song.
 
 Diagnostics should refresh after every edit because the server requests
 full-text synchronization. Closing the buffer sends `textDocument/didClose`,

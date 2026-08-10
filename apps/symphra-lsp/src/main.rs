@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
-use symphra_syntax::ast::{
-    ArrangementEntry, Declaration, PatternBody, SequenceItem, SongDeclaration, SongStatement,
-};
+use symphra_syntax::ast::{ArrangementEntry, Declaration, PatternBody, SequenceItem, SongDeclaration, SongStatement, TrackBody};
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
 };
@@ -872,7 +870,10 @@ fn definition_in_song(song: &SongDeclaration, offset: u32) -> Option<SourceSpan>
     if let Some(span) = definition_from_play_track(song, offset) {
         return Some(span);
     }
-    definition_from_arrangement_pattern(song, offset)
+    if let Some(span) = definition_from_arrangement_pattern(song, offset) {
+        return Some(span);
+    }
+    definition_from_track_instrument(song, offset)
 }
 
 /// `arrangement { play <section> }` → section name span.
@@ -949,6 +950,33 @@ fn definition_from_arrangement_pattern(song: &SongDeclaration, offset: u32) -> O
             return None;
         };
         (instrument.name.text == reference.text).then_some(instrument.name.span)
+    })
+}
+
+/// `track { instrument <name> }` / `layer { use <name> ... }` → instrument name span.
+fn definition_from_track_instrument(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    let instrument_name = song.statements.iter().find_map(|statement| {
+        let SongStatement::Track(track) = statement else {
+            return None;
+        };
+        match &track.body {
+            TrackBody::Single { instrument, .. }
+                if instrument.span.start <= offset && offset < instrument.span.end =>
+            {
+                Some(instrument)
+            }
+            TrackBody::Layers { uses, .. } => uses.iter().find_map(|layer| {
+                (layer.instrument.span.start <= offset && offset < layer.instrument.span.end)
+                    .then_some(&layer.instrument)
+            }),
+            _ => None,
+        }
+    })?;
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Instrument(instrument) = statement else {
+            return None;
+        };
+        (instrument.name.text == instrument_name.text).then_some(instrument.name.span)
     })
 }
 
@@ -1747,6 +1775,70 @@ mod tests {
             location.range,
             Range::new(Position::new(1, 13), Position::new(1, 17))
         );
+    }
+
+    #[test]
+    fn finds_instrument_definitions_from_track_body() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  instrument lead = triangle\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  instrument lead = triangle\n",
+                "  instrument sub = triangle\n",
+                "  pattern melody = sequence {}\n",
+                "  track chords role harmony {\n",
+                "    instrument lead\n",
+                "    play melody\n",
+                "  }\n",
+                "  track bass role low {\n",
+                "    layer {\n",
+                "      use sub { play melody }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        // `instrument lead` inside a single-body track.
+        let single = definition(&source, &uri, Position::new(8, 15))
+            .expect("track instrument reference should resolve");
+        assert_eq!(single.uri, uri);
+        assert_eq!(
+            single.range,
+            Range::new(Position::new(4, 13), Position::new(4, 17))
+        );
+
+        // `use sub` inside a layered track.
+        let layered = definition(&source, &uri, Position::new(13, 10))
+            .expect("layer use instrument reference should resolve");
+        assert_eq!(
+            layered.range,
+            Range::new(Position::new(5, 13), Position::new(5, 16))
+        );
+
+        // Same instrument name in another song must not be chosen.
+        assert!(definition(&source, &uri, Position::new(1, 13)).is_none());
+
+        // Unresolved instrument names return no location.
+        let missing = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  track chords role harmony {\n",
+                "    instrument missing\n",
+                "    play melody\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        assert!(definition(&missing, &uri, Position::new(3, 15)).is_none());
     }
 
     #[test]

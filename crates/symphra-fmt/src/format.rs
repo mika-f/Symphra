@@ -4,7 +4,7 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, ChordExpression, Declaration,
     DegreeChoiceAlternative, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
-    PanExpression, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
+    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
     ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
     SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile,
     SpeedExpression, StepItem, TrackDeclaration, VolumeExpression,
@@ -480,7 +480,14 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
 }
 
 fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
-    let mut line = format!("play {}", ctx.text(play.pattern.span));
+    let mut line = match &play.source {
+        PlaySource::Pattern(identifier) => format!("play {}", ctx.text(identifier.span)),
+        PlaySource::Drum { name, rhythm, .. } => format!(
+            "play drum {} with {}",
+            ctx.text(name.span),
+            ctx.text(rhythm.span)
+        ),
+    };
     if let Some(trigger_with) = &play.trigger_with {
         line.push_str(" |> trigger_with ");
         line.push_str(ctx.text(trigger_with.span));

@@ -1283,6 +1283,170 @@ song "Drums" {
 }
 
 #[test]
+fn schedule_should_play_drum_with_rhythm_shorthand() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  rhythm kick_pattern resolution 1/8 { hit rest hit rest }
+  track drums role beat {
+    instrument tr909
+    play drum "bd" with kick_pattern
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("play drum with should compile");
+
+    let score = schedule(&program).expect("play drum with should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .map(|event| (sample_name(&event.selector), event.start))
+            .collect::<Vec<_>>(),
+        vec![
+            ("bd", MusicalTime::ZERO),
+            (
+                "bd",
+                MusicalTime::new(1, 4).expect("quarter note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_empty_drum_voice_in_play_shorthand() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  rhythm kick_pattern resolution 1/8 { hit }
+  track drums role beat {
+    instrument tr909
+    play drum "" with kick_pattern
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty drum voice name should fail");
+
+    assert_eq!(diagnostics[0].message, "drum voice name must not be empty");
+}
+
+#[test]
+fn compile_should_reject_unknown_rhythm_in_play_drum_shorthand() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  track drums role beat {
+    instrument tr909
+    play drum "bd" with missing_rhythm
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("unknown rhythm should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "play drum with references an unknown rhythm"
+    );
+}
+
+#[test]
+fn compile_should_reject_play_drum_shorthand_for_non_drum_machine_instrument() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  rhythm kick_pattern resolution 1/8 { hit }
+  track drums role beat {
+    instrument voice
+    play drum "bd" with kick_pattern
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("non-drum-machine instrument should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "play drum requires a drum machine instrument"
+    );
+}
+
+#[test]
+fn compile_should_reject_play_drum_shorthand_combined_with_trigger_with() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  rhythm kick_pattern resolution 1/8 { hit }
+  rhythm other resolution 1/8 { hit rest }
+  track drums role beat {
+    instrument tr909
+    play drum "bd" with kick_pattern |> trigger_with other
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("combined trigger_with should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "`trigger_with` cannot be combined with `play drum ... with ...`"
+    );
+}
+
+#[test]
+fn compile_should_reject_play_drum_shorthand_with_empty_rhythm() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  rhythm empty resolution 1/8 { }
+  track drums role beat {
+    instrument tr909
+    play drum "bd" with empty
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty rhythm should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "play drum with rhythm must contain at least one item"
+    );
+}
+
+#[test]
 fn schedule_should_trigger_drum_steps_with_rhythm() {
     let parsed = parse(
         SourceId(0),

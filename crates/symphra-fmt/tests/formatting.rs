@@ -270,6 +270,27 @@ fn formats_choose_sample_range() {
 }
 
 #[test]
+fn formats_play_drum_with_rhythm_shorthand() {
+    let input = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play drum "bd" with kick_pattern
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play drum "bd" with kick_pattern
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_drum_machine_instrument_and_drum_steps() {
     let input = r#"song "S" {
   instrument tr909 = drum_machine { bank "RolandTR909" }

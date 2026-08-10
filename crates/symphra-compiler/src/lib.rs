@@ -5,9 +5,9 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration, ProjectDeclaration,
-    ProjectStatement, RhythmDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    SpeedExpression, StepItem, TrackDeclaration,
+    Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration, PlaySource,
+    ProjectDeclaration, ProjectStatement, QuotedString, RhythmDeclaration, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
 };
 
 use crate::hir::{
@@ -241,14 +241,22 @@ impl Compiler {
             .iter()
             .filter_map(|rhythm| self.rhythm(rhythm))
             .collect::<Vec<_>>();
-        let patterns = pattern_declarations
+        let mut patterns = pattern_declarations
             .iter()
             .map(|pattern| self.pattern(pattern, settings.key.as_ref()))
             .collect::<Vec<_>>();
-        let tracks = track_defs
-            .iter()
-            .filter_map(|track| self.track(track, &patterns, &rhythms, &instruments))
-            .collect::<Vec<_>>();
+        let mut tracks = Vec::with_capacity(track_defs.len());
+        for track in &track_defs {
+            let Some((definition, synthesized)) =
+                self.track(track, &patterns, &rhythms, &instruments)
+            else {
+                continue;
+            };
+            if let Some(pattern) = synthesized {
+                patterns.push(pattern);
+            }
+            tracks.push(definition);
+        }
         if !tracks.is_empty() && arrangement.is_some() {
             self.error(
                 "track declarations cannot be combined with a pattern arrangement",
@@ -353,16 +361,7 @@ impl Compiler {
         patterns: &[Pattern],
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
-    ) -> Option<TrackDefinition> {
-        let pattern = patterns
-            .iter()
-            .find(|pattern| pattern.name == declaration.play.pattern.text);
-        if pattern.is_none() {
-            self.error(
-                "track references an unknown pattern",
-                declaration.play.pattern.span,
-            );
-        }
+    ) -> Option<(TrackDefinition, Option<Pattern>)> {
         let instrument = instruments
             .iter()
             .find(|(name, _)| *name == declaration.instrument.text)
@@ -373,7 +372,8 @@ impl Compiler {
                 declaration.instrument.span,
             );
         }
-        let rhythm = self.resolve_trigger_with(declaration, pattern, rhythms);
+        let (pattern, synthesized, trigger_with) =
+            self.play_source(declaration, patterns, rhythms, instrument.as_ref());
         let gate_percent = match declaration.play.gate {
             Some(gate) => match u8::try_from(gate.percent) {
                 Ok(percent) if percent <= 100 => Some(Some(percent)),
@@ -395,11 +395,13 @@ impl Compiler {
         let gain = self.track_gain(declaration);
         let repeat_count = self.repeat_count(declaration);
         let pan = self.pan(declaration);
-        let chance = self.chance(declaration, pattern, instrument.as_ref()).ok();
+        let chance = self
+            .chance(declaration, pattern.as_ref(), instrument.as_ref())
+            .ok();
         let speed = self.speed(declaration, instrument.as_ref());
         let choose_sample = self.choose_sample(declaration, instrument.as_ref()).ok();
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
-            pattern,
+            pattern.as_ref(),
             transpose_semitones,
             declaration.play.transpose.as_ref(),
         ) {
@@ -420,13 +422,13 @@ impl Compiler {
                     ),
                     (((pan, chance), speed), choose_sample),
                 )| {
-                    TrackDefinition {
+                    let definition = TrackDefinition {
                         id: self.id(),
                         name: declaration.name.text.clone(),
                         role: declaration.role.text.clone(),
                         instrument,
                         pattern: pattern.id,
-                        trigger_with: rhythm.map(|rhythm| rhythm.id),
+                        trigger_with,
                         gate_percent,
                         transpose_semitones,
                         gain,
@@ -436,15 +438,114 @@ impl Compiler {
                         chance,
                         speed,
                         choose_sample,
-                    }
+                    };
+                    (definition, synthesized)
                 },
             )
+    }
+
+    /// Resolves a track's `play` source into the pattern it should schedule.
+    ///
+    /// `PlaySource::Pattern` looks up a declared pattern by name, exactly as
+    /// before. `PlaySource::Drum` is sugar: it synthesizes a fresh pattern
+    /// with one step per rhythm item (a named drum trigger for `hit`, a rest
+    /// otherwise) so the rest of the pipeline never needs to know the
+    /// difference. The synthesized pattern is returned separately so the
+    /// caller can register it in the song's pattern list.
+    fn play_source(
+        &mut self,
+        declaration: &TrackDeclaration,
+        patterns: &[Pattern],
+        rhythms: &[Rhythm],
+        instrument: Option<&InstrumentKind>,
+    ) -> (Option<Pattern>, Option<Pattern>, Option<NodeId>) {
+        match &declaration.play.source {
+            PlaySource::Pattern(identifier) => {
+                let pattern = patterns
+                    .iter()
+                    .find(|pattern| pattern.name == identifier.text)
+                    .cloned();
+                if pattern.is_none() {
+                    self.error("track references an unknown pattern", identifier.span);
+                }
+                let rhythm = self.resolve_trigger_with(declaration, pattern.as_ref(), rhythms);
+                (pattern, None, rhythm.map(|rhythm| rhythm.id))
+            }
+            PlaySource::Drum { name, rhythm, span } => {
+                let pattern =
+                    self.drum_play_pattern(declaration, name, rhythm, *span, rhythms, instrument);
+                match pattern {
+                    Some(pattern) => (Some(pattern.clone()), Some(pattern), None),
+                    None => (None, None, None),
+                }
+            }
+        }
+    }
+
+    fn drum_play_pattern(
+        &mut self,
+        declaration: &TrackDeclaration,
+        name: &QuotedString,
+        rhythm: &Identifier,
+        span: SourceSpan,
+        rhythms: &[Rhythm],
+        instrument: Option<&InstrumentKind>,
+    ) -> Option<Pattern> {
+        if declaration.play.trigger_with.is_some() {
+            self.error(
+                "`trigger_with` cannot be combined with `play drum ... with ...`",
+                span,
+            );
+            return None;
+        }
+        if name.value.is_empty() {
+            self.error("drum voice name must not be empty", name.span);
+            return None;
+        }
+        if instrument
+            .is_some_and(|instrument| !matches!(instrument, InstrumentKind::DrumMachine { .. }))
+        {
+            self.error("play drum requires a drum machine instrument", span);
+            return None;
+        }
+        let Some(found_rhythm) = rhythms
+            .iter()
+            .find(|candidate| candidate.name == rhythm.text)
+        else {
+            self.error("play drum with references an unknown rhythm", rhythm.span);
+            return None;
+        };
+        if found_rhythm.items.is_empty() {
+            self.error("play drum with rhythm must contain at least one item", span);
+            return None;
+        }
+        let steps = found_rhythm
+            .items
+            .iter()
+            .map(|item| match item {
+                RhythmItem::Hit => PatternStep::Sample(SampleTrigger {
+                    id: self.id(),
+                    selector: SampleSelector::Named(name.value.clone()),
+                    duration: found_rhythm.resolution,
+                    velocity: DEFAULT_VELOCITY,
+                }),
+                RhythmItem::Rest => PatternStep::Rest(Rest {
+                    id: self.id(),
+                    duration: found_rhythm.resolution,
+                }),
+            })
+            .collect();
+        Some(Pattern {
+            id: self.id(),
+            name: format!("{}::drum", declaration.name.text),
+            steps,
+        })
     }
 
     fn resolve_trigger_with<'a>(
         &mut self,
         declaration: &TrackDeclaration,
-        pattern: Option<&'a Pattern>,
+        pattern: Option<&Pattern>,
         rhythms: &'a [Rhythm],
     ) -> Option<&'a Rhythm> {
         let rhythm = declaration

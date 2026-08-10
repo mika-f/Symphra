@@ -4,7 +4,7 @@ use crate::ast::{
     ArrangementOccurrence, ChanceExpression, ChanceTransformExpression, ChooseSampleExpression,
     ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression, GateExpression,
     Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression, NumberLiteral,
-    PanExpression, PatternBody, PatternDeclaration, PlayStatement, ProjectDeclaration,
+    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
     ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
     RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem, SongDeclaration,
     SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration, TransposeExpression,
@@ -425,7 +425,11 @@ impl Parser {
         let play_start = self
             .required(TokenKind::Play, "expected `play` in track")?
             .span;
-        let pattern = self.identifier("expected a pattern name after `play`")?;
+        let source = if self.at(TokenKind::Drum) {
+            self.play_drum_source()?
+        } else {
+            PlaySource::Pattern(self.identifier("expected a pattern name after `play`")?)
+        };
         let mut trigger_with = None;
         let mut gate = None;
         let mut transpose = None;
@@ -436,7 +440,7 @@ impl Parser {
         let mut chance = None;
         let mut speed = None;
         let mut choose_sample = None;
-        let mut play_end = pattern.span;
+        let mut play_end = source.span();
         while self.at(TokenKind::PipeGreater) {
             self.bump();
             match self.current().kind {
@@ -501,7 +505,7 @@ impl Parser {
             }
         }
         Some(PlayStatement {
-            pattern,
+            source,
             trigger_with,
             gate,
             transpose,
@@ -514,6 +518,15 @@ impl Parser {
             choose_sample,
             span: play_start.cover(play_end),
         })
+    }
+
+    fn play_drum_source(&mut self) -> Option<PlaySource> {
+        let drum_start = self.bump().span;
+        let name = self.string("expected a quoted drum voice name after `drum`")?;
+        self.required(TokenKind::With, "expected `with` after drum voice name")?;
+        let rhythm = self.identifier("expected a rhythm name after `with`")?;
+        let span = drum_start.cover(rhythm.span);
+        Some(PlaySource::Drum { name, rhythm, span })
     }
 
     fn speed(&mut self, speed: &mut Option<SpeedExpression>) -> Option<SourceSpan> {

@@ -456,6 +456,8 @@ fn completion_labels(
         &["role"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
         &["alternate"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Play) {
+        &["drum"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
         &[
             "trigger_with",
@@ -816,7 +818,9 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         }
         TokenKind::Pattern => "declares a named musical pattern.",
         TokenKind::Arrangement => "orders named patterns for sequential playback.",
-        TokenKind::With => "assigns an instrument to an arrangement occurrence.",
+        TokenKind::With => {
+            "assigns an instrument to an arrangement occurrence, or a rhythm to a `play drum` shorthand."
+        }
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Steps => "plays fixed-resolution steps in source order.",
         TokenKind::Degree => "adds a pitch offset from the song key tonic.",
@@ -1095,6 +1099,10 @@ mod tests {
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
             ["instrument", "volume", "play"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\ntrack lead role harmony {\n  play ", 2, 7),
+            ["drum"]
         );
         assert_eq!(
             labels(

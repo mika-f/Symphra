@@ -28,7 +28,7 @@ pub struct TrackDeclaration {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlayStatement {
-    pub pattern: Identifier,
+    pub source: PlaySource,
     pub trigger_with: Option<Identifier>,
     pub gate: Option<GateExpression>,
     pub transpose: Option<TransposeExpression>,
@@ -40,6 +40,26 @@ pub struct PlayStatement {
     pub speed: Option<SpeedExpression>,
     pub choose_sample: Option<ChooseSampleExpression>,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlaySource {
+    Pattern(Identifier),
+    Drum {
+        name: QuotedString,
+        rhythm: Identifier,
+        span: SourceSpan,
+    },
+}
+
+impl PlaySource {
+    #[must_use]
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Pattern(identifier) => identifier.span,
+            Self::Drum { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

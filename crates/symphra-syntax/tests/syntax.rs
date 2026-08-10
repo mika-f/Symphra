@@ -463,7 +463,7 @@ fn parses_tracks_with_rhythm_triggers() {
                 .volume
                 .as_ref()
                 .map(|volume| (volume.decibels, volume.unit.text.as_str())),
-            track.play.pattern.text.as_str(),
+            pattern_source_name(&track.play.source),
             track
                 .play
                 .trigger_with
@@ -519,6 +519,36 @@ fn parses_tracks_with_rhythm_triggers() {
             }),
         ),
         (Some(1.50), Some((15, 12, "st")))
+    );
+}
+
+fn pattern_source_name(source: &symphra_syntax::ast::PlaySource) -> &str {
+    let symphra_syntax::ast::PlaySource::Pattern(identifier) = source else {
+        panic!("play source should be a pattern");
+    };
+    identifier.text.as_str()
+}
+
+#[test]
+fn parses_play_drum_with_rhythm_shorthand() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Track\" { track drums role beat { instrument tr909 play drum \"bd\" with kick_pattern } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let symphra_syntax::ast::PlaySource::Drum { name, rhythm, .. } = &track.play.source else {
+        panic!("play source should be a drum shorthand");
+    };
+
+    assert_eq!(
+        (name.value.as_str(), rhythm.text.as_str()),
+        ("bd", "kick_pattern")
     );
 }
 

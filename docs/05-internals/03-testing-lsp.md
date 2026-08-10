@@ -16,7 +16,8 @@ symbols. Semantic tokens color keywords, declared/referenced names, strings,
 numbers, comments, and pitch identifiers. Inlay hints show compiled MIDI values
 after pitches and a kind label after resolved name references. Its JSON-RPC
 lifecycle is covered by an end-to-end stdio test.
-A Visual Studio Code extension lives at [`editors/vscode`](../../editors/vscode)
+A Visual Studio Code extension lives at
+[`editors/vscode`](https://github.com/mika-f/Symphra/tree/main/editors/vscode)
 and provides syntax highlighting plus a language client for manual testing;
 see that directory's README for setup.
 

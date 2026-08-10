@@ -1,4 +1,7 @@
-# Remaining Differences from the Original Draft 0.1
+# Implementation status (Draft 0.1)
+
+Contributor-oriented gap analysis and session handoff notes. User-facing
+"what works" docs live under [Capabilities](/introduction/capabilities/).
 
 This is a cold-session handoff for continuing implementation of the original
 Draft 0.1 example at <https://pastebin.com/uFQMfkcn>. It compares that example

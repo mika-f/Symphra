@@ -1,8 +1,9 @@
 # Symphra for Visual Studio Code
 
 Syntax highlighting and language server integration for Symphra (`.sym`) files.
-The grammar is still evolving (see [`docs/language/draft-0.1.md`](../../docs/language/draft-0.1.md));
-this extension tracks the current draft and will need updates as the language grows.
+The grammar is still evolving (see the [language guide](../../docs/03-language/01-overview.md)
+and [grammar reference](../../docs/04-reference/01-grammar.md)); this extension
+tracks the current draft and will need updates as the language grows.
 
 ## What it provides
 
@@ -30,7 +31,7 @@ cargo build -p symphra-lsp --locked
 
 Then open this `editors/vscode` folder in VS Code and press F5 to launch an
 Extension Development Host. Open a workspace containing a `.sym` file (e.g.
-[`examples/draft-0.1/001-infinite-sparkle.sym`](../../examples/draft-0.1/001-infinite-sparkle.sym)).
+[`examples/draft-0.1/001-example.sym`](../../examples/draft-0.1/001-example.sym)).
 
 ## Locating the language server
 

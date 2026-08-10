@@ -1283,6 +1283,106 @@ song "Drums" {
 }
 
 #[test]
+fn schedule_should_trigger_drum_steps_with_rhythm() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  rhythm off_beat resolution 1/8 { hit hit rest rest }
+  pattern kit = steps 1/8 { drum "bd" drum "hh" drum "bd" drum "hh" }
+  track drums role beat {
+    instrument tr909
+    play kit |> trigger_with off_beat
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("triggered drum steps should compile");
+
+    let score = schedule(&program).expect("triggered drum steps should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .map(|event| (sample_name(&event.selector), event.start))
+            .collect::<Vec<_>>(),
+        vec![
+            ("bd", MusicalTime::ZERO),
+            (
+                "hh",
+                MusicalTime::new(1, 8).expect("eighth note should be valid")
+            ),
+        ]
+    );
+}
+
+#[test]
+fn schedule_should_trigger_degree_choice_steps_with_rhythm() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Melody" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  rhythm off_beat resolution 1/8 { hit rest }
+  pattern phrase = steps 1/8 {
+    choose { degree 0 octave 4 weight 1 }
+    choose { degree 4 octave 4 weight 1 }
+  }
+  track lead role melody {
+    instrument lead
+    play phrase |> trigger_with off_beat
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("triggered degree choice should compile");
+
+    let score = schedule(&program).expect("triggered degree choice should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .notes
+            .iter()
+            .map(|note| (note.midi_pitch, note.start))
+            .collect::<Vec<_>>(),
+        [(60, MusicalTime::ZERO)]
+    );
+}
+
+#[test]
+fn compile_should_reject_triggered_sample_choice_steps() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  rhythm off_beat resolution 1/8 { hit rest }
+  pattern phrase = steps 1/8 { choose { sample 1 weight 1 sample 2 weight 1 } }
+  track voice role melody {
+    instrument voice
+    play phrase |> trigger_with off_beat
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("triggered sample choice should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "trigger_with supports only note, chord, rest, sample, drum, and degree-choice pattern steps"
+    );
+}
+
+#[test]
 fn compile_should_reject_empty_drum_bank_name() {
     let parsed = parse(
         SourceId(0),

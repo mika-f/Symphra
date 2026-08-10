@@ -724,9 +724,17 @@ impl Compiler {
                 PatternStep::Note(note) => note.duration,
                 PatternStep::Chord(chord) => chord.duration,
                 PatternStep::Rest(rest) => rest.duration,
-                PatternStep::Sample(_) | PatternStep::Choice(_) | PatternStep::DegreeChoice(_) => {
+                PatternStep::Sample(sample) => sample.duration,
+                // Every alternative in a compiled DegreeChoice shares the same
+                // step-cell duration, so any one of them stands in for the
+                // step's duration.
+                PatternStep::DegreeChoice(choice) => match choice.alternatives.first() {
+                    Some(alternative) => alternative.note.duration,
+                    None => continue,
+                },
+                PatternStep::Choice(_) => {
                     self.error(
-                        "trigger_with currently supports note, chord, and rest patterns",
+                        "trigger_with supports only note, chord, rest, sample, drum, and degree-choice pattern steps",
                         span,
                     );
                     return;

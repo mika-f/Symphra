@@ -6,8 +6,10 @@ this extension tracks the current draft and will need updates as the language gr
 
 ## What it provides
 
-- TextMate grammar for the Draft 0.1 keywords, comments, strings, numbers,
-  rate literals (`48khz`, `150bpm`), and pitch literals (`C4`).
+- TextMate grammar aligned with `crates/symphra-syntax` token kinds: keywords
+  (including tracks, effects, pipelines, automate/lfo, drums, and master),
+  comments, strings, numbers, rate literals (`48khz`, `150bpm`), pitch
+  literals (`C4`), and punctuation (`|>`, `..`, `:`, `()`, `,`).
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, and completions.
 
@@ -28,7 +30,7 @@ cargo build -p symphra-lsp --locked
 
 Then open this `editors/vscode` folder in VS Code and press F5 to launch an
 Extension Development Host. Open a workspace containing a `.sym` file (e.g.
-[`examples/draft-0.1/001-sample.sym`](../../examples/draft-0.1/001-sample.sym)).
+[`examples/draft-0.1/001-infinite-sparkle.sym`](../../examples/draft-0.1/001-infinite-sparkle.sym)).
 
 ## Locating the language server
 

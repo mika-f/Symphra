@@ -34,11 +34,12 @@ presence on older builds hasn't been verified.
 ## What it provides
 
 - A hand-written lexer ([`SymphraLexer`](src/main/kotlin/dev/symphra/idea/lexer/SymphraLexer.kt))
-  covering the Draft 0.1 token classes — comments, strings, numbers, rate
-  literals (`48khz`, `150bpm`), pitch literals (`C4`), keywords, and
-  punctuation — mirroring the VS Code TextMate grammar
-  (`editors/vscode/syntaxes/symphra.tmLanguage.json`) rather than a formal
-  parser, since the grammar is still changing. A colors page under
+  covering the token classes from `crates/symphra-syntax` — comments, strings,
+  numbers, rate literals (`48khz`, `150bpm`), pitch literals (`C4`), all
+  reserved keywords (tracks, effects, pipelines, automate/lfo, drums, master,
+  …), and punctuation (`|>`, `..`, `:`, `()`, `,`) — mirroring the VS Code
+  TextMate grammar (`editors/vscode/syntaxes/symphra.tmLanguage.json`) rather
+  than a formal parser, since the grammar is still changing. A colors page under
   **Settings \| Editor \| Color Scheme \| Symphra** lets you customize each
   token's styling.
 - An `LspServerSupportProvider` that launches `symphra-lsp` over stdio for
@@ -81,7 +82,7 @@ cargo build -p symphra-lsp -p symphra-formatter --locked
 ```
 
 Then open a `.sym` file (e.g.
-[`examples/draft-0.1/001-sample.sym`](../../examples/draft-0.1/001-sample.sym))
+[`examples/draft-0.1/001-infinite-sparkle.sym`](../../examples/draft-0.1/001-infinite-sparkle.sym))
 in the sandbox instance.
 
 ## Locating the language server and formatter

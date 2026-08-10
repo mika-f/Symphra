@@ -5,11 +5,11 @@ import com.intellij.psi.TokenType
 import com.intellij.psi.tree.IElementType
 
 /**
- * A hand-written, eagerly-tokenizing lexer for the still-evolving Draft 0.1 grammar
- * (docs/language/draft-0.1.md). It mirrors the token classes highlighted by the VS Code
- * TextMate grammar (editors/vscode/syntaxes/symphra.tmLanguage.json) rather than a formal
- * BNF, since a PSI parser would need to track the grammar too closely while it is still
- * changing. Full semantic help comes from the symphra-lsp language server instead.
+ * A hand-written, eagerly-tokenizing lexer for the still-evolving Draft 0.1 grammar.
+ * It mirrors the token classes in crates/symphra-syntax (token.rs / lexer.rs) and the
+ * VS Code TextMate grammar (editors/vscode/syntaxes/symphra.tmLanguage.json) rather than
+ * a formal BNF, since a PSI parser would need to track the grammar too closely while it
+ * is still changing. Full semantic help comes from the symphra-lsp language server instead.
  */
 class SymphraLexer : LexerBase() {
     private data class Token(val start: Int, val end: Int, val type: IElementType)
@@ -110,7 +110,7 @@ class SymphraLexer : LexerBase() {
                         out += Token(s, i, type)
                     }
 
-                    c == '{' || c == '}' -> {
+                    c == '{' || c == '}' || c == '(' || c == ')' -> {
                         out += Token(i, i + 1, SymphraTokenTypes.BRACE)
                         i++
                     }
@@ -120,7 +120,12 @@ class SymphraLexer : LexerBase() {
                         i += 2
                     }
 
-                    c == '=' || c == '/' || c == '+' || c == '-' || c == '%' -> {
+                    c == '.' && i + 1 < end && text[i + 1] == '.' -> {
+                        out += Token(i, i + 2, SymphraTokenTypes.OPERATOR)
+                        i += 2
+                    }
+
+                    c == '=' || c == '/' || c == '+' || c == '-' || c == '%' || c == ':' || c == ',' -> {
                         out += Token(i, i + 1, SymphraTokenTypes.OPERATOR)
                         i++
                     }

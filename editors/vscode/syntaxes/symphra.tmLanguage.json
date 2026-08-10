@@ -5,7 +5,7 @@
   "fileTypes": [
     "sym"
   ],
-  "comment": "Tracks the Draft 0.1 grammar in docs/language/draft-0.1.md. Keep in sync as the grammar grows.",
+  "comment": "Tracks TokenKind keywords and punctuation in crates/symphra-syntax/src/token.rs and lexer.rs. Keep in sync as the grammar grows.",
   "patterns": [
     {
       "include": "#comments"
@@ -54,7 +54,7 @@
       ]
     },
     "rates": {
-      "comment": "A number immediately followed by a unit identifier, e.g. 48khz, 150bpm.",
+      "comment": "A number immediately followed by a unit identifier, e.g. 48khz, 150bpm, -5.2db.",
       "match": "\\b(\\d+(?:\\.\\d+)?)([A-Za-z_][A-Za-z0-9_]*)\\b",
       "captures": {
         "1": {
@@ -82,11 +82,11 @@
       "patterns": [
         {
           "name": "keyword.control.declaration.symphra",
-          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|choose|rhythm|track|section|master|limiter)\\b"
+          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|drum_machine|choose|rhythm|track|section|arrangement|master|limiter)\\b"
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|sample|weight|source|root|pack|with|resolution|hit|role|play|trigger_with|gate|transpose|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|bars|parallel|exact|ceiling)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|key|sample|weight|source|root|pack|bank|drum|with|resolution|hit|role|volume|play|trigger_with|gate|transpose|gain|repeat|reverse|pan|alternate|chance|speed|retrigger|choose_sample|at|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|filter|cutoff|resonance|reverb|size|automate|lfo|range|rate|cycles|bars|parallel|exact|ceiling)\\b"
         }
       ]
     },
@@ -97,6 +97,10 @@
           "match": "[{}]"
         },
         {
+          "name": "punctuation.section.parens.symphra",
+          "match": "[()]"
+        },
+        {
           "name": "keyword.operator.assignment.symphra",
           "match": "="
         },
@@ -105,12 +109,24 @@
           "match": "\\|>"
         },
         {
+          "name": "keyword.operator.range.symphra",
+          "match": "\\.\\."
+        },
+        {
           "name": "keyword.operator.percent.symphra",
           "match": "%"
         },
         {
           "name": "keyword.operator.arithmetic.symphra",
           "match": "[/+-]"
+        },
+        {
+          "name": "punctuation.separator.colon.symphra",
+          "match": ":"
+        },
+        {
+          "name": "punctuation.separator.comma.symphra",
+          "match": ","
         }
       ]
     }

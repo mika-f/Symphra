@@ -26,14 +26,67 @@ class SymphraColorSettingsPage : ColorSettingsPage {
           meter 4/4
           key C major
 
+          instrument lead = sampler {
+            pack "lead"
+          }
+
+          rhythm stabs resolution 1/8 {
+            hit rest hit hit
+          }
+
           pattern melody = sequence {
             note C4 for 1/4
             rest for 1/4
-            chord C4 E4 G4 for 1/4
+            chord C4 E4 G4 for 1/4 velocity 96
             note G4 for 1/2
           }
 
-          arrangement { melody }
+          track lead_track role harmony {
+            instrument lead
+            volume -5.2db
+
+            play melody
+              |> trigger_with stabs
+              |> gate 95%
+              |> pan alternate(30%, 70%)
+              |> chance 15% {
+                   transpose +12st
+                 }
+              |> choose_sample 0..3
+
+            effect filter {
+              cutoff 2000hz
+              resonance 0.40
+            }
+
+            automate cutoff {
+              lfo sine {
+                range 600hz..2800hz
+                rate 2 cycles/bar
+              }
+            }
+
+            effect reverb {
+              mix 0.40
+              size 0.80
+            }
+          }
+
+          section phrase bars 4 {
+            parallel exact {
+              play track lead_track
+            }
+          }
+
+          arrangement {
+            play phrase
+          }
+
+          master {
+            limiter {
+              ceiling -0.3db
+            }
+          }
         }
     """.trimIndent()
 

@@ -31,10 +31,12 @@ pub enum StepItem {
     },
     Sample {
         index: u32,
+        velocity: Option<VelocityExpression>,
         span: SourceSpan,
     },
     Drum {
         name: QuotedString,
+        velocity: Option<VelocityExpression>,
         span: SourceSpan,
     },
     Rest {
@@ -81,8 +83,7 @@ pub enum SequenceItem {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteExpression {
     pub pitch: Identifier,
-    pub duration_numerator: u32,
-    pub duration_denominator: u32,
+    pub duration: DurationExpression,
     pub velocity: Option<VelocityExpression>,
     pub span: SourceSpan,
 }
@@ -90,8 +91,7 @@ pub struct NoteExpression {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChordExpression {
     pub pitches: Vec<Identifier>,
-    pub duration_numerator: u32,
-    pub duration_denominator: u32,
+    pub duration: DurationExpression,
     pub velocity: Option<VelocityExpression>,
     pub span: SourceSpan,
 }
@@ -104,7 +104,31 @@ pub struct VelocityExpression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestExpression {
-    pub duration_numerator: u32,
-    pub duration_denominator: u32,
+    pub duration: DurationExpression,
     pub span: SourceSpan,
+}
+
+/// A note, chord, or rest duration: either an explicit fraction of a whole
+/// note, or a meter-relative bar count resolved during HIR lowering once the
+/// song's meter is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DurationExpression {
+    Fraction {
+        numerator: u32,
+        denominator: u32,
+        span: SourceSpan,
+    },
+    Bars {
+        count: u32,
+        span: SourceSpan,
+    },
+}
+
+impl DurationExpression {
+    #[must_use]
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Fraction { span, .. } | Self::Bars { span, .. } => *span,
+        }
+    }
 }

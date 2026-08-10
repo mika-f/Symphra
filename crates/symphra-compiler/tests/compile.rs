@@ -911,6 +911,59 @@ song "Rests" {
 }
 
 #[test]
+fn schedule_should_resolve_bar_durations_against_the_song_meter() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Bars" {
+  tempo 120bpm meter 3/4 key C major
+  pattern phrase = sequence {
+    note C4 for 1bar
+    note E4 for 2bar
+    rest for 1bar
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("bar durations should compile");
+
+    let score = schedule(&program).expect("bar durations should schedule");
+    let track = &score.songs[0].tracks[0];
+    assert_eq!(
+        (track.notes[0].start, track.notes[1].start, track.end),
+        (
+            MusicalTime::ZERO,
+            MusicalTime::new(3, 4).expect("one bar of 3/4 should be a valid duration"),
+            MusicalTime::new(3, 1).expect("four bars of 3/4 should be a valid duration"),
+        )
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_bar_duration() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "ZeroBar" {
+  tempo 120bpm meter 4/4 key C major
+  pattern phrase = sequence { note C4 for 0bar }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero bar duration should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "note duration must be greater than zero"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
 fn schedule_should_start_chord_notes_together() {
     let parsed = parse(
         SourceId(0),
@@ -1111,6 +1164,51 @@ song "Instruments" {
 }
 
 #[test]
+fn schedule_should_mix_independently_scheduled_layers_into_one_track() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Layers" {
+  tempo 120bpm meter 4/4 key C major
+  instrument sub_sine = sine
+  instrument sub_triangle = triangle
+  pattern bass_roots = sequence { note C2 for 1/4 }
+  track bass role low {
+    volume -6db
+    layer {
+      use sub_sine { play bass_roots |> gain 1.0 }
+      use sub_triangle { play bass_roots |> gain 0.5 }
+    }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("layered track should compile");
+
+    let score = schedule(&program).expect("layered track should schedule");
+    let tracks = &score.songs[0].tracks;
+
+    assert_eq!(tracks.len(), 2, "each `use` should become its own track");
+    assert_eq!(
+        tracks
+            .iter()
+            .map(|track| (track.name.as_str(), track.instrument.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("bass", symphra_score::InstrumentKind::Sine),
+            ("bass", symphra_score::InstrumentKind::Triangle),
+        ],
+        "layers share the declared track name but keep their own instrument"
+    );
+    // Track-level `volume -6db` (~0.501x) applies uniformly; only the
+    // per-layer `gain` differs.
+    let volume = 10f32.powf(-6.0 / 20.0);
+    assert!((tracks[0].gain - volume).abs() < 1e-6);
+    assert!((tracks[1].gain - 0.5 * volume).abs() < 1e-6);
+}
+
+#[test]
 fn compile_should_reject_invalid_instruments() {
     let parsed = parse(
         SourceId(0),
@@ -1279,6 +1377,58 @@ song "Drums" {
                 MusicalTime::new(1, 4).expect("quarter note should be valid")
             ),
         ]
+    );
+}
+
+#[test]
+fn schedule_should_apply_explicit_sample_and_drum_step_velocity() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "StepVelocity" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  pattern kit = steps 1/8 { drum "bd" velocity 90 drum "hh" }
+  arrangement { kit with tr909 }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("drum step velocity should compile");
+
+    let score = schedule(&program).expect("drum step velocity should schedule");
+
+    assert_eq!(
+        score.songs[0].tracks[0]
+            .samples
+            .iter()
+            .map(|event| (sample_name(&event.selector), event.velocity))
+            .collect::<Vec<_>>(),
+        vec![("bd", 90), ("hh", 127)]
+    );
+}
+
+#[test]
+fn compile_should_reject_out_of_range_sample_step_velocity() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "InvalidVelocity" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice_numbers = sampler { pack "numbers" }
+  pattern phrase = steps 1/8 { sample 1 velocity 200 }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range velocity should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "velocity must be from 0 to 127"),
+        "{diagnostics:#?}"
     );
 }
 

@@ -186,6 +186,34 @@ song "S" {
 }
 
 #[test]
+fn formats_track_with_layer_uses() {
+    let input = r#"song "S" {
+  track bass role low {
+    volume -3db
+    layer { use sub_sine { play bass_roots |> gain 1.0 } use sub_triangle { play bass_roots |> gain 0.6 |> pan -20% } }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track bass role low {
+    volume -3 db
+    layer {
+      use sub_sine {
+        play bass_roots |> gain 1
+      }
+      use sub_triangle {
+        play bass_roots |> gain 0.6 |> pan -20%
+      }
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_alternating_sampler_speed() {
     let input = r#"song "S" {
   track voice role melody {
@@ -335,6 +363,44 @@ fn formats_drum_machine_instrument_and_drum_steps() {
 }
 
 #[test]
+fn formats_sample_and_drum_step_velocity() {
+    let input = r#"song "S" {
+  pattern kit = steps 1/8 { drum "bd" velocity 90 sample 2 velocity 40 rest }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern kit = steps 1/8 {
+    drum "bd" velocity 90
+    sample 2 velocity 40
+    rest
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_bar_durations() {
+    let input = r#"song "S" {
+  pattern phrase = sequence { note C4 for 1bar chord C4 E4 for 2bar velocity 90 rest for 1bar }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern phrase = sequence {
+    note C4 for 1bar
+    chord C4 E4 for 2bar velocity 90
+    rest for 1bar
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_steps_patterns_with_degree_and_sample_choices() {
     let input = r#"project { seed 1 sample_rate 8khz output mono }
 song "S" {
@@ -438,6 +504,7 @@ song "First Song" {
     rest for 1/4
     chord C#4 Eb4 G4 for 1/4 velocity 96
     note G4 for 1/2
+    note A4 for 1bar
   }
   arrangement { melody }
 }
@@ -460,6 +527,7 @@ song "S" {
     choose { degree 12 octave 4 weight 1 degree 11 octave 4 weight 3 }
   }
   pattern samples = steps 1/8 {
+    sample 4 velocity 90
     choose { sample 1 weight 1 sequence weight 2 { sample 2 sample 3 } }
   }
   arrangement { harmony with lead }

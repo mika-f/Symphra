@@ -3,11 +3,12 @@ use std::fmt::Write as _;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, ChordExpression, Declaration,
-    DegreeChoiceAlternative, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration, VolumeExpression,
+    DegreeChoiceAlternative, DurationExpression, Identifier, InstrumentBody, InstrumentDeclaration,
+    LayerUse, NoteExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource,
+    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -435,6 +436,7 @@ enum TrackField<'a> {
     Instrument(&'a Identifier),
     Volume(&'a VolumeExpression),
     Play(&'a PlayStatement),
+    Layer(&'a [LayerUse], SourceSpan),
 }
 
 fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
@@ -442,6 +444,7 @@ fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
         TrackField::Instrument(instrument) => instrument.span,
         TrackField::Volume(volume) => volume.span,
         TrackField::Play(play) => play.span,
+        TrackField::Layer(_, span) => *span,
     }
 }
 
@@ -451,11 +454,22 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
         ctx.text(decl.name.span),
         ctx.text(decl.role.span)
     );
-    let mut fields = vec![TrackField::Instrument(&decl.instrument)];
-    if let Some(volume) = &decl.volume {
-        fields.push(TrackField::Volume(volume));
+    let mut fields = Vec::new();
+    match &decl.body {
+        TrackBody::Single { instrument, play } => {
+            fields.push(TrackField::Instrument(instrument));
+            if let Some(volume) = &decl.volume {
+                fields.push(TrackField::Volume(volume));
+            }
+            fields.push(TrackField::Play(play));
+        }
+        TrackBody::Layers { uses, span } => {
+            if let Some(volume) = &decl.volume {
+                fields.push(TrackField::Volume(volume));
+            }
+            fields.push(TrackField::Layer(uses, *span));
+        }
     }
-    fields.push(TrackField::Play(&decl.play));
     let items: Vec<&TrackField<'_>> = fields.iter().collect();
     print_block(
         ctx,
@@ -475,7 +489,37 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
                 ctx.text(volume.unit.span)
             )),
             TrackField::Play(play) => print_play(ctx, play),
+            TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
         },
+    );
+}
+
+fn print_layer(ctx: &mut Ctx<'_>, uses: &[LayerUse], span: SourceSpan) {
+    let items: Vec<&LayerUse> = uses.iter().collect();
+    print_block(
+        ctx,
+        "layer",
+        span,
+        &items,
+        |layer_use: &LayerUse| layer_use.span,
+        |_| 0,
+        Reorder::No,
+        print_layer_use,
+    );
+}
+
+fn print_layer_use(ctx: &mut Ctx<'_>, layer_use: &LayerUse) {
+    let header = format!("use {}", ctx.text(layer_use.instrument.span));
+    let items: Vec<&PlayStatement> = vec![&layer_use.play];
+    print_block(
+        ctx,
+        &header,
+        layer_use.span,
+        &items,
+        |play: &PlayStatement| play.span,
+        |_| 0,
+        Reorder::No,
+        print_play,
     );
 }
 
@@ -650,19 +694,28 @@ fn print_sequence_item(ctx: &mut Ctx<'_>, item: &SequenceItem) {
     match item {
         SequenceItem::Note(note) => print_note(ctx, note),
         SequenceItem::Chord(chord) => print_chord(ctx, chord),
-        SequenceItem::Rest(rest) => ctx.printer.line(format!(
-            "rest for {}/{}",
-            rest.duration_numerator, rest.duration_denominator
-        )),
+        SequenceItem::Rest(rest) => ctx
+            .printer
+            .line(format!("rest for {}", format_duration(&rest.duration))),
+    }
+}
+
+fn format_duration(duration: &DurationExpression) -> String {
+    match *duration {
+        DurationExpression::Fraction {
+            numerator,
+            denominator,
+            ..
+        } => format!("{numerator}/{denominator}"),
+        DurationExpression::Bars { count, .. } => format!("{count}bar"),
     }
 }
 
 fn print_note(ctx: &mut Ctx<'_>, note: &NoteExpression) {
     let mut line = format!(
-        "note {} for {}/{}",
+        "note {} for {}",
         ctx.text(note.pitch.span),
-        note.duration_numerator,
-        note.duration_denominator
+        format_duration(&note.duration)
     );
     if let Some(velocity) = &note.velocity {
         let _ = write!(line, " velocity {}", velocity.value);
@@ -677,10 +730,7 @@ fn print_chord(ctx: &mut Ctx<'_>, chord: &ChordExpression) {
         .map(|pitch| ctx.text(pitch.span))
         .collect::<Vec<_>>()
         .join(" ");
-    let mut line = format!(
-        "chord {pitches} for {}/{}",
-        chord.duration_numerator, chord.duration_denominator
-    );
+    let mut line = format!("chord {pitches} for {}", format_duration(&chord.duration));
     if let Some(velocity) = &chord.velocity {
         let _ = write!(line, " velocity {}", velocity.value);
     }
@@ -692,8 +742,22 @@ fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
         StepItem::Degree { degree, octave, .. } => {
             ctx.printer.line(format!("degree {degree} octave {octave}"));
         }
-        StepItem::Sample { index, .. } => ctx.printer.line(format!("sample {index}")),
-        StepItem::Drum { name, .. } => ctx.printer.line(format!("drum {}", ctx.text(name.span))),
+        StepItem::Sample {
+            index, velocity, ..
+        } => {
+            let mut line = format!("sample {index}");
+            if let Some(velocity) = velocity {
+                let _ = write!(line, " velocity {}", velocity.value);
+            }
+            ctx.printer.line(line);
+        }
+        StepItem::Drum { name, velocity, .. } => {
+            let mut line = format!("drum {}", ctx.text(name.span));
+            if let Some(velocity) = velocity {
+                let _ = write!(line, " velocity {}", velocity.value);
+            }
+            ctx.printer.line(line);
+        }
         StepItem::Rest { .. } => ctx.printer.line("rest"),
         StepItem::Choose { alternatives, span } => {
             let items: Vec<&SampleChoiceAlternative> = alternatives.iter().collect();

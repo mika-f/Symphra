@@ -43,7 +43,7 @@ object SymphraTokenTypes {
         "instrument", "sample", "choose", "weight", "sampled", "sampler", "source", "root",
         "pack", "rhythm", "resolution", "hit", "track", "role", "play", "trigger_with", "gate",
         "transpose", "pattern", "arrangement", "with", "sequence", "steps", "degree", "octave",
-        "note", "chord", "rest", "for", "velocity"
+        "note", "chord", "rest", "for", "velocity", "bar", "layer", "use"
     )
 
     // Natural (C4), sharp (C#4), flat (Cb4), and negative-octave (C-1, C#-1, Cb-1) pitches.

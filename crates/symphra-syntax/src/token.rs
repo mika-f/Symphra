@@ -32,6 +32,8 @@ pub enum TokenKind {
     Track,
     Role,
     Volume,
+    Layer,
+    Use,
     Play,
     TriggerWith,
     Gate,
@@ -58,6 +60,7 @@ pub enum TokenKind {
     Rest,
     For,
     Velocity,
+    Bar,
     LeftBrace,
     RightBrace,
     Equal,
@@ -103,6 +106,8 @@ impl TokenKind {
             "track" => Self::Track,
             "role" => Self::Role,
             "volume" => Self::Volume,
+            "layer" => Self::Layer,
+            "use" => Self::Use,
             "play" => Self::Play,
             "trigger_with" => Self::TriggerWith,
             "gate" => Self::Gate,
@@ -129,6 +134,7 @@ impl TokenKind {
             "rest" => Self::Rest,
             "for" => Self::For,
             "velocity" => Self::Velocity,
+            "bar" => Self::Bar,
             _ => return None,
         })
     }

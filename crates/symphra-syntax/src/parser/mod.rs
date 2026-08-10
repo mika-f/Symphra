@@ -2,14 +2,14 @@ mod literal;
 
 use crate::ast::{
     ArrangementOccurrence, AtExpression, ChanceExpression, ChanceTransformExpression,
-    ChooseSampleExpression, ChordExpression, Declaration, DegreeChoiceAlternative, GainExpression,
-    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    SpeedExpression, StepItem, TrackDeclaration, TransposeExpression, VelocityExpression,
-    VolumeExpression,
+    ChooseSampleExpression, ChordExpression, Declaration, DegreeChoiceAlternative,
+    DurationExpression, GainExpression, GateExpression, Identifier, InstrumentBody,
+    InstrumentDeclaration, LayerUse, NoteExpression, NumberLiteral, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
+    TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -55,6 +55,7 @@ const STEP_ITEM_START: &[TokenKind] = &[
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
+const LAYER_USE_START: &[TokenKind] = &[TokenKind::Use, TokenKind::RightBrace, TokenKind::Eof];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSource {
@@ -373,22 +374,77 @@ impl Parser {
         self.required(TokenKind::Role, "expected `role` after track name")?;
         let role = self.identifier("expected a track role")?;
         self.required(TokenKind::LeftBrace, "expected `{` after track role")?;
-        self.required(TokenKind::Instrument, "expected `instrument` in track")?;
-        let instrument = self.identifier("expected an instrument name")?;
-        let volume = if self.at(TokenKind::Volume) {
-            Some(Box::new(self.volume()?))
+        let (volume, body) = if self.at(TokenKind::Instrument) {
+            self.bump();
+            let instrument = self.identifier("expected an instrument name")?;
+            let volume = if self.at(TokenKind::Volume) {
+                Some(Box::new(self.volume()?))
+            } else {
+                None
+            };
+            let play = Box::new(self.play()?);
+            (volume, TrackBody::Single { instrument, play })
         } else {
-            None
+            let volume = if self.at(TokenKind::Volume) {
+                Some(Box::new(self.volume()?))
+            } else {
+                None
+            };
+            (volume, self.layer_body()?)
         };
-        let play = self.play()?;
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close track")?
             .span;
         Some(TrackDeclaration {
             name,
             role,
-            instrument,
             volume,
+            body,
+            span: start.cover(end),
+        })
+    }
+
+    /// Several independently scheduled `use` layers, mixed into the same
+    /// logical track. Each layer reuses the full `play` pipeline grammar
+    /// (`trigger_with`, `gate`, `gain`, `pan`, `chance`, ...), so layers are
+    /// as expressive as a single-instrument track.
+    fn layer_body(&mut self) -> Option<TrackBody> {
+        let start = self
+            .required(
+                TokenKind::Layer,
+                "expected `instrument` or `layer` in track",
+            )?
+            .span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `layer`")?;
+        let mut uses = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            if let Some(layer_use) = self.layer_use() {
+                uses.push(layer_use);
+            } else {
+                self.recover_to(LAYER_USE_START);
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close layer")?
+            .span;
+        Some(TrackBody::Layers {
+            uses,
+            span: start.cover(end),
+        })
+    }
+
+    fn layer_use(&mut self) -> Option<LayerUse> {
+        let start = self
+            .required(TokenKind::Use, "expected `use` in layer")?
+            .span;
+        let instrument = self.identifier("expected an instrument name after `use`")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after `use` instrument")?;
+        let play = self.play()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close `use`")?
+            .span;
+        Some(LayerUse {
+            instrument,
             play,
             span: start.cover(end),
         })
@@ -905,18 +961,28 @@ impl Parser {
                     let sample = self.bump().span;
                     self.required(TokenKind::Integer, "expected sample index")
                         .and_then(|index| {
-                            self.parse_u32(&index).map(|index_value| StepItem::Sample {
-                                index: index_value,
-                                span: sample.cover(index.span),
+                            self.parse_u32(&index).map(|index_value| {
+                                let velocity = self.velocity();
+                                let end = velocity.map_or(index.span, |velocity| velocity.span);
+                                StepItem::Sample {
+                                    index: index_value,
+                                    velocity,
+                                    span: sample.cover(end),
+                                }
                             })
                         })
                 }
                 TokenKind::Drum => {
                     let drum = self.bump().span;
                     self.string("expected a quoted drum voice name")
-                        .map(|name| StepItem::Drum {
-                            span: drum.cover(name.span),
-                            name,
+                        .map(|name| {
+                            let velocity = self.velocity();
+                            let end = velocity.map_or(name.span, |velocity| velocity.span);
+                            StepItem::Drum {
+                                span: drum.cover(end),
+                                name,
+                                velocity,
+                            }
                         })
                 }
                 TokenKind::Rest => Some(StepItem::Rest {
@@ -1102,16 +1168,12 @@ impl Parser {
         let start = self.bump().span;
         let pitch = self.identifier("expected note pitch")?;
         self.required(TokenKind::For, "expected `for` after note pitch")?;
-        let numerator_token = self.required(TokenKind::Integer, "expected duration numerator")?;
-        self.required(TokenKind::Slash, "expected `/` in note duration")?;
-        let denominator_token =
-            self.required(TokenKind::Integer, "expected duration denominator")?;
+        let duration = self.duration_expr("note")?;
         let velocity = self.velocity();
-        let end = velocity.map_or(denominator_token.span, |velocity| velocity.span);
+        let end = velocity.map_or(duration.span(), |velocity| velocity.span);
         Some(NoteExpression {
             pitch,
-            duration_numerator: self.parse_u32(&numerator_token)?,
-            duration_denominator: self.parse_u32(&denominator_token)?,
+            duration,
             velocity,
             span: start.cover(end),
         })
@@ -1120,14 +1182,10 @@ impl Parser {
     fn rest(&mut self) -> Option<RestExpression> {
         let start = self.bump().span;
         self.required(TokenKind::For, "expected `for` after `rest`")?;
-        let numerator_token = self.required(TokenKind::Integer, "expected duration numerator")?;
-        self.required(TokenKind::Slash, "expected `/` in rest duration")?;
-        let denominator_token =
-            self.required(TokenKind::Integer, "expected duration denominator")?;
+        let duration = self.duration_expr("rest")?;
         Some(RestExpression {
-            duration_numerator: self.parse_u32(&numerator_token)?,
-            duration_denominator: self.parse_u32(&denominator_token)?,
-            span: start.cover(denominator_token.span),
+            span: start.cover(duration.span()),
+            duration,
         })
     }
 
@@ -1139,18 +1197,40 @@ impl Parser {
             pitches.push(self.identifier("expected chord pitch")?);
         }
         self.required(TokenKind::For, "expected `for` after chord pitches")?;
-        let numerator_token = self.required(TokenKind::Integer, "expected duration numerator")?;
-        self.required(TokenKind::Slash, "expected `/` in chord duration")?;
-        let denominator_token =
-            self.required(TokenKind::Integer, "expected duration denominator")?;
+        let duration = self.duration_expr("chord")?;
         let velocity = self.velocity();
-        let end = velocity.map_or(denominator_token.span, |velocity| velocity.span);
+        let end = velocity.map_or(duration.span(), |velocity| velocity.span);
         Some(ChordExpression {
             pitches,
-            duration_numerator: self.parse_u32(&numerator_token)?,
-            duration_denominator: self.parse_u32(&denominator_token)?,
+            duration,
             velocity,
             span: start.cover(end),
+        })
+    }
+
+    /// Parses a note/chord/rest duration: either `N/M`, a fraction of a
+    /// whole note, or `Nbar`, resolved against the song's meter during HIR
+    /// lowering (mirroring how rate literals accept optional whitespace
+    /// between the number and its unit).
+    fn duration_expr(&mut self, context: &str) -> Option<DurationExpression> {
+        let numerator_token = self.required(TokenKind::Integer, "expected duration numerator")?;
+        if self.at(TokenKind::Bar) {
+            let bar_token = self.bump();
+            return Some(DurationExpression::Bars {
+                count: self.parse_u32(&numerator_token)?,
+                span: numerator_token.span.cover(bar_token.span),
+            });
+        }
+        self.required(
+            TokenKind::Slash,
+            &format!("expected `/` in {context} duration"),
+        )?;
+        let denominator_token =
+            self.required(TokenKind::Integer, "expected duration denominator")?;
+        Some(DurationExpression::Fraction {
+            numerator: self.parse_u32(&numerator_token)?,
+            denominator: self.parse_u32(&denominator_token)?,
+            span: numerator_token.span.cover(denominator_token.span),
         })
     }
 

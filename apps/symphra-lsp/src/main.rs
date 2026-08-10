@@ -355,6 +355,8 @@ enum CompletionBlock {
     Song,
     Rhythm,
     Track,
+    Layer,
+    Use,
     Arrangement,
     Sequence,
     Steps,
@@ -509,7 +511,9 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::DrumMachine) => &["bank"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
         Some(CompletionBlock::Rhythm) => &["hit", "rest"],
-        Some(CompletionBlock::Track) => &["instrument", "volume", "play", "at"],
+        Some(CompletionBlock::Track) => &["instrument", "volume", "play", "layer", "at"],
+        Some(CompletionBlock::Layer) => &["use"],
+        Some(CompletionBlock::Use) => &["play", "at"],
         Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
     }
 }
@@ -537,7 +541,7 @@ fn duration_keyword_follows(tokens: &[Token]) -> bool {
 }
 
 fn velocity_keyword_follows(tokens: &[Token]) -> bool {
-    matches!(
+    let note_or_chord_duration = matches!(
         (
             tokens.first(),
             tokens.get(tokens.len().saturating_sub(2)),
@@ -557,7 +561,30 @@ fn velocity_keyword_follows(tokens: &[Token]) -> bool {
                 ..
             })
         )
-    ) && tokens.iter().any(|token| token.kind == TokenKind::For)
+    ) && tokens.iter().any(|token| token.kind == TokenKind::For);
+    let sample_or_drum_step = matches!(
+        (tokens.first(), tokens.last()),
+        (
+            Some(Token {
+                kind: TokenKind::Sample,
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::Integer,
+                ..
+            })
+        ) | (
+            Some(Token {
+                kind: TokenKind::Drum,
+                ..
+            }),
+            Some(Token {
+                kind: TokenKind::String,
+                ..
+            })
+        )
+    ) && tokens.len() == 2;
+    note_or_chord_duration || sample_or_drum_step
 }
 
 fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
@@ -569,6 +596,8 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Song => pending = Some(CompletionBlock::Song),
             TokenKind::Rhythm => pending = Some(CompletionBlock::Rhythm),
             TokenKind::Track => pending = Some(CompletionBlock::Track),
+            TokenKind::Layer => pending = Some(CompletionBlock::Layer),
+            TokenKind::Use => pending = Some(CompletionBlock::Use),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => {
                 pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
@@ -614,6 +643,8 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Track
                     | TokenKind::Role
                     | TokenKind::Volume
+                    | TokenKind::Layer
+                    | TokenKind::Use
                     | TokenKind::Play
                     | TokenKind::TriggerWith
                     | TokenKind::Gate
@@ -803,6 +834,10 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Track => "declares a named playback track.",
         TokenKind::Role => "describes a track's musical role.",
         TokenKind::Volume => "sets track volume in decibels, such as `-5.2db`.",
+        TokenKind::Layer => {
+            "declares several independently scheduled `use` layers, mixed into one track."
+        }
+        TokenKind::Use => "declares one layer's instrument and play pipeline inside `layer`.",
         TokenKind::Play => "selects the pattern played by a track.",
         TokenKind::TriggerWith => "applies a reusable rhythm to a played pattern.",
         TokenKind::Gate => "scales sounding duration without moving later steps.",
@@ -831,8 +866,11 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Note => "adds a written pitch to a sequence.",
         TokenKind::Chord => "adds pitches that start and end together.",
         TokenKind::Rest => "marks silence without producing sound.",
-        TokenKind::For => "introduces a duration, such as `1/4`.",
+        TokenKind::For => "introduces a duration, such as `1/4` or `1bar`.",
         TokenKind::Velocity => "sets note intensity from 0 to 127.",
+        TokenKind::Bar => {
+            "expresses a duration as a whole number of the song's meter, such as `1bar`."
+        }
         TokenKind::Sample => "selects a sample from the current sampler pack.",
         TokenKind::Choose => "selects one sample alternative deterministically.",
         TokenKind::Weight => "sets a relative choice weight.",
@@ -1015,6 +1053,22 @@ mod tests {
             ),
             ["velocity"]
         );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\npattern p = steps 1/8 {\n  sample 2 ",
+                2,
+                11
+            ),
+            ["velocity"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\npattern p = steps 1/8 {\n  drum \"bd\" ",
+                2,
+                12
+            ),
+            ["velocity"]
+        );
         assert!(labels("😀", 0, 1).is_empty());
     }
 
@@ -1101,7 +1155,23 @@ mod tests {
         assert_eq!(labels("song \"Test\" {\n  track lead ", 1, 13), ["role"]);
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
-            ["instrument", "volume", "play", "at"]
+            ["instrument", "volume", "play", "layer", "at"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack bass role low {\n  layer {\n    ",
+                3,
+                4
+            ),
+            ["use"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack bass role low {\n  layer {\n    use sub_sine {\n      ",
+                4,
+                6
+            ),
+            ["play", "at"]
         );
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  play ", 2, 7),

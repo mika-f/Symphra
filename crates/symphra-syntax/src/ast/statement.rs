@@ -20,8 +20,29 @@ pub enum RhythmItem {
 pub struct TrackDeclaration {
     pub name: Identifier,
     pub role: Identifier,
-    pub instrument: Identifier,
     pub volume: Option<Box<VolumeExpression>>,
+    pub body: TrackBody,
+    pub span: SourceSpan,
+}
+
+/// A track plays either one instrument directly, or several `use` layers
+/// that are each scheduled independently and mixed into the same logical
+/// track (sharing the track's `role` and `volume`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrackBody {
+    Single {
+        instrument: Identifier,
+        play: Box<PlayStatement>,
+    },
+    Layers {
+        uses: Vec<LayerUse>,
+        span: SourceSpan,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerUse {
+    pub instrument: Identifier,
     pub play: PlayStatement,
     pub span: SourceSpan,
 }

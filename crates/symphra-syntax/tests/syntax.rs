@@ -1,6 +1,6 @@
 use symphra_syntax::ast::{
-    Declaration, InstrumentBody, PatternBody, ProjectStatement, RhythmItem, SequenceItem,
-    SongStatement, StepItem,
+    Declaration, DurationExpression, InstrumentBody, PatternBody, ProjectStatement, RhythmItem,
+    SequenceItem, SongStatement, StepItem,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -114,7 +114,15 @@ fn parses_the_draft_example() {
         panic!("fourth sequence item should be a note");
     };
     assert_eq!(note.pitch.text, "G4");
-    assert_eq!((note.duration_numerator, note.duration_denominator), (1, 2));
+    let DurationExpression::Fraction {
+        numerator,
+        denominator,
+        ..
+    } = note.duration
+    else {
+        panic!("note duration should be a fraction");
+    };
+    assert_eq!((numerator, denominator), (1, 2));
     let SongStatement::Arrangement { occurrences, .. } = &song.statements[4] else {
         panic!("fifth song statement should be an arrangement");
     };
@@ -302,6 +310,40 @@ fn parses_sample_steps() {
         (*resolution_numerator, *resolution_denominator, indices),
         (1, 8, vec![Some(1), None, Some(3)])
     );
+}
+
+#[test]
+fn parses_drum_and_sample_step_velocity() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Velocity" {
+  pattern kit = steps 1/8 { drum "bd" velocity 90 sample 2 velocity 40 rest }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+
+    let velocities = items
+        .iter()
+        .map(|item| match item {
+            StepItem::Drum { velocity, .. } | StepItem::Sample { velocity, .. } => {
+                velocity.map(|velocity| velocity.value)
+            }
+            StepItem::Rest { .. } => None,
+            StepItem::Degree { .. } => panic!("unexpected degree"),
+            StepItem::Choose { .. } => panic!("unexpected choice"),
+            StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(velocities, vec![Some(90), Some(40), None]);
 }
 
 #[test]
@@ -511,32 +553,27 @@ fn parses_tracks_with_rhythm_triggers() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
+    let (instrument, play) = single_layer(&track.body);
 
     assert_eq!(
         (
             track.name.text.as_str(),
             track.role.text.as_str(),
-            track.instrument.text.as_str(),
+            instrument.text.as_str(),
             track
                 .volume
                 .as_ref()
                 .map(|volume| (volume.decibels, volume.unit.text.as_str())),
-            pattern_source_name(&track.play.source),
-            track
-                .play
-                .trigger_with
-                .as_ref()
-                .map(|name| name.text.as_str()),
-            track.play.gate.map(|gate| gate.percent),
-            track
-                .play
-                .transpose
+            pattern_source_name(&play.source),
+            play.trigger_with.as_ref().map(|name| name.text.as_str()),
+            play.gate.map(|gate| gate.percent),
+            play.transpose
                 .as_ref()
                 .map(|transpose| (transpose.semitones, transpose.unit.text.as_str())),
-            track.play.gain.map(|gain| gain.factor),
-            track.play.repeat.map(|repeat| repeat.count),
-            track.play.reverse,
-            track.play.pan,
+            play.gain.map(|gain| gain.factor),
+            play.repeat.map(|repeat| repeat.count),
+            play.reverse,
+            play.pan,
         ),
         (
             "chords",
@@ -553,17 +590,17 @@ fn parses_tracks_with_rhythm_triggers() {
             Some(symphra_syntax::ast::PanExpression::Alternate {
                 left_percent: 30,
                 right_percent: 70,
-                span: track.play.pan.expect("pan should be present").span(),
+                span: play.pan.expect("pan should be present").span(),
             })
         )
     );
     assert_eq!(
         (
-            track.play.speed.and_then(|speed| match speed {
+            play.speed.and_then(|speed| match speed {
                 symphra_syntax::ast::SpeedExpression::Fixed { factor, .. } => Some(factor),
                 symphra_syntax::ast::SpeedExpression::Alternate { .. } => None,
             }),
-            track.play.chance.as_ref().map(|chance| {
+            play.chance.as_ref().map(|chance| {
                 let symphra_syntax::ast::ChanceTransformExpression::Transpose(transpose) =
                     &chance.transform
                 else {
@@ -578,6 +615,65 @@ fn parses_tracks_with_rhythm_triggers() {
         ),
         (Some(1.50), Some((15, 12, "st")))
     );
+}
+
+#[test]
+fn parses_track_with_layer_uses() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Track\" { ",
+            "track bass role low { ",
+            "volume -3db ",
+            "layer { ",
+            "use sub_sine { play bass_roots |> gain 1.0 } ",
+            "use sub_triangle { play bass_roots |> gain 0.6 |> pan -20% } ",
+            "} } }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    assert_eq!(
+        track
+            .volume
+            .as_ref()
+            .map(|volume| (volume.decibels, volume.unit.text.as_str())),
+        Some((-3.0, "db"))
+    );
+    let symphra_syntax::ast::TrackBody::Layers { uses, .. } = &track.body else {
+        panic!("track should be a layer body");
+    };
+    assert_eq!(
+        uses.iter()
+            .map(|layer_use| (
+                layer_use.instrument.text.as_str(),
+                pattern_source_name(&layer_use.play.source),
+                layer_use.play.gain.map(|gain| gain.factor),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("sub_sine", "bass_roots", Some(1.0)),
+            ("sub_triangle", "bass_roots", Some(0.6)),
+        ]
+    );
+}
+
+/// Unwraps a track's single-instrument body, panicking if it is a `layer`.
+fn single_layer(
+    body: &symphra_syntax::ast::TrackBody,
+) -> (
+    &symphra_syntax::ast::Identifier,
+    &symphra_syntax::ast::PlayStatement,
+) {
+    let symphra_syntax::ast::TrackBody::Single { instrument, play } = body else {
+        panic!("track should be a single-instrument body");
+    };
+    (instrument, play)
 }
 
 fn pattern_source_name(source: &symphra_syntax::ast::PlaySource) -> &str {
@@ -600,7 +696,8 @@ fn parses_play_drum_with_rhythm_shorthand() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let symphra_syntax::ast::PlaySource::Drum { name, rhythm, .. } = &track.play.source else {
+    let (_, play) = single_layer(&track.body);
+    let symphra_syntax::ast::PlaySource::Drum { name, rhythm, .. } = &play.source else {
         panic!("play source should be a drum shorthand");
     };
 
@@ -623,7 +720,8 @@ fn parses_at_bar_beat_placement() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let at = track.play.at.expect("at position should be present");
+    let (_, play) = single_layer(&track.body);
+    let at = play.at.expect("at position should be present");
 
     assert_eq!((at.bar, at.beat), (1, 1));
 }
@@ -642,8 +740,9 @@ fn parses_alternating_sampler_speed() {
         panic!("statement should be a track");
     };
 
+    let (_, play) = single_layer(&track.body);
     assert!(matches!(
-        track.play.speed,
+        play.speed,
         Some(symphra_syntax::ast::SpeedExpression::Alternate {
             first_factor: 1.5,
             second_factor: 1.8,
@@ -665,11 +764,8 @@ fn parses_chance_retrigger() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let chance = track
-        .play
-        .chance
-        .as_ref()
-        .expect("chance should be present");
+    let (_, play) = single_layer(&track.body);
+    let chance = play.chance.as_ref().expect("chance should be present");
 
     assert_eq!(chance.percent, 40);
     assert!(matches!(
@@ -691,11 +787,8 @@ fn parses_chance_speed() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let chance = track
-        .play
-        .chance
-        .as_ref()
-        .expect("chance should be present");
+    let (_, play) = single_layer(&track.body);
+    let chance = play.chance.as_ref().expect("chance should be present");
 
     assert_eq!(chance.percent, 15);
     assert!(matches!(
@@ -717,10 +810,8 @@ fn parses_choose_sample_range() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let choose_sample = track
-        .play
-        .choose_sample
-        .expect("choose_sample should be present");
+    let (_, play) = single_layer(&track.body);
+    let choose_sample = play.choose_sample.expect("choose_sample should be present");
 
     assert_eq!((choose_sample.start, choose_sample.end), (0, 3));
 }
@@ -744,6 +835,14 @@ fn parses_chord_pitches_and_duration() {
     let SequenceItem::Chord(chord) = &items[0] else {
         panic!("sequence item should be a chord");
     };
+    let DurationExpression::Fraction {
+        numerator,
+        denominator,
+        ..
+    } = chord.duration
+    else {
+        panic!("chord duration should be a fraction");
+    };
     assert_eq!(
         (
             chord
@@ -751,12 +850,60 @@ fn parses_chord_pitches_and_duration() {
                 .iter()
                 .map(|pitch| pitch.text.as_str())
                 .collect::<Vec<_>>(),
-            chord.duration_numerator,
-            chord.duration_denominator,
+            numerator,
+            denominator,
             chord.velocity.map(|velocity| velocity.value),
         ),
         (vec!["C4", "E4", "G4"], 1, 2, Some(96))
     );
+}
+
+#[test]
+fn parses_bar_durations_for_notes_chords_and_rests() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Bars" {
+  pattern phrase = sequence {
+    note C4 for 1bar
+    chord C4 E4 G4 for 2bar velocity 64
+    rest for 1bar
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should be a sequence");
+    };
+
+    let SequenceItem::Note(note) = &items[0] else {
+        panic!("first item should be a note");
+    };
+    let DurationExpression::Bars { count, .. } = note.duration else {
+        panic!("note duration should be bars");
+    };
+    assert_eq!(count, 1);
+
+    let SequenceItem::Chord(chord) = &items[1] else {
+        panic!("second item should be a chord");
+    };
+    let DurationExpression::Bars { count, .. } = chord.duration else {
+        panic!("chord duration should be bars");
+    };
+    assert_eq!(count, 2);
+
+    let SequenceItem::Rest(rest) = &items[2] else {
+        panic!("third item should be a rest");
+    };
+    let DurationExpression::Bars { count, .. } = rest.duration else {
+        panic!("rest duration should be bars");
+    };
+    assert_eq!(count, 1);
 }
 
 #[test]

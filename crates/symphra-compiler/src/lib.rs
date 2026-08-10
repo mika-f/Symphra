@@ -5,10 +5,11 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration, PlaySource,
-    ProjectDeclaration, ProjectStatement, QuotedString, RhythmDeclaration, SampleChoiceAlternative,
-    SampleSelectorExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    SpeedExpression, StepItem, TrackDeclaration,
+    DurationExpression, Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration,
+    PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
+    RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration,
 };
 
 use crate::hir::{
@@ -244,7 +245,7 @@ impl Compiler {
             .collect::<Vec<_>>();
         let mut patterns = pattern_declarations
             .iter()
-            .map(|pattern| self.pattern(pattern, settings.key.as_ref()))
+            .map(|pattern| self.pattern(pattern, settings.key.as_ref(), settings.meter.as_ref()))
             .collect::<Vec<_>>();
         let tracks = self.build_tracks(
             &track_defs,
@@ -288,15 +289,14 @@ impl Compiler {
     ) -> Vec<TrackDefinition> {
         let mut tracks = Vec::with_capacity(track_defs.len());
         for track in track_defs {
-            let Some((definition, synthesized)) =
+            for (definition, synthesized) in
                 self.track(track, patterns, rhythms, instruments, meter)
-            else {
-                continue;
-            };
-            if let Some(pattern) = synthesized {
-                patterns.push(pattern);
+            {
+                if let Some(pattern) = synthesized {
+                    patterns.push(pattern);
+                }
+                tracks.push(definition);
             }
-            tracks.push(definition);
         }
         tracks
     }
@@ -374,6 +374,14 @@ impl Compiler {
         })
     }
 
+    /// Lowers a track declaration into one `TrackDefinition` per layer: the
+    /// single `instrument`/`play` form lowers to exactly one, while a
+    /// `layer { use ... }` form lowers each `use` independently (its own
+    /// instrument, pattern, and full pipeline), sharing only the track's
+    /// `name`, `role`, and `volume`. The score/render pipeline never
+    /// distinguishes the two forms: every layer becomes an ordinary track
+    /// that gets mixed together, which is what "mixed into one logical
+    /// track" means in practice.
     fn track(
         &mut self,
         declaration: &TrackDeclaration,
@@ -381,20 +389,61 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
+    ) -> Vec<(TrackDefinition, Option<Pattern>)> {
+        match &declaration.body {
+            TrackBody::Single { instrument, play } => self
+                .track_layer(
+                    declaration,
+                    instrument,
+                    play,
+                    patterns,
+                    rhythms,
+                    instruments,
+                    meter,
+                )
+                .into_iter()
+                .collect(),
+            TrackBody::Layers { uses, .. } => uses
+                .iter()
+                .filter_map(|layer_use| {
+                    self.track_layer(
+                        declaration,
+                        &layer_use.instrument,
+                        &layer_use.play,
+                        patterns,
+                        rhythms,
+                        instruments,
+                        meter,
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn track_layer(
+        &mut self,
+        declaration: &TrackDeclaration,
+        instrument_ref: &Identifier,
+        play: &PlayStatement,
+        patterns: &[Pattern],
+        rhythms: &[Rhythm],
+        instruments: &[(&str, Option<InstrumentKind>)],
+        meter: Option<&Meter>,
     ) -> Option<(TrackDefinition, Option<Pattern>)> {
         let instrument = instruments
             .iter()
-            .find(|(name, _)| *name == declaration.instrument.text)
+            .find(|(name, _)| *name == instrument_ref.text)
             .and_then(|(_, instrument)| instrument.clone());
         if instrument.is_none() {
             self.error(
                 "track references an unknown instrument",
-                declaration.instrument.span,
+                instrument_ref.span,
             );
         }
         let (pattern, synthesized, trigger_with) =
-            self.play_source(declaration, patterns, rhythms, instrument.as_ref());
-        let gate_percent = match declaration.play.gate {
+            self.play_source(declaration, play, patterns, rhythms, instrument.as_ref());
+        let gate_percent = match play.gate {
             Some(gate) => match u8::try_from(gate.percent) {
                 Ok(percent) if percent <= 100 => Some(Some(percent)),
                 _ => {
@@ -404,7 +453,7 @@ impl Compiler {
             },
             None => Some(None),
         };
-        let transpose_semitones = match declaration.play.transpose.as_ref() {
+        let transpose_semitones = match play.transpose.as_ref() {
             Some(transpose) if transpose.unit.text == "st" => Some(Some(transpose.semitones)),
             Some(transpose) => {
                 self.error("transpose unit must be `st`", transpose.unit.span);
@@ -412,19 +461,19 @@ impl Compiler {
             }
             None => Some(None),
         };
-        let gain = self.track_gain(declaration);
-        let repeat_count = self.repeat_count(declaration);
-        let pan = self.pan(declaration);
+        let gain = self.track_gain(declaration, play);
+        let repeat_count = self.repeat_count(play);
+        let pan = self.pan(play);
         let chance = self
-            .chance(declaration, pattern.as_ref(), instrument.as_ref())
+            .chance(play, pattern.as_ref(), instrument.as_ref())
             .ok();
-        let speed = self.speed(declaration, instrument.as_ref());
-        let choose_sample = self.choose_sample(declaration, instrument.as_ref()).ok();
-        let at = self.at_offset(declaration, meter).ok();
+        let speed = self.speed(play, instrument.as_ref());
+        let choose_sample = self.choose_sample(play, instrument.as_ref()).ok();
+        let at = self.at_offset(play, meter).ok();
         if let (Some(pattern), Some(Some(semitones)), Some(transpose)) = (
             pattern.as_ref(),
             transpose_semitones,
-            declaration.play.transpose.as_ref(),
+            play.transpose.as_ref(),
         ) {
             self.validate_transpose(pattern, semitones, transpose.span);
         }
@@ -454,7 +503,7 @@ impl Compiler {
                         transpose_semitones,
                         gain,
                         repeat_count,
-                        reverse: declaration.play.reverse,
+                        reverse: play.reverse,
                         pan,
                         chance,
                         speed,
@@ -468,10 +517,10 @@ impl Compiler {
 
     fn at_offset(
         &mut self,
-        declaration: &TrackDeclaration,
+        play: &PlayStatement,
         meter: Option<&Meter>,
     ) -> Result<Option<Duration>, ()> {
-        let Some(expression) = declaration.play.at else {
+        let Some(expression) = play.at else {
             return Ok(None);
         };
         if expression.bar == 0 || expression.beat == 0 {
@@ -512,11 +561,12 @@ impl Compiler {
     fn play_source(
         &mut self,
         declaration: &TrackDeclaration,
+        play: &PlayStatement,
         patterns: &[Pattern],
         rhythms: &[Rhythm],
         instrument: Option<&InstrumentKind>,
     ) -> (Option<Pattern>, Option<Pattern>, Option<NodeId>) {
-        match &declaration.play.source {
+        match &play.source {
             PlaySource::Pattern(identifier) => {
                 let pattern = patterns
                     .iter()
@@ -525,12 +575,19 @@ impl Compiler {
                 if pattern.is_none() {
                     self.error("track references an unknown pattern", identifier.span);
                 }
-                let rhythm = self.resolve_trigger_with(declaration, pattern.as_ref(), rhythms);
+                let rhythm = self.resolve_trigger_with(play, pattern.as_ref(), rhythms);
                 (pattern, None, rhythm.map(|rhythm| rhythm.id))
             }
             PlaySource::Drum { name, rhythm, span } => {
-                let pattern =
-                    self.drum_play_pattern(declaration, name, rhythm, *span, rhythms, instrument);
+                let pattern = self.drum_play_pattern(
+                    declaration,
+                    play,
+                    name,
+                    rhythm,
+                    *span,
+                    rhythms,
+                    instrument,
+                );
                 match pattern {
                     Some(pattern) => (Some(pattern.clone()), Some(pattern), None),
                     None => (None, None, None),
@@ -539,16 +596,18 @@ impl Compiler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn drum_play_pattern(
         &mut self,
         declaration: &TrackDeclaration,
+        play: &PlayStatement,
         name: &QuotedString,
         rhythm: &Identifier,
         span: SourceSpan,
         rhythms: &[Rhythm],
         instrument: Option<&InstrumentKind>,
     ) -> Option<Pattern> {
-        if declaration.play.trigger_with.is_some() {
+        if play.trigger_with.is_some() {
             self.error(
                 "`trigger_with` cannot be combined with `play drum ... with ...`",
                 span,
@@ -601,23 +660,19 @@ impl Compiler {
 
     fn resolve_trigger_with<'a>(
         &mut self,
-        declaration: &TrackDeclaration,
+        play: &PlayStatement,
         pattern: Option<&Pattern>,
         rhythms: &'a [Rhythm],
     ) -> Option<&'a Rhythm> {
-        let rhythm = declaration
-            .play
-            .trigger_with
-            .as_ref()
-            .and_then(|reference| {
-                let rhythm = rhythms.iter().find(|rhythm| rhythm.name == reference.text);
-                if rhythm.is_none() {
-                    self.error("trigger_with references an unknown rhythm", reference.span);
-                }
-                rhythm
-            });
+        let rhythm = play.trigger_with.as_ref().and_then(|reference| {
+            let rhythm = rhythms.iter().find(|rhythm| rhythm.name == reference.text);
+            if rhythm.is_none() {
+                self.error("trigger_with references an unknown rhythm", reference.span);
+            }
+            rhythm
+        });
         if let (Some(pattern), Some(rhythm), Some(reference)) =
-            (pattern, rhythm, declaration.play.trigger_with.as_ref())
+            (pattern, rhythm, play.trigger_with.as_ref())
         {
             self.validate_trigger(pattern, rhythm, reference.span);
         }
@@ -626,10 +681,10 @@ impl Compiler {
 
     fn choose_sample(
         &mut self,
-        declaration: &TrackDeclaration,
+        play: &PlayStatement,
         instrument: Option<&InstrumentKind>,
     ) -> Result<Option<SampleRange>, ()> {
-        let Some(expression) = declaration.play.choose_sample else {
+        let Some(expression) = play.choose_sample else {
             return Ok(None);
         };
         if expression.start > expression.end {
@@ -653,10 +708,10 @@ impl Compiler {
 
     fn speed(
         &mut self,
-        declaration: &TrackDeclaration,
+        play: &PlayStatement,
         instrument: Option<&InstrumentKind>,
     ) -> Option<Speed> {
-        let Some(speed) = declaration.play.speed else {
+        let Some(speed) = play.speed else {
             return Some(Speed::Fixed(1.0));
         };
         let span = speed.span();
@@ -696,8 +751,8 @@ impl Compiler {
         Some(speed)
     }
 
-    fn repeat_count(&mut self, declaration: &TrackDeclaration) -> Option<u16> {
-        match declaration.play.repeat {
+    fn repeat_count(&mut self, play: &PlayStatement) -> Option<u16> {
+        match play.repeat {
             Some(repeat) => match u16::try_from(repeat.count) {
                 Ok(count) if count > 0 => Some(count),
                 _ => {
@@ -709,8 +764,8 @@ impl Compiler {
         }
     }
 
-    fn pan(&mut self, declaration: &TrackDeclaration) -> Option<Pan> {
-        match declaration.play.pan {
+    fn pan(&mut self, play: &PlayStatement) -> Option<Pan> {
+        match play.pan {
             Some(PanExpression::Fixed { percent, span }) => match i8::try_from(percent) {
                 Ok(percent) if (-100..=100).contains(&percent) => Some(Pan::Fixed(percent)),
                 _ => {
@@ -744,11 +799,11 @@ impl Compiler {
 
     fn chance(
         &mut self,
-        declaration: &TrackDeclaration,
+        play: &PlayStatement,
         pattern: Option<&Pattern>,
         instrument: Option<&InstrumentKind>,
     ) -> Result<Option<Chance>, SourceSpan> {
-        let Some(expression) = declaration.play.chance.as_ref() else {
+        let Some(expression) = play.chance.as_ref() else {
             return Ok(None);
         };
         let Ok(percent) = u8::try_from(expression.percent) else {
@@ -807,8 +862,8 @@ impl Compiler {
         Ok(Some(chance))
     }
 
-    fn track_gain(&mut self, declaration: &TrackDeclaration) -> Option<f32> {
-        let pipeline = match declaration.play.gain {
+    fn track_gain(&mut self, declaration: &TrackDeclaration, play: &PlayStatement) -> Option<f32> {
+        let pipeline = match play.gain {
             Some(gain) if gain.factor.is_finite() && gain.factor >= 0.0 => gain.factor,
             Some(gain) => {
                 self.error(
@@ -837,7 +892,7 @@ impl Compiler {
         } else {
             self.error(
                 "combined track gain is outside the supported range",
-                declaration.play.span,
+                play.span,
             );
             None
         }
@@ -1025,10 +1080,15 @@ impl Compiler {
         }
     }
 
-    fn pattern(&mut self, declaration: &PatternDeclaration, key: Option<&Key>) -> Pattern {
+    fn pattern(
+        &mut self,
+        declaration: &PatternDeclaration,
+        key: Option<&Key>,
+        meter: Option<&Meter>,
+    ) -> Pattern {
         let id = self.id();
         let steps = match &declaration.body {
-            PatternBody::Sequence { items, .. } => self.sequence_steps(items),
+            PatternBody::Sequence { items, .. } => self.sequence_steps(items, meter),
             PatternBody::Steps {
                 resolution_numerator,
                 resolution_denominator,
@@ -1049,18 +1109,17 @@ impl Compiler {
         }
     }
 
-    fn sequence_steps(&mut self, items: &[SequenceItem]) -> Vec<PatternStep> {
+    fn sequence_steps(
+        &mut self,
+        items: &[SequenceItem],
+        meter: Option<&Meter>,
+    ) -> Vec<PatternStep> {
         items
             .iter()
             .filter_map(|item| match item {
                 SequenceItem::Note(note) => {
                     let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
-                    let duration = self.duration(
-                        note.duration_numerator,
-                        note.duration_denominator,
-                        note.span,
-                        "note",
-                    );
+                    let duration = self.item_duration(&note.duration, meter, note.span, "note");
                     let velocity = self.velocity(note.velocity.as_ref());
                     let (Some(midi_pitch), Some(duration), Some(velocity)) =
                         (midi_pitch, duration, velocity)
@@ -1080,12 +1139,7 @@ impl Compiler {
                         .iter()
                         .map(|pitch| self.pitch(&pitch.text, pitch.span))
                         .collect::<Option<Vec<_>>>();
-                    let duration = self.duration(
-                        chord.duration_numerator,
-                        chord.duration_denominator,
-                        chord.span,
-                        "chord",
-                    );
+                    let duration = self.item_duration(&chord.duration, meter, chord.span, "chord");
                     let velocity = self.velocity(chord.velocity.as_ref());
                     let (Some(midi_pitches), Some(duration), Some(velocity)) =
                         (midi_pitches, duration, velocity)
@@ -1105,12 +1159,7 @@ impl Compiler {
                     }))
                 }
                 SequenceItem::Rest(rest) => self
-                    .duration(
-                        rest.duration_numerator,
-                        rest.duration_denominator,
-                        rest.span,
-                        "rest",
-                    )
+                    .item_duration(&rest.duration, meter, rest.span, "rest")
                     .map(|duration| {
                         PatternStep::Rest(Rest {
                             id: self.id(),
@@ -1149,23 +1198,33 @@ impl Compiler {
                             velocity: DEFAULT_VELOCITY,
                         })
                     }),
-                StepItem::Sample { index, .. } => Some(PatternStep::Sample(SampleTrigger {
-                    id: self.id(),
-                    selector: SampleSelector::Index(*index),
-                    duration,
-                    velocity: DEFAULT_VELOCITY,
-                })),
-                StepItem::Drum { name, span } => {
+                StepItem::Sample {
+                    index, velocity, ..
+                } => self.velocity(velocity.as_ref()).map(|velocity| {
+                    PatternStep::Sample(SampleTrigger {
+                        id: self.id(),
+                        selector: SampleSelector::Index(*index),
+                        duration,
+                        velocity,
+                    })
+                }),
+                StepItem::Drum {
+                    name,
+                    velocity,
+                    span,
+                } => {
                     if name.value.is_empty() {
                         self.error("drum voice name must not be empty", *span);
                         None
                     } else {
-                        Some(PatternStep::Sample(SampleTrigger {
-                            id: self.id(),
-                            selector: SampleSelector::Named(name.value.clone()),
-                            duration,
-                            velocity: DEFAULT_VELOCITY,
-                        }))
+                        self.velocity(velocity.as_ref()).map(|velocity| {
+                            PatternStep::Sample(SampleTrigger {
+                                id: self.id(),
+                                selector: SampleSelector::Named(name.value.clone()),
+                                duration,
+                                velocity,
+                            })
+                        })
                     }
                 }
                 StepItem::Rest { .. } => Some(PatternStep::Rest(Rest {
@@ -1333,6 +1392,37 @@ impl Compiler {
                 denominator,
             })
         }
+    }
+
+    /// Resolves a note/chord/rest duration expression, converting `N bar`
+    /// into a whole-note fraction using the song's meter: `N` bars is
+    /// `N * meter.numerator` beats, each `1 / meter.denominator` of a whole
+    /// note. A missing meter is already reported by `song` as "meter is
+    /// required", so this returns `None` silently rather than duplicating
+    /// that diagnostic (mirroring `at_offset`).
+    fn item_duration(
+        &mut self,
+        expr: &DurationExpression,
+        meter: Option<&Meter>,
+        span: SourceSpan,
+        item: &str,
+    ) -> Option<Duration> {
+        let (numerator, denominator) = match *expr {
+            DurationExpression::Fraction {
+                numerator,
+                denominator,
+                ..
+            } => (numerator, denominator),
+            DurationExpression::Bars { count, span } => {
+                let meter = meter?;
+                let Some(numerator) = count.checked_mul(meter.numerator) else {
+                    self.error(&format!("{item} duration is out of range"), span);
+                    return None;
+                };
+                (numerator, meter.denominator)
+            }
+        };
+        self.duration(numerator, denominator, span, item)
     }
 
     fn velocity(

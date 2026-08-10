@@ -149,6 +149,14 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         initialized["result"]["capabilities"]["definitionProvider"],
         true
     );
+    assert_eq!(
+        initialized["result"]["capabilities"]["referencesProvider"],
+        true
+    );
+    assert_eq!(
+        initialized["result"]["capabilities"]["codeLensProvider"],
+        json!({ "resolveProvider": false })
+    );
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -264,6 +272,57 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
+        "id": 6,
+        "method": "textDocument/references",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 2, "character": 10 },
+            "context": { "includeDeclaration": true }
+        }
+    }));
+    let references = server.receive();
+    assert_eq!(references["result"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        references["result"][0]["range"],
+        json!({
+            "start": { "line": 2, "character": 10 },
+            "end": { "line": 2, "character": 16 }
+        })
+    );
+    assert_eq!(
+        references["result"][1]["range"],
+        json!({
+            "start": { "line": 3, "character": 16 },
+            "end": { "line": 3, "character": 22 }
+        })
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "textDocument/codeLens",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" }
+        }
+    }));
+    let code_lens = server.receive();
+    let melody_lens = code_lens["result"]
+        .as_array()
+        .expect("code lenses")
+        .iter()
+        .find(|lens| lens["command"]["title"] == "1 reference")
+        .expect("melody should report one reference");
+    assert_eq!(
+        melody_lens["range"],
+        json!({
+            "start": { "line": 2, "character": 10 },
+            "end": { "line": 2, "character": 16 }
+        })
+    );
+    assert_eq!(melody_lens["command"]["command"], "symphra.showReferences");
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
         "method": "textDocument/didChange",
         "params": {
             "textDocument": {
@@ -287,11 +346,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 6,
+        "id": 8,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 6);
+    assert_eq!(server.receive()["id"], 8);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

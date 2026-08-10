@@ -46,6 +46,10 @@
       {
         "command": "symphra.restartServer",
         "title": "Symphra: Restart Language Server"
+      },
+      {
+        "command": "symphra.showReferences",
+        "title": "Symphra: Show References"
       }
     ],
     "configuration": {

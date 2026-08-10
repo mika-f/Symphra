@@ -12,12 +12,13 @@ use symphra_syntax::{
 use tokio::sync::RwLock;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams,
-    DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, Location,
-    MarkupContent, MarkupKind, OneOf, Position, PositionEncodingKind, Range, ServerCapabilities,
+    CodeLens, CodeLensOptions, CodeLensParams, Command, CompletionItem, CompletionItemKind,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
+    MarkupKind, OneOf, Position, PositionEncodingKind, Range, ReferenceParams, ServerCapabilities,
     ServerInfo, SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind,
     TextEdit, Uri,
 };
@@ -62,6 +63,10 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions::default()),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
@@ -153,6 +158,22 @@ impl LanguageServer for Backend {
         Ok(documents.get(&uri).and_then(|source| {
             definition(source, &uri, position).map(GotoDefinitionResponse::Scalar)
         }))
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let documents = self.documents.read().await;
+        let position = params.text_document_position.position;
+        let uri = params.text_document_position.text_document.uri;
+        let include_declaration = params.context.include_declaration;
+        Ok(documents
+            .get(&uri)
+            .map(|source| references(source, &uri, position, include_declaration)))
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let documents = self.documents.read().await;
+        let uri = params.text_document.uri;
+        Ok(documents.get(&uri).map(|source| code_lenses(source, &uri)))
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -850,6 +871,16 @@ fn hover(source: &SourceText, position: Position) -> Option<Hover> {
     })
 }
 
+/// Kind of a named song-local declaration that definition/references understand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NamedKind {
+    Pattern,
+    Instrument,
+    Rhythm,
+    Track,
+    Section,
+}
+
 fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Location> {
     let offset = source.byte_offset_utf16(SourcePosition {
         line: position.line,
@@ -860,185 +891,207 @@ fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Loca
         let Declaration::Song(song) = declaration else {
             return None;
         };
-        definition_in_song(song, offset)
+        // Go-to-definition only from reference sites, never from the declaration itself.
+        let (kind, name) = name_reference_at(song, offset)?;
+        declaration_span(song, kind, name)
     })?;
     Some(Location::new(uri.clone(), lsp_range(source, span)?))
 }
 
-/// Resolves a name under `offset` within one song to the span of its declaration.
-fn definition_in_song(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    if let Some(span) = definition_from_play_section(song, offset) {
-        return Some(span);
+fn references(
+    source: &SourceText,
+    uri: &Uri,
+    position: Position,
+    include_declaration: bool,
+) -> Vec<Location> {
+    let Some(offset) = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    }) else {
+        return Vec::new();
+    };
+    let parsed = parse(source.id, &source.text);
+    let Some((declaration, ref_spans)) = parsed.file.declarations.iter().find_map(|declaration| {
+        let Declaration::Song(song) = declaration else {
+            return None;
+        };
+        let (kind, name, declaration_span) = named_symbol_at(song, offset)?;
+        Some((declaration_span, reference_spans(song, kind, name)))
+    }) else {
+        return Vec::new();
+    };
+
+    let mut locations = Vec::new();
+    if include_declaration
+        && let Some(range) = lsp_range(source, declaration)
+    {
+        locations.push(Location::new(uri.clone(), range));
     }
-    if let Some(span) = definition_from_play_track(song, offset) {
-        return Some(span);
+    for span in ref_spans {
+        if let Some(range) = lsp_range(source, span) {
+            locations.push(Location::new(uri.clone(), range));
+        }
     }
-    if let Some(span) = definition_from_arrangement_pattern(song, offset) {
-        return Some(span);
-    }
-    if let Some(span) = definition_from_track_instrument(song, offset) {
-        return Some(span);
-    }
-    if let Some(span) = definition_from_track_play_pattern(song, offset) {
-        return Some(span);
-    }
-    definition_from_track_trigger_with(song, offset)
+    locations
 }
 
-/// `arrangement { play <section> }` → section name span.
-fn definition_from_play_section(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let name = song.statements.iter().find_map(|statement| {
-        let SongStatement::Arrangement { entries, .. } = statement else {
-            return None;
+fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
+    let parsed = parse(source.id, &source.text);
+    let mut lenses = Vec::new();
+    for declaration in &parsed.file.declarations {
+        let Declaration::Song(song) = declaration else {
+            continue;
         };
-        entries.iter().find_map(|entry| match entry {
-            ArrangementEntry::Play { name, .. }
-                if name.span.start <= offset && offset < name.span.end =>
-            {
-                Some(name)
-            }
-            _ => None,
-        })
-    })?;
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Section(section) = statement else {
-            return None;
-        };
-        (section.name.text == name.text).then_some(section.name.span)
-    })
-}
-
-/// `section { parallel { play track <name> } }` → track name span.
-fn definition_from_play_track(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let track_name = song.statements.iter().find_map(|statement| {
-        let SongStatement::Section(section) = statement else {
-            return None;
-        };
-        section
-            .tracks
-            .iter()
-            .find(|track| track.span.start <= offset && offset < track.span.end)
-    })?;
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Track(track) = statement else {
-            return None;
-        };
-        (track.name.text == track_name.text).then_some(track.name.span)
-    })
-}
-
-/// `arrangement { <pattern> [with <instrument>] }` → pattern/instrument name span.
-fn definition_from_arrangement_pattern(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let occurrence = song.statements.iter().find_map(|statement| {
-        let SongStatement::Arrangement { entries, .. } = statement else {
-            return None;
-        };
-        entries.iter().find_map(|entry| match entry {
-            ArrangementEntry::Pattern(occurrence)
-                if occurrence.span.start <= offset && offset < occurrence.span.end =>
-            {
-                Some(occurrence)
-            }
-            _ => None,
-        })
-    })?;
-    if occurrence.pattern.span.start <= offset && offset < occurrence.pattern.span.end {
-        return song.statements.iter().find_map(|statement| {
-            let SongStatement::Pattern(pattern) = statement else {
-                return None;
+        for (kind, name) in named_declarations(song) {
+            let Some(range) = lsp_range(source, name.span) else {
+                continue;
             };
-            (pattern.name.text == occurrence.pattern.text).then_some(pattern.name.span)
-        });
+            let reference_locations: Vec<Location> = reference_spans(song, kind, &name.text)
+                .into_iter()
+                .filter_map(|span| {
+                    lsp_range(source, span).map(|range| Location::new(uri.clone(), range))
+                })
+                .collect();
+            let count = reference_locations.len();
+            let title = if count == 1 {
+                "1 reference".to_owned()
+            } else {
+                format!("{count} references")
+            };
+            let arguments = Some(vec![
+                serde_json::Value::String(uri.as_str().to_owned()),
+                serde_json::to_value(range.start).unwrap_or(serde_json::Value::Null),
+                serde_json::to_value(reference_locations).unwrap_or(serde_json::Value::Null),
+            ]);
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title,
+                    command: "symphra.showReferences".to_owned(),
+                    arguments,
+                }),
+                data: None,
+            });
+        }
     }
-    let reference = occurrence
-        .instrument
-        .as_ref()
-        .filter(|instrument| instrument.span.start <= offset && offset < instrument.span.end)?;
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Instrument(instrument) = statement else {
-            return None;
-        };
-        (instrument.name.text == reference.text).then_some(instrument.name.span)
-    })
+    lenses
 }
 
-/// `track { instrument <name> }` / `layer { use <name> ... }` → instrument name span.
-fn definition_from_track_instrument(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let instrument_name = song.statements.iter().find_map(|statement| {
-        let SongStatement::Track(track) = statement else {
-            return None;
-        };
-        match &track.body {
-            TrackBody::Single { instrument, .. }
-                if instrument.span.start <= offset && offset < instrument.span.end =>
-            {
-                Some(instrument)
-            }
-            TrackBody::Layers { uses, .. } => uses.iter().find_map(|layer| {
-                (layer.instrument.span.start <= offset && offset < layer.instrument.span.end)
-                    .then_some(&layer.instrument)
-            }),
-            _ => None,
+/// Declaration or resolved reference under `offset` → `(kind, name, declaration span)`.
+fn named_symbol_at(
+    song: &SongDeclaration,
+    offset: u32,
+) -> Option<(NamedKind, &str, SourceSpan)> {
+    for (kind, name) in named_declarations(song) {
+        if span_contains(name.span, offset) {
+            return Some((kind, name.text.as_str(), name.span));
         }
-    })?;
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Instrument(instrument) = statement else {
-            return None;
-        };
-        (instrument.name.text == instrument_name.text).then_some(instrument.name.span)
+    }
+    let (kind, name) = name_reference_at(song, offset)?;
+    let declaration = declaration_span(song, kind, name)?;
+    Some((kind, name, declaration))
+}
+
+fn declaration_span(song: &SongDeclaration, kind: NamedKind, name: &str) -> Option<SourceSpan> {
+    named_declarations(song).find_map(|(declaration_kind, identifier)| {
+        (declaration_kind == kind && identifier.text == name).then_some(identifier.span)
     })
 }
 
-/// `track { play <pattern> }` / `use <instrument> { play <pattern> }` → pattern name span.
-fn definition_from_track_play_pattern(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let pattern_name = find_in_track_plays(song, |play| play_pattern_at(play, offset))?;
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Pattern(pattern) = statement else {
-            return None;
-        };
-        (pattern.name.text == pattern_name.text).then_some(pattern.name.span)
-    })
-}
-
-/// `play <pattern> |> trigger_with <rhythm>` → rhythm name span.
-fn definition_from_track_trigger_with(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let rhythm_name = find_in_track_plays(song, |play| play_trigger_with_at(play, offset))?;
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Rhythm(rhythm) = statement else {
-            return None;
-        };
-        (rhythm.name.text == rhythm_name.text).then_some(rhythm.name.span)
-    })
-}
-
-fn find_in_track_plays<'a>(
-    song: &'a SongDeclaration,
-    mut visit: impl FnMut(&'a PlayStatement) -> Option<&'a Identifier>,
-) -> Option<&'a Identifier> {
-    song.statements.iter().find_map(|statement| {
-        let SongStatement::Track(track) = statement else {
-            return None;
-        };
-        match &track.body {
-            TrackBody::Single { play, .. } => visit(play),
-            TrackBody::Layers { uses, .. } => uses.iter().find_map(|layer| visit(&layer.play)),
-        }
-    })
-}
-
-fn play_pattern_at(play: &PlayStatement, offset: u32) -> Option<&Identifier> {
-    match &play.source {
-        PlaySource::Pattern(name) if name.span.start <= offset && offset < name.span.end => {
-            Some(name)
-        }
+fn named_declarations(song: &SongDeclaration) -> impl Iterator<Item = (NamedKind, &Identifier)> {
+    song.statements.iter().filter_map(|statement| match statement {
+        SongStatement::Pattern(pattern) => Some((NamedKind::Pattern, &pattern.name)),
+        SongStatement::Instrument(instrument) => Some((NamedKind::Instrument, &instrument.name)),
+        SongStatement::Rhythm(rhythm) => Some((NamedKind::Rhythm, &rhythm.name)),
+        SongStatement::Track(track) => Some((NamedKind::Track, &track.name)),
+        SongStatement::Section(section) => Some((NamedKind::Section, &section.name)),
         _ => None,
+    })
+}
+
+/// Reference site under `offset` → `(kind, referenced name)`, only when a matching declaration exists.
+fn name_reference_at(song: &SongDeclaration, offset: u32) -> Option<(NamedKind, &str)> {
+    let mut matched: Option<(NamedKind, String)> = None;
+    visit_name_references(song, |kind, identifier| {
+        if matched.is_none()
+            && span_contains(identifier.span, offset)
+            && declaration_span(song, kind, &identifier.text).is_some()
+        {
+            matched = Some((kind, identifier.text.clone()));
+        }
+    });
+    let (kind, name) = matched?;
+    named_declarations(song).find_map(|(declaration_kind, identifier)| {
+        (declaration_kind == kind && identifier.text == name)
+            .then_some((kind, identifier.text.as_str()))
+    })
+}
+
+fn reference_spans(song: &SongDeclaration, kind: NamedKind, name: &str) -> Vec<SourceSpan> {
+    let mut spans = Vec::new();
+    visit_name_references(song, |reference_kind, identifier| {
+        if reference_kind == kind && identifier.text == name {
+            spans.push(identifier.span);
+        }
+    });
+    spans
+}
+
+fn visit_name_references(song: &SongDeclaration, mut visit: impl FnMut(NamedKind, &Identifier)) {
+    for statement in &song.statements {
+        match statement {
+            SongStatement::Arrangement { entries, .. } => {
+                for entry in entries {
+                    match entry {
+                        ArrangementEntry::Pattern(occurrence) => {
+                            visit(NamedKind::Pattern, &occurrence.pattern);
+                            if let Some(instrument) = &occurrence.instrument {
+                                visit(NamedKind::Instrument, instrument);
+                            }
+                        }
+                        ArrangementEntry::Play { name, .. } => {
+                            visit(NamedKind::Section, name);
+                        }
+                    }
+                }
+            }
+            SongStatement::Section(section) => {
+                for track in &section.tracks {
+                    visit(NamedKind::Track, track);
+                }
+            }
+            SongStatement::Track(track) => match &track.body {
+                TrackBody::Single { instrument, play } => {
+                    visit(NamedKind::Instrument, instrument);
+                    visit_play_name_references(play, &mut visit);
+                }
+                TrackBody::Layers { uses, .. } => {
+                    for layer in uses {
+                        visit(NamedKind::Instrument, &layer.instrument);
+                        visit_play_name_references(&layer.play, &mut visit);
+                    }
+                }
+            },
+            _ => {}
+        }
     }
 }
 
-fn play_trigger_with_at(play: &PlayStatement, offset: u32) -> Option<&Identifier> {
-    play.trigger_with
-        .as_ref()
-        .filter(|name| name.span.start <= offset && offset < name.span.end)
+fn visit_play_name_references(
+    play: &PlayStatement,
+    visit: &mut impl FnMut(NamedKind, &Identifier),
+) {
+    match &play.source {
+        PlaySource::Pattern(name) => visit(NamedKind::Pattern, name),
+        PlaySource::Drum { rhythm, .. } => visit(NamedKind::Rhythm, rhythm),
+    }
+    if let Some(rhythm) = &play.trigger_with {
+        visit(NamedKind::Rhythm, rhythm);
+    }
+}
+
+const fn span_contains(span: SourceSpan, offset: u32) -> bool {
+    span.start <= offset && offset < span.end
 }
 
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
@@ -1246,8 +1299,8 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceId, SourceText, completions, definition, diagnostics, document_symbols,
-        flatten_document_symbols, formatting_edits, hover,
+        SourceId, SourceText, code_lenses, completions, definition, diagnostics, document_symbols,
+        flatten_document_symbols, formatting_edits, hover, references,
     };
     use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, SymbolKind, Uri};
 
@@ -2087,6 +2140,102 @@ mod tests {
             ),
         );
         assert!(definition(&missing, &uri, Position::new(2, 26)).is_none());
+    }
+
+    #[test]
+    fn finds_references_from_declarations_and_uses() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  pattern melody = sequence {}\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  instrument lead = triangle\n",
+                "  track chords role harmony {\n",
+                "    instrument lead\n",
+                "    play melody\n",
+                "  }\n",
+                "  arrangement { melody with lead }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        // Declaration site of Second.melody, excluding the declaration itself.
+        let from_decl = references(&source, &uri, Position::new(4, 10), false);
+        assert_eq!(from_decl.len(), 2);
+        assert_eq!(
+            from_decl[0].range,
+            Range::new(Position::new(8, 9), Position::new(8, 15))
+        );
+        assert_eq!(
+            from_decl[1].range,
+            Range::new(Position::new(10, 16), Position::new(10, 22))
+        );
+
+        // Same symbol from a use site, including the declaration.
+        let from_use = references(&source, &uri, Position::new(8, 9), true);
+        assert_eq!(from_use.len(), 3);
+        assert_eq!(
+            from_use[0].range,
+            Range::new(Position::new(4, 10), Position::new(4, 16))
+        );
+
+        // First.melody is a different symbol with zero uses in its song.
+        let other_song = references(&source, &uri, Position::new(1, 10), false);
+        assert!(other_song.is_empty());
+    }
+
+    #[test]
+    fn builds_reference_code_lenses_for_declarations() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  pattern unused = sequence {}\n",
+                "  arrangement { melody }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let lenses = code_lenses(&source, &uri);
+        let melody = lenses
+            .iter()
+            .find(|lens| {
+                lens.range == Range::new(Position::new(1, 10), Position::new(1, 16))
+            })
+            .expect("melody should have a code lens");
+        let unused = lenses
+            .iter()
+            .find(|lens| {
+                lens.range == Range::new(Position::new(2, 10), Position::new(2, 16))
+            })
+            .expect("unused should have a code lens");
+
+        assert_eq!(
+            melody.command.as_ref().map(|command| command.title.as_str()),
+            Some("1 reference")
+        );
+        assert_eq!(
+            unused
+                .command
+                .as_ref()
+                .map(|command| command.title.as_str()),
+            Some("0 references")
+        );
+        assert_eq!(
+            melody
+                .command
+                .as_ref()
+                .map(|command| command.command.as_str()),
+            Some("symphra.showReferences")
+        );
     }
 
     #[test]

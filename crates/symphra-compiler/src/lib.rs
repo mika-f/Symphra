@@ -5,17 +5,17 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, Declaration,
-    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind, FrequencyLiteral,
-    Identifier, InstrumentBody, MasterDeclaration, PanExpression, PatternBody, PatternDeclaration,
-    PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
-    RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration,
+    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind,
+    EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody, MasterDeclaration,
+    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
-    Duration, Effect, FilterAutomation, FilterEffect, InstrumentKind, Key, LfoWaveform,
+    Duration, Effect, Envelope, FilterAutomation, FilterEffect, InstrumentKind, Key, LfoWaveform,
     MasterLimiter, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
     PitchClass, Program, Project, Rest, ReverbEffect, Rhythm, RhythmItem, SampleChoice,
     SampleRange, SampleSelector, SampleTrigger, Section, SectionOccurrence, Song, Speed,
@@ -1415,21 +1415,20 @@ impl Compiler {
                         reference.pattern.span,
                     );
                 }
-                let instrument =
-                    reference
-                        .instrument
-                        .as_ref()
-                        .map_or(Some(InstrumentKind::Sine), |reference| {
-                            let instrument =
-                                instruments.iter().find(|(name, _)| *name == reference.text);
-                            if instrument.is_none() {
-                                self.error(
-                                    "arrangement references an unknown instrument",
-                                    reference.span,
-                                );
-                            }
-                            instrument.and_then(|(_, kind)| kind.clone())
-                        });
+                let instrument = reference.instrument.as_ref().map_or(
+                    Some(InstrumentKind::Sine { envelope: None }),
+                    |reference| {
+                        let instrument =
+                            instruments.iter().find(|(name, _)| *name == reference.text);
+                        if instrument.is_none() {
+                            self.error(
+                                "arrangement references an unknown instrument",
+                                reference.span,
+                            );
+                        }
+                        instrument.and_then(|(_, kind)| kind.clone())
+                    },
+                );
                 pattern
                     .zip(instrument)
                     .map(|(pattern, instrument)| PatternOccurrence {
@@ -1444,17 +1443,56 @@ impl Compiler {
 
     fn instrument_kind(&mut self, body: &InstrumentBody) -> Option<InstrumentKind> {
         match body {
-            InstrumentBody::Builtin(kind) => match kind.text.as_str() {
-                "sine" => Some(InstrumentKind::Sine),
-                "triangle" => Some(InstrumentKind::Triangle),
-                _ => {
-                    self.error(
-                        "instrument kind must be `sine`, `triangle`, `sampled`, `sampler`, or `drum_machine`",
-                        kind.span,
-                    );
-                    None
+            InstrumentBody::Oscillator {
+                waveform, envelope, ..
+            } => {
+                let envelope = match envelope {
+                    None => None,
+                    Some(declaration) => Some(self.envelope(declaration)?),
+                };
+                match waveform.text.as_str() {
+                    "sine" => Some(InstrumentKind::Sine { envelope }),
+                    "triangle" => Some(InstrumentKind::Triangle { envelope }),
+                    _ => {
+                        self.error(
+                            "instrument kind must be `sine`, `triangle`, `sampled`, `sampler`, or `drum_machine`",
+                            waveform.span,
+                        );
+                        None
+                    }
                 }
-            },
+            }
+            InstrumentBody::Supersaw {
+                voices,
+                voices_span,
+                detune,
+                spread,
+                envelope,
+                ..
+            } => {
+                if *voices == 0 {
+                    self.error("supersaw voices must be at least 1", *voices_span);
+                    return None;
+                }
+                if !detune.value.is_finite() || !(0.0..=1.0).contains(&detune.value) {
+                    self.error("supersaw detune must be from 0.0 to 1.0", detune.span);
+                    return None;
+                }
+                if !spread.value.is_finite() || !(0.0..=1.0).contains(&spread.value) {
+                    self.error("supersaw spread must be from 0.0 to 1.0", spread.span);
+                    return None;
+                }
+                let envelope = match envelope {
+                    None => None,
+                    Some(declaration) => Some(self.envelope(declaration)?),
+                };
+                Some(InstrumentKind::Supersaw {
+                    voices: *voices,
+                    detune: detune.value,
+                    spread: spread.value,
+                    envelope,
+                })
+            }
             InstrumentBody::Sampled { source, root, .. } => {
                 if source.value.is_empty() {
                     self.error("sample source path must not be empty", source.span);
@@ -1488,6 +1526,54 @@ impl Compiler {
                 }
             }
         }
+    }
+
+    /// `attack`/`decay`/`release` must carry an `ms` unit and be finite,
+    /// non-negative durations; `sustain` must be finite and in `0.0..=1.0`.
+    fn envelope(&mut self, declaration: &EnvelopeDeclaration) -> Option<Envelope> {
+        let attack_ms = self.envelope_ms(&declaration.attack, "envelope attack")?;
+        let decay_ms = self.envelope_ms(&declaration.decay, "envelope decay")?;
+        if !declaration.sustain.value.is_finite()
+            || !(0.0..=1.0).contains(&declaration.sustain.value)
+        {
+            self.error(
+                "envelope sustain must be from 0.0 to 1.0",
+                declaration.sustain.span,
+            );
+            return None;
+        }
+        let release_ms = self.envelope_ms(&declaration.release, "envelope release")?;
+        Some(Envelope {
+            attack_ms,
+            decay_ms,
+            sustain: declaration.sustain.value,
+            release_ms,
+        })
+    }
+
+    /// Resolves a finite, non-negative `ms` [`RateLiteral`] to plain
+    /// milliseconds. `context` (such as `"envelope attack"`) names the field
+    /// being resolved in error messages, the same convention
+    /// [`Compiler::frequency_hz`] uses for `hz`/`khz`.
+    fn envelope_ms(&mut self, literal: &RateLiteral, context: &str) -> Option<f32> {
+        if literal.unit.text != "ms" {
+            self.error(&format!("{context} unit must be `ms`"), literal.span);
+            return None;
+        }
+        let ms = literal.value.value;
+        if !ms.is_finite() || ms < 0.0 {
+            self.error(
+                &format!("{context} must be finite and greater than or equal to 0ms"),
+                literal.span,
+            );
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "ms is validated finite and non-negative before conversion"
+        )]
+        let ms = ms as f32;
+        Some(ms)
     }
 
     fn pattern(

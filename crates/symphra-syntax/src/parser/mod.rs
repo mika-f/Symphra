@@ -4,13 +4,14 @@ use crate::ast::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
-    GainExpression, GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse,
-    LfoDeclaration, MasterDeclaration, NoteExpression, NumberLiteral, PanExpression, PatternBody,
-    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
+    EnvelopeDeclaration, GainExpression, GateExpression, Identifier, InstrumentBody,
+    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
+    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
+    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
+    VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -176,7 +177,9 @@ impl Parser {
                 TokenKind::Tempo => self.tempo(),
                 TokenKind::Meter => self.meter(),
                 TokenKind::Key => self.key(),
-                TokenKind::Instrument => self.instrument().map(SongStatement::Instrument),
+                TokenKind::Instrument => self
+                    .instrument()
+                    .map(|instrument| SongStatement::Instrument(Box::new(instrument))),
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
                 TokenKind::Track => self.track().map(Box::new).map(SongStatement::Track),
                 TokenKind::Section => self.section(),
@@ -282,16 +285,96 @@ impl Parser {
                 bank,
                 span: drum_machine_start.cover(end.span),
             }
+        } else if self.at(TokenKind::Synth) {
+            self.supersaw_instrument_body()?
         } else {
-            InstrumentBody::Builtin(self.identifier("expected an instrument kind")?)
+            self.oscillator_instrument_body(start)?
         };
         let span = match &body {
-            InstrumentBody::Builtin(kind) => start.cover(kind.span),
-            InstrumentBody::Sampled { span, .. }
+            InstrumentBody::Oscillator { span, .. }
+            | InstrumentBody::Supersaw { span, .. }
+            | InstrumentBody::Sampled { span, .. }
             | InstrumentBody::Sampler { span, .. }
             | InstrumentBody::DrumMachine { span, .. } => start.cover(*span),
         };
         Some(InstrumentDeclaration { name, body, span })
+    }
+
+    /// `synth supersaw { voices N detune D spread S [envelope { ... }] }`.
+    fn supersaw_instrument_body(&mut self) -> Option<InstrumentBody> {
+        let synth_start = self.bump().span;
+        self.required(TokenKind::Supersaw, "expected `supersaw` after `synth`")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after `synth supersaw`")?;
+        self.required(
+            TokenKind::Voices,
+            "expected `voices` in supersaw instrument",
+        )?;
+        let voices_token =
+            self.required(TokenKind::Integer, "expected a voice count after `voices`")?;
+        let voices = self.parse_u32(&voices_token)?;
+        let voices_span = voices_token.span;
+        let detune = self.effect_factor(TokenKind::Detune, "expected `detune` after voices")?;
+        let spread = self.effect_factor(TokenKind::Spread, "expected `spread` after detune")?;
+        let envelope = if self.at(TokenKind::Envelope) {
+            Some(self.envelope()?)
+        } else {
+            None
+        };
+        let end = self.required(
+            TokenKind::RightBrace,
+            "expected `}` to close supersaw instrument",
+        )?;
+        Some(InstrumentBody::Supersaw {
+            voices,
+            voices_span,
+            detune,
+            spread,
+            envelope,
+            span: synth_start.cover(end.span),
+        })
+    }
+
+    /// `sine`/`triangle`, optionally followed by `{ envelope { ... } }`.
+    fn oscillator_instrument_body(&mut self, start: SourceSpan) -> Option<InstrumentBody> {
+        let waveform = self.identifier("expected an instrument kind")?;
+        let (envelope, end_span) = if self.at(TokenKind::LeftBrace) {
+            self.bump();
+            let envelope = self.envelope()?;
+            let end = self.required(TokenKind::RightBrace, "expected `}` to close instrument")?;
+            (Some(envelope), end.span)
+        } else {
+            (None, waveform.span)
+        };
+        Some(InstrumentBody::Oscillator {
+            waveform,
+            envelope,
+            span: start.cover(end_span),
+        })
+    }
+
+    /// `envelope { attack Ams decay Dms sustain S release Rms }`.
+    fn envelope(&mut self) -> Option<EnvelopeDeclaration> {
+        let start = self
+            .required(TokenKind::Envelope, "expected `envelope`")?
+            .span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `envelope`")?;
+        self.required(TokenKind::Attack, "expected `attack` in envelope")?;
+        let attack = self.rate()?;
+        self.required(TokenKind::Decay, "expected `decay` after attack")?;
+        let decay = self.rate()?;
+        let sustain = self.effect_factor(TokenKind::Sustain, "expected `sustain` after decay")?;
+        self.required(TokenKind::Release, "expected `release` after sustain")?;
+        let release = self.rate()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close envelope")?
+            .span;
+        Some(EnvelopeDeclaration {
+            attack,
+            decay,
+            sustain,
+            release,
+            span: start.cover(end),
+        })
     }
 
     fn arrangement(&mut self) -> Option<SongStatement> {

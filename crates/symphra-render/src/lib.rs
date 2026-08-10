@@ -3,13 +3,14 @@
 use std::num::NonZeroU32;
 
 use symphra_dsp::{
-    Oscillator, Waveform, apply_delay, apply_filter, apply_filter_automated, apply_limiter,
-    apply_reverb, fade_gain, reverb_tail_frames,
+    Envelope as DspEnvelope, Oscillator, SupersawOscillator, Waveform, apply_delay, apply_filter,
+    apply_filter_automated, apply_limiter, apply_reverb, envelope_gain, fade_gain,
+    reverb_tail_frames,
 };
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
-    Channels, DelayEffect, Effect, FilterEffect, InstrumentKind, LfoWaveform, MasterLimiter, Meter,
-    MusicalTime, ReverbEffect, SampleSelector, Score, Song, TimeError, Track,
+    Channels, DelayEffect, Effect, Envelope, FilterEffect, InstrumentKind, LfoWaveform,
+    MasterLimiter, Meter, MusicalTime, ReverbEffect, SampleSelector, Score, Song, TimeError, Track,
 };
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -385,22 +386,40 @@ fn render_track_notes(
             sample_rate_hz,
         )?;
         let note_frames = end.saturating_sub(start);
-        let (mut voice, instrument_gain) = match &track.instrument {
-            InstrumentKind::Sine => (
+        let (mut voice, instrument_gain, envelope) = match &track.instrument {
+            InstrumentKind::Sine { envelope } => (
                 Voice::Oscillator(Oscillator::from_midi(
                     note.midi_pitch,
                     sample_rate,
                     Waveform::Sine,
                 )),
                 MAX_NOTE_GAIN,
+                *envelope,
             ),
-            InstrumentKind::Triangle => (
+            InstrumentKind::Triangle { envelope } => (
                 Voice::Oscillator(Oscillator::from_midi(
                     note.midi_pitch,
                     sample_rate,
                     Waveform::Triangle,
                 )),
                 MAX_NOTE_GAIN,
+                *envelope,
+            ),
+            InstrumentKind::Supersaw {
+                voices,
+                detune,
+                spread,
+                envelope,
+            } => (
+                Voice::Supersaw(SupersawOscillator::from_midi(
+                    note.midi_pitch,
+                    sample_rate,
+                    *voices,
+                    *detune,
+                    *spread,
+                )),
+                MAX_NOTE_GAIN,
+                *envelope,
             ),
             InstrumentKind::Sampled { source, root_midi } => (
                 Voice::Sample(SamplePlayer::new(
@@ -412,6 +431,7 @@ fn render_track_notes(
                     note.midi_pitch,
                 )),
                 1.0,
+                None,
             ),
             InstrumentKind::Sampler { pack } => {
                 return Err(RenderError::SamplerRequiresSampleEvents(pack.clone()));
@@ -420,12 +440,17 @@ fn render_track_notes(
                 return Err(RenderError::DrumMachineRequiresSampleEvents(bank.clone()));
             }
         };
+        let dsp_envelope = envelope.map(|envelope| dsp_envelope(envelope, sample_rate_hz));
         for frame in start..end {
             let Some(sample) = voice.next_sample() else {
                 break;
             };
+            let amplitude_gain = dsp_envelope.map_or_else(
+                || fade_gain(frame - start, note_frames, fade_samples),
+                |envelope| envelope_gain(frame - start, note_frames, envelope),
+            );
             let value = sample
-                * fade_gain(frame - start, note_frames, fade_samples)
+                * amplitude_gain
                 * instrument_gain
                 * track.gain
                 * (f32::from(note.velocity) / 127.0);
@@ -461,7 +486,10 @@ fn render_track_samples(
     let container = match &track.instrument {
         InstrumentKind::Sampler { pack } => pack,
         InstrumentKind::DrumMachine { bank } => bank,
-        InstrumentKind::Sine | InstrumentKind::Triangle | InstrumentKind::Sampled { .. } => {
+        InstrumentKind::Sine { .. }
+        | InstrumentKind::Triangle { .. }
+        | InstrumentKind::Supersaw { .. }
+        | InstrumentKind::Sampled { .. } => {
             return Err(RenderError::SampleEventsRequireSampler);
         }
     };
@@ -510,6 +538,36 @@ fn render_track_samples(
     Ok(())
 }
 
+/// Converts a score-level [`Envelope`] (milliseconds) into a [`DspEnvelope`]
+/// (sample frames) for the render sample rate.
+fn dsp_envelope(envelope: Envelope, sample_rate_hz: u32) -> DspEnvelope {
+    DspEnvelope {
+        attack_frames: envelope_ms_to_frames(envelope.attack_ms, sample_rate_hz),
+        decay_frames: envelope_ms_to_frames(envelope.decay_ms, sample_rate_hz),
+        sustain: envelope.sustain,
+        release_frames: envelope_ms_to_frames(envelope.release_ms, sample_rate_hz),
+    }
+}
+
+/// Unlike `symphra_dsp`'s own `ms_to_frames` (used by `apply_reverb`, which
+/// clamps to at least one frame since a zero comb/allpass delay would
+/// self-read), a zero-length envelope stage is a legitimate "skip this
+/// stage" value — e.g. `attack 0ms` means an instant attack — so this
+/// allows zero.
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "ms is validated finite and non-negative at compile time"
+)]
+fn envelope_ms_to_frames(ms: f32, sample_rate_hz: u32) -> u64 {
+    let frames = (f64::from(ms) / 1000.0 * f64::from(sample_rate_hz)).round();
+    if frames.is_finite() && frames > 0.0 {
+        frames as u64
+    } else {
+        0
+    }
+}
+
 fn mix_sample(samples: &mut [f32], first_sample: usize, channels: u16, value: f32, pan: i8) {
     samples[first_sample] += value
         * if pan > 0 {
@@ -529,6 +587,7 @@ fn mix_sample(samples: &mut [f32], first_sample: usize, channels: u16, value: f3
 
 enum Voice<'a> {
     Oscillator(Oscillator),
+    Supersaw(SupersawOscillator),
     Sample(SamplePlayer<'a>),
 }
 
@@ -536,6 +595,7 @@ impl Voice<'_> {
     fn next_sample(&mut self) -> Option<f32> {
         match self {
             Self::Oscillator(oscillator) => Some(oscillator.next_sample()),
+            Self::Supersaw(supersaw) => Some(supersaw.next_sample()),
             Self::Sample(player) => player.next_sample(),
         }
     }
@@ -576,7 +636,7 @@ fn automation_rate_hz(cycles_per_bar: f32, tempo_bpm: f64, meter: Meter) -> f64 
 #[cfg(test)]
 mod tests {
     use symphra_score::{
-        Channels, EntityId, InstrumentKind, Key, MasterLimiter, Meter, Mode, MusicalTime,
+        Channels, EntityId, Envelope, InstrumentKind, Key, MasterLimiter, Meter, Mode, MusicalTime,
         NoteEvent, Pan, PitchClass, SampleEvent, SampleSelector, Score, Song, Track,
     };
 
@@ -584,7 +644,7 @@ mod tests {
 
     #[test]
     fn render_song_should_be_deterministic_and_interleaved() {
-        let score = score(InstrumentKind::Sine);
+        let score = score(InstrumentKind::Sine { envelope: None });
 
         let first = render_song(&score, 0).expect("score should render");
         let second = render_song(&score, 0).expect("score should render again");
@@ -629,7 +689,7 @@ mod tests {
 
     #[test]
     fn render_song_should_apply_track_delay_effect() {
-        let mut with_effect = score(InstrumentKind::Sine);
+        let mut with_effect = score(InstrumentKind::Sine { envelope: None });
         with_effect.sample_rate_hz = 1_000;
         let dry = render_song(&with_effect, 0).expect("dry score should render");
 
@@ -655,7 +715,7 @@ mod tests {
 
     #[test]
     fn render_song_should_reject_out_of_range_effect_parameters() {
-        let mut invalid = score(InstrumentKind::Sine);
+        let mut invalid = score(InstrumentKind::Sine { envelope: None });
         invalid.songs[0].tracks[0].effect =
             Some(symphra_score::Effect::Delay(symphra_score::DelayEffect {
                 mix: 1.0,
@@ -670,7 +730,7 @@ mod tests {
 
     #[test]
     fn render_song_should_apply_track_filter_effect() {
-        let mut with_effect = score(InstrumentKind::Sine);
+        let mut with_effect = score(InstrumentKind::Sine { envelope: None });
         with_effect.sample_rate_hz = 8_000;
         let dry = render_song(&with_effect, 0).expect("dry score should render");
 
@@ -695,7 +755,7 @@ mod tests {
 
     #[test]
     fn render_song_should_reject_out_of_range_effect_filter_parameters() {
-        let mut invalid = score(InstrumentKind::Sine);
+        let mut invalid = score(InstrumentKind::Sine { envelope: None });
         invalid.songs[0].tracks[0].effect =
             Some(symphra_score::Effect::Filter(symphra_score::FilterEffect {
                 cutoff_hz: 0.0,
@@ -710,7 +770,7 @@ mod tests {
 
     #[test]
     fn render_song_should_apply_filter_automation() {
-        let mut with_automation = score(InstrumentKind::Sine);
+        let mut with_automation = score(InstrumentKind::Sine { envelope: None });
         with_automation.sample_rate_hz = 8_000;
         with_automation.songs[0].tracks[0].end =
             MusicalTime::new(2, 1).expect("two whole notes should be valid");
@@ -754,7 +814,7 @@ mod tests {
 
     #[test]
     fn render_song_should_apply_track_reverb_effect() {
-        let mut with_effect = score(InstrumentKind::Sine);
+        let mut with_effect = score(InstrumentKind::Sine { envelope: None });
         with_effect.sample_rate_hz = 8_000;
         let dry = render_song(&with_effect, 0).expect("dry score should render");
 
@@ -779,7 +839,7 @@ mod tests {
 
     #[test]
     fn render_song_should_reject_out_of_range_effect_reverb_parameters() {
-        let mut invalid = score(InstrumentKind::Sine);
+        let mut invalid = score(InstrumentKind::Sine { envelope: None });
         invalid.songs[0].tracks[0].effect =
             Some(symphra_score::Effect::Reverb(symphra_score::ReverbEffect {
                 mix: 1.5,
@@ -793,7 +853,7 @@ mod tests {
 
     #[test]
     fn render_song_should_apply_master_limiter_when_peak_exceeds_ceiling() {
-        let mut loud = score(InstrumentKind::Sine);
+        let mut loud = score(InstrumentKind::Sine { envelope: None });
         loud.songs[0].tracks[0].gain = 10.0;
         let ceiling = 0.5;
         loud.songs[0].master = Some(MasterLimiter { ceiling });
@@ -812,7 +872,7 @@ mod tests {
 
     #[test]
     fn render_song_should_leave_audio_unchanged_when_peak_is_within_ceiling() {
-        let quiet = score(InstrumentKind::Sine);
+        let quiet = score(InstrumentKind::Sine { envelope: None });
         let mut with_master = quiet.clone();
         with_master.songs[0].master = Some(MasterLimiter { ceiling: 0.9 });
 
@@ -824,7 +884,7 @@ mod tests {
 
     #[test]
     fn render_song_should_reject_out_of_range_master_ceiling() {
-        let mut invalid = score(InstrumentKind::Sine);
+        let mut invalid = score(InstrumentKind::Sine { envelope: None });
         invalid.songs[0].master = Some(MasterLimiter { ceiling: 1.5 });
 
         let error = render_song(&invalid, 0).expect_err("ceiling above 1.0 should be rejected");
@@ -854,7 +914,7 @@ mod tests {
 
     #[test]
     fn render_song_should_apply_track_gain_without_velocity_quantization() {
-        let mut full_score = score(InstrumentKind::Sine);
+        let mut full_score = score(InstrumentKind::Sine { envelope: None });
         full_score.sample_rate_hz = 8_000;
         let full = render_song(&full_score, 0).expect("full-gain score should render");
         full_score.songs[0].tracks[0].gain = 0.3;
@@ -870,7 +930,7 @@ mod tests {
 
     #[test]
     fn render_song_should_pan_stereo_tracks_linearly() {
-        let mut centered_score = score(InstrumentKind::Sine);
+        let mut centered_score = score(InstrumentKind::Sine { envelope: None });
         let centered = render_song(&centered_score, 0).expect("centered score should render");
         centered_score.songs[0].tracks[0].pan = Pan::Fixed(-100);
         let left = render_song(&centered_score, 0).expect("left-panned score should render");
@@ -888,7 +948,7 @@ mod tests {
 
     #[test]
     fn render_song_should_alternate_event_pan_from_left_to_right() {
-        let mut alternating_score = score(InstrumentKind::Sine);
+        let mut alternating_score = score(InstrumentKind::Sine { envelope: None });
         alternating_score.sample_rate_hz = 8_000;
         alternating_score.songs[0].tracks[0].notes.push(NoteEvent {
             id: EntityId(3),
@@ -920,6 +980,48 @@ mod tests {
                 && second
                     .chunks_exact(2)
                     .any(|frame| frame[1].abs() > f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn render_song_should_apply_a_configured_envelope_instead_of_the_fixed_fade() {
+        let with_fixed_fade = score(InstrumentKind::Sine { envelope: None });
+        let with_envelope = score(InstrumentKind::Sine {
+            envelope: Some(Envelope {
+                attack_ms: 250.0,
+                decay_ms: 250.0,
+                sustain: 0.5,
+                release_ms: 250.0,
+            }),
+        });
+
+        let fixed_fade = render_song(&with_fixed_fade, 0).expect("fixed-fade score should render");
+        let enveloped = render_song(&with_envelope, 0).expect("enveloped score should render");
+
+        assert_eq!(fixed_fade.samples.len(), enveloped.samples.len());
+        assert_ne!(
+            fixed_fade.samples, enveloped.samples,
+            "a configured envelope should shape the note differently than the fixed edge fade"
+        );
+    }
+
+    #[test]
+    fn render_song_should_render_a_supersaw_instrument() {
+        let score = score(InstrumentKind::Supersaw {
+            voices: 5,
+            detune: 0.4,
+            spread: 0.6,
+            envelope: None,
+        });
+
+        let rendered = render_song(&score, 0).expect("supersaw score should render");
+
+        assert!(
+            rendered
+                .samples
+                .iter()
+                .any(|sample| sample.abs() > f32::EPSILON),
+            "a supersaw note should produce audible output"
         );
     }
 

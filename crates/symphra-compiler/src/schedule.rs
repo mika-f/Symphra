@@ -78,7 +78,7 @@ fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleEr
                     pattern,
                     MusicalTime::ZERO,
                     None,
-                    &hir::InstrumentKind::Sine,
+                    &hir::InstrumentKind::Sine { envelope: None },
                     seed,
                 )
                 .map(|(track, _)| track)
@@ -776,8 +776,23 @@ fn schedule_track(
 
 fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
     match instrument {
-        hir::InstrumentKind::Sine => InstrumentKind::Sine,
-        hir::InstrumentKind::Triangle => InstrumentKind::Triangle,
+        hir::InstrumentKind::Sine { envelope } => InstrumentKind::Sine {
+            envelope: envelope.map(score_envelope),
+        },
+        hir::InstrumentKind::Triangle { envelope } => InstrumentKind::Triangle {
+            envelope: envelope.map(score_envelope),
+        },
+        hir::InstrumentKind::Supersaw {
+            voices,
+            detune,
+            spread,
+            envelope,
+        } => InstrumentKind::Supersaw {
+            voices: *voices,
+            detune: *detune,
+            spread: *spread,
+            envelope: envelope.map(score_envelope),
+        },
         hir::InstrumentKind::Sampled { source, root_midi } => InstrumentKind::Sampled {
             source: source.clone(),
             root_midi: *root_midi,
@@ -786,6 +801,15 @@ fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
         hir::InstrumentKind::DrumMachine { bank } => {
             InstrumentKind::DrumMachine { bank: bank.clone() }
         }
+    }
+}
+
+fn score_envelope(envelope: hir::Envelope) -> symphra_score::Envelope {
+    symphra_score::Envelope {
+        attack_ms: envelope.attack_ms,
+        decay_ms: envelope.decay_ms,
+        sustain: envelope.sustain,
+        release_ms: envelope.release_ms,
     }
 }
 

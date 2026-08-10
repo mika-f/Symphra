@@ -7,6 +7,12 @@ use std::num::NonZeroU32;
 pub enum Waveform {
     Sine,
     Triangle,
+    /// A naive (non-band-limited) sawtooth, ramping linearly from `-1.0` to
+    /// `1.0` across each cycle before discontinuously resetting — the same
+    /// simplification already accepted for [`Waveform::Triangle`]'s `asin`
+    /// derivation (no band-limiting there either). Used by
+    /// [`SupersawOscillator`], the classic "supersaw" building block.
+    Sawtooth,
 }
 
 #[derive(Clone, Debug)]
@@ -18,18 +24,36 @@ pub struct Oscillator {
 impl Oscillator {
     #[must_use]
     pub fn from_midi(midi_pitch: u8, sample_rate_hz: NonZeroU32, waveform: Waveform) -> Self {
+        Self::from_frequency(midi_frequency(midi_pitch), sample_rate_hz, waveform)
+    }
+
+    /// Like [`Self::from_midi`], but takes a raw frequency in hertz instead
+    /// of a whole MIDI pitch — used by [`SupersawOscillator`] to detune
+    /// voices by fractional cents, which a MIDI pitch alone cannot express.
+    #[must_use]
+    pub fn from_frequency(
+        frequency_hz: f64,
+        sample_rate_hz: NonZeroU32,
+        waveform: Waveform,
+    ) -> Self {
         Self {
-            sine: SineOscillator::from_midi(midi_pitch, sample_rate_hz),
+            sine: SineOscillator::from_frequency(frequency_hz, sample_rate_hz),
             waveform,
         }
     }
 
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "phase is bounded to [0, TAU) and audio samples use f32"
+    )]
     pub fn next_sample(&mut self) -> f32 {
+        let phase = self.sine.phase;
         let sine = self.sine.next_sample();
         match self.waveform {
             Waveform::Sine => sine,
             Waveform::Triangle => sine.asin() * std::f32::consts::FRAC_2_PI,
+            Waveform::Sawtooth => (phase / std::f64::consts::PI - 1.0) as f32,
         }
     }
 }
@@ -50,9 +74,14 @@ pub struct SineOscillator {
 impl SineOscillator {
     #[must_use]
     pub fn from_midi(midi_pitch: u8, sample_rate_hz: NonZeroU32) -> Self {
+        Self::from_frequency(midi_frequency(midi_pitch), sample_rate_hz)
+    }
+
+    #[must_use]
+    pub fn from_frequency(frequency_hz: f64, sample_rate_hz: NonZeroU32) -> Self {
         Self {
             phase: 0.0,
-            phase_step: TAU * midi_frequency(midi_pitch) / f64::from(sample_rate_hz.get()),
+            phase_step: TAU * frequency_hz / f64::from(sample_rate_hz.get()),
         }
     }
 
@@ -93,6 +122,135 @@ pub fn fade_gain(sample_index: u64, total_samples: u64, fade_samples: u64) -> f3
         1.0
     };
     attack.min(release)
+}
+
+/// `voices` detuned [`Waveform::Sawtooth`] oscillators mixed together — the
+/// classic "supersaw" unison-detune thickening technique. `detune`
+/// (`0.0..=1.0`) scales how far apart the voices are spread in pitch, up to
+/// +-50 cents at `1.0` (a conventional supersaw detune range); voices are
+/// spread evenly across that range. `spread` (`0.0..=1.0`) is a blend
+/// control between the center (least-detuned) voice and the outer,
+/// most-detuned voices: at `0.0` only the center voice is really audible
+/// (thin, near-unison); at `1.0` every voice contributes equally (full
+/// thickness). This is a deliberate simplification of the original's
+/// "stereo pan spread" reading of `spread` — the renderer's existing
+/// per-note pipeline mixes one oscillator voice down to a single scalar
+/// sample with one track-level pan, so a true per-voice stereo width would
+/// need a second, independently panned signal path; blend fits the
+/// existing single-voice-per-instrument render loop unchanged. A single
+/// voice is just one plain, non-detuned sawtooth.
+#[derive(Clone, Debug)]
+pub struct SupersawOscillator {
+    voices: Vec<(Oscillator, f32)>,
+}
+
+impl SupersawOscillator {
+    #[must_use]
+    pub fn from_midi(
+        midi_pitch: u8,
+        sample_rate_hz: NonZeroU32,
+        voice_count: u32,
+        detune: f32,
+        spread: f32,
+    ) -> Self {
+        let voice_count = voice_count.max(1);
+        let detune = f64::from(detune.clamp(0.0, 1.0));
+        let spread = spread.clamp(0.0, 1.0);
+        let max_cents = 50.0 * detune;
+        let base_frequency = midi_frequency(midi_pitch);
+        let voices = (0..voice_count)
+            .map(|index| {
+                let cents = if voice_count == 1 {
+                    0.0
+                } else {
+                    let t = f64::from(index) / f64::from(voice_count - 1);
+                    t.mul_add(2.0, -1.0) * max_cents
+                };
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "distance is a ratio in [0.0, 1.0]"
+                )]
+                let normalized_distance = if max_cents > 0.0 {
+                    (cents.abs() / max_cents) as f32
+                } else {
+                    0.0
+                };
+                let weight = (1.0 - spread).mul_add(-normalized_distance, 1.0);
+                let frequency = base_frequency * 2.0_f64.powf(cents / 1200.0);
+                (
+                    Oscillator::from_frequency(frequency, sample_rate_hz, Waveform::Sawtooth),
+                    weight,
+                )
+            })
+            .collect();
+        Self { voices }
+    }
+
+    #[must_use]
+    pub fn next_sample(&mut self) -> f32 {
+        let mut sum = 0.0f32;
+        let mut weight_sum = 0.0f32;
+        for (oscillator, weight) in &mut self.voices {
+            sum += oscillator.next_sample() * *weight;
+            weight_sum += *weight;
+        }
+        if weight_sum > 0.0 {
+            sum / weight_sum
+        } else {
+            0.0
+        }
+    }
+}
+
+/// A configurable ADSR amplitude envelope, attached to an oscillator-based
+/// instrument (`sine`, `triangle`, `synth supersaw`) in place of
+/// [`fade_gain`]'s fixed edge fade. All four stage lengths are expressed in
+/// frames (already resolved from `ms` at render time, the same boundary
+/// `DelayEffect.time` crosses from a musical duration to sample frames).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Envelope {
+    pub attack_frames: u64,
+    pub decay_frames: u64,
+    pub sustain: f32,
+    pub release_frames: u64,
+}
+
+/// Computes an ADSR gain at `sample_index` within a `total_samples`-long
+/// note: amplitude ramps `0.0` to `1.0` over `attack_frames`, then to
+/// `sustain` over `decay_frames`, holds at `sustain` until `release_frames`
+/// before the note's end, then ramps to `0.0`. Unlike [`fade_gain`]'s
+/// symmetric attack/release ramp (which always both peak at `1.0`), release
+/// here multiplies whatever level attack/decay left the note at, so a
+/// `sustain` below `1.0` still ramps smoothly to silence instead of
+/// jumping.
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "sample ratios intentionally become floating-point gains"
+)]
+pub fn envelope_gain(sample_index: u64, total_samples: u64, envelope: Envelope) -> f32 {
+    if sample_index >= total_samples {
+        return 0.0;
+    }
+    let sustain = envelope.sustain.clamp(0.0, 1.0);
+    let level = if sample_index < envelope.attack_frames {
+        sample_index as f32 / envelope.attack_frames as f32
+    } else {
+        let decay_index = sample_index - envelope.attack_frames;
+        if decay_index < envelope.decay_frames {
+            let progress = decay_index as f32 / envelope.decay_frames as f32;
+            progress.mul_add(-(1.0 - sustain), 1.0)
+        } else {
+            sustain
+        }
+    };
+    let remaining = total_samples - sample_index - 1;
+    let release = if envelope.release_frames > 0 && remaining < envelope.release_frames {
+        remaining as f32 / envelope.release_frames as f32
+    } else {
+        1.0
+    };
+    level * release
 }
 
 /// Applies an in-place feedback delay (echo) to an interleaved audio buffer,
@@ -238,6 +396,11 @@ pub fn apply_filter_automated(
             let lfo_value = match waveform {
                 Waveform::Sine => phase.sin(),
                 Waveform::Triangle => phase.sin().asin() * std::f64::consts::FRAC_2_PI,
+                // `automate`'s `lfo` only ever resolves to `Sine`/`Triangle`
+                // (see `LfoWaveform` in `symphra-compiler`/`symphra-score`);
+                // this arm exists only because `Waveform` is shared with
+                // `Oscillator`/`SupersawOscillator`, which do use `Sawtooth`.
+                Waveform::Sawtooth => phase / std::f64::consts::PI - 1.0,
             };
             let cutoff = center + half_range * lfo_value;
             phase = (phase + phase_step).rem_euclid(TAU);
@@ -433,8 +596,9 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        Oscillator, SineOscillator, Waveform, apply_delay, apply_filter, apply_filter_automated,
-        apply_limiter, apply_reverb, fade_gain, reverb_tail_frames,
+        Envelope, Oscillator, SineOscillator, SupersawOscillator, Waveform, apply_delay,
+        apply_filter, apply_filter_automated, apply_limiter, apply_reverb, envelope_gain,
+        fade_gain, reverb_tail_frames,
     };
 
     #[test]
@@ -464,6 +628,101 @@ mod tests {
         let _ = triangle.next_sample();
 
         assert!((sine.next_sample() - triangle.next_sample()).abs() > 0.1);
+    }
+
+    #[test]
+    fn sawtooth_oscillator_should_ramp_linearly_across_one_cycle() {
+        let sample_rate = NonZeroU32::new(4).expect("sample rate should be non-zero");
+        let mut saw = Oscillator::from_frequency(1.0, sample_rate, Waveform::Sawtooth);
+
+        let samples = std::array::from_fn::<_, 4, _>(|_| saw.next_sample());
+
+        assert!(
+            samples
+                .iter()
+                .zip([-1.0, -0.5, 0.0, 0.5])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < 1e-4),
+            "{samples:?}"
+        );
+    }
+
+    #[test]
+    fn supersaw_with_one_voice_should_match_a_plain_sawtooth() {
+        let sample_rate = NonZeroU32::new(48_000).expect("sample rate should be non-zero");
+        let mut supersaw = SupersawOscillator::from_midi(69, sample_rate, 1, 0.5, 1.0);
+        let mut plain = Oscillator::from_midi(69, sample_rate, Waveform::Sawtooth);
+
+        for _ in 0..8 {
+            assert!((supersaw.next_sample() - plain.next_sample()).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn supersaw_with_zero_detune_should_match_a_plain_sawtooth() {
+        let sample_rate = NonZeroU32::new(48_000).expect("sample rate should be non-zero");
+        let mut supersaw = SupersawOscillator::from_midi(69, sample_rate, 5, 0.0, 1.0);
+        let mut plain = Oscillator::from_midi(69, sample_rate, Waveform::Sawtooth);
+
+        for _ in 0..8 {
+            assert!((supersaw.next_sample() - plain.next_sample()).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn supersaw_with_more_voices_should_differ_from_a_plain_sawtooth() {
+        let sample_rate = NonZeroU32::new(48_000).expect("sample rate should be non-zero");
+        let mut supersaw = SupersawOscillator::from_midi(69, sample_rate, 5, 0.5, 1.0);
+        let mut plain = Oscillator::from_midi(69, sample_rate, Waveform::Sawtooth);
+
+        let differs =
+            (0..2_000).any(|_| (supersaw.next_sample() - plain.next_sample()).abs() > 1e-3);
+        assert!(differs);
+    }
+
+    #[test]
+    fn envelope_gain_should_ramp_through_attack_decay_sustain_and_release() {
+        let envelope = Envelope {
+            attack_frames: 2,
+            decay_frames: 2,
+            sustain: 0.5,
+            release_frames: 2,
+        };
+
+        let gains: Vec<f32> = (0..8)
+            .map(|index| envelope_gain(index, 8, envelope))
+            .collect();
+
+        assert!(
+            gains
+                .iter()
+                .zip([0.0, 0.5, 1.0, 0.75, 0.5, 0.5, 0.25, 0.0])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < 1e-4),
+            "{gains:?}"
+        );
+    }
+
+    #[test]
+    fn envelope_gain_should_be_zero_past_the_note_end() {
+        let envelope = Envelope {
+            attack_frames: 1,
+            decay_frames: 1,
+            sustain: 0.5,
+            release_frames: 1,
+        };
+
+        assert!(envelope_gain(4, 4, envelope).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn envelope_gain_with_zero_attack_should_start_at_full_level() {
+        let envelope = Envelope {
+            attack_frames: 0,
+            decay_frames: 0,
+            sustain: 1.0,
+            release_frames: 0,
+        };
+
+        assert!((envelope_gain(0, 4, envelope) - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]

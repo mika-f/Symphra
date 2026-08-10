@@ -176,13 +176,41 @@ impl Pan {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `envelope { attack Ams decay Dms sustain S release Rms }`, resolved from
+/// HIR unchanged (still tempo-agnostic milliseconds; `symphra-render`
+/// converts to sample frames once the render sample rate is known).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Envelope {
+    pub attack_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum InstrumentKind {
-    Sine,
-    Triangle,
-    Sampled { source: String, root_midi: u8 },
-    Sampler { pack: String },
-    DrumMachine { bank: String },
+    Sine {
+        envelope: Option<Envelope>,
+    },
+    Triangle {
+        envelope: Option<Envelope>,
+    },
+    Supersaw {
+        voices: u32,
+        detune: f32,
+        spread: f32,
+        envelope: Option<Envelope>,
+    },
+    Sampled {
+        source: String,
+        root_midi: u8,
+    },
+    Sampler {
+        pack: String,
+    },
+    DrumMachine {
+        bank: String,
+    },
 }
 
 impl Score {
@@ -192,8 +220,9 @@ impl Score {
             .flat_map(|song| &song.tracks)
             .filter_map(|track| match &track.instrument {
                 InstrumentKind::Sampled { source, .. } => Some(source.as_str()),
-                InstrumentKind::Sine
-                | InstrumentKind::Triangle
+                InstrumentKind::Sine { .. }
+                | InstrumentKind::Triangle { .. }
+                | InstrumentKind::Supersaw { .. }
                 | InstrumentKind::Sampler { .. }
                 | InstrumentKind::DrumMachine { .. } => None,
             })
@@ -207,8 +236,9 @@ impl Score {
                 let container = match &track.instrument {
                     InstrumentKind::Sampler { pack } => Some(pack.as_str()),
                     InstrumentKind::DrumMachine { bank } => Some(bank.as_str()),
-                    InstrumentKind::Sine
-                    | InstrumentKind::Triangle
+                    InstrumentKind::Sine { .. }
+                    | InstrumentKind::Triangle { .. }
+                    | InstrumentKind::Supersaw { .. }
                     | InstrumentKind::Sampled { .. } => None,
                 };
                 track.samples.iter().filter_map(move |sample| {

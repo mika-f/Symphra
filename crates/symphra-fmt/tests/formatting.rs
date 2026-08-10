@@ -298,6 +298,40 @@ fn formats_track_automate_cutoff() {
 }
 
 #[test]
+fn formats_oscillator_envelope_and_supersaw_instrument() {
+    let input = r#"song "S" {
+  instrument lead = sine { envelope { attack 4ms decay 200ms sustain 0.50 release 150ms } }
+  instrument chord_saw = synth supersaw { voices 5 detune 0.35 spread 0.80 envelope { attack 4ms decay 200ms sustain 0.50 release 150ms } }
+}
+"#;
+
+    let expected = r#"song "S" {
+  instrument lead = sine {
+    envelope {
+      attack 4ms
+      decay 200ms
+      sustain 0.5
+      release 150ms
+    }
+  }
+  instrument chord_saw = synth supersaw {
+    voices 5
+    detune 0.35
+    spread 0.8
+    envelope {
+      attack 4ms
+      decay 200ms
+      sustain 0.5
+      release 150ms
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_track_with_layer_uses() {
     let input = r#"song "S" {
   track bass role low {
@@ -761,7 +795,7 @@ song "Sections" {
 
 /// Effect-related idempotency sources, split out of
 /// `idempotency_sources_core` to stay under clippy's `too_many_lines`.
-fn idempotency_sources_effects() -> [&'static str; 3] {
+fn idempotency_sources_effects() -> [&'static str; 4] {
     [
         r#"project { seed 1 sample_rate 8khz output mono }
 song "FilterEffect" {
@@ -797,6 +831,18 @@ song "FilterAutomation" {
     play melody
     effect filter { cutoff 600hz resonance 0.4 }
     automate cutoff { lfo sine { range 600hz..2800hz rate 2 cycles/bar } }
+  }
+}
+"#,
+        r#"project { seed 1 sample_rate 8khz output mono }
+song "SupersawEnvelope" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine { envelope { attack 4ms decay 200ms sustain 0.5 release 150ms } }
+  instrument chord_saw = synth supersaw { voices 5 detune 0.35 spread 0.8 envelope { attack 4ms decay 200ms sustain 0.5 release 150ms } }
+  pattern chords = sequence { chord C4 E4 G4 for 1/1 }
+  track lead role melody {
+    instrument chord_saw
+    play chords
   }
 }
 "#,

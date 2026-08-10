@@ -4,12 +4,13 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ArrangementOccurrence, AutomateDeclaration, ChanceTransformExpression,
     ChordExpression, Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration,
-    EffectFactor, EffectKind, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse,
-    LfoDeclaration, MasterDeclaration, NoteExpression, NumberLiteral, PanExpression, PatternBody,
-    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, VolumeExpression,
+    EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
+    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
+    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -428,13 +429,161 @@ fn sampled_field_span(field: &SampledField<'_>) -> SourceSpan {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EnvelopeField<'a> {
+    Attack(&'a RateLiteral),
+    Decay(&'a RateLiteral),
+    Sustain(&'a EffectFactor),
+    Release(&'a RateLiteral),
+}
+
+fn envelope_field_span(field: EnvelopeField<'_>) -> SourceSpan {
+    match field {
+        EnvelopeField::Attack(rate) | EnvelopeField::Decay(rate) | EnvelopeField::Release(rate) => {
+            rate.span
+        }
+        EnvelopeField::Sustain(factor) => factor.span,
+    }
+}
+
+fn print_envelope(ctx: &mut Ctx<'_>, envelope: &EnvelopeDeclaration) {
+    let items = [
+        EnvelopeField::Attack(&envelope.attack),
+        EnvelopeField::Decay(&envelope.decay),
+        EnvelopeField::Sustain(&envelope.sustain),
+        EnvelopeField::Release(&envelope.release),
+    ];
+    print_block(
+        ctx,
+        "envelope",
+        envelope.span,
+        &items,
+        envelope_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            EnvelopeField::Attack(rate) => {
+                ctx.printer.line(format!("attack {}", rate_text(ctx, rate)));
+            }
+            EnvelopeField::Decay(rate) => {
+                ctx.printer.line(format!("decay {}", rate_text(ctx, rate)));
+            }
+            EnvelopeField::Sustain(factor) => {
+                ctx.printer.line(format!("sustain {}", factor.value));
+            }
+            EnvelopeField::Release(rate) => {
+                ctx.printer
+                    .line(format!("release {}", rate_text(ctx, rate)));
+            }
+        },
+    );
+}
+
+#[derive(Clone, Copy)]
+enum SupersawField<'a> {
+    Voices(u32, SourceSpan),
+    Detune(&'a EffectFactor),
+    Spread(&'a EffectFactor),
+    Envelope(&'a EnvelopeDeclaration),
+}
+
+fn supersaw_field_span(field: SupersawField<'_>) -> SourceSpan {
+    match field {
+        SupersawField::Voices(_, span) => span,
+        SupersawField::Detune(factor) | SupersawField::Spread(factor) => factor.span,
+        SupersawField::Envelope(envelope) => envelope.span,
+    }
+}
+
+fn print_oscillator_instrument(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    waveform: &Identifier,
+    envelope: Option<&EnvelopeDeclaration>,
+    span: SourceSpan,
+) {
+    let Some(envelope) = envelope else {
+        ctx.printer
+            .line(format!("instrument {name} = {}", ctx.text(waveform.span)));
+        return;
+    };
+    let header = format!("instrument {name} = {}", ctx.text(waveform.span));
+    let items: Vec<&EnvelopeDeclaration> = vec![envelope];
+    print_block(
+        ctx,
+        &header,
+        span,
+        &items,
+        |envelope: &EnvelopeDeclaration| envelope.span,
+        |_| 0,
+        Reorder::No,
+        print_envelope,
+    );
+}
+
+fn print_supersaw_instrument(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    voices: (u32, SourceSpan),
+    detune: &EffectFactor,
+    spread: &EffectFactor,
+    envelope: Option<&EnvelopeDeclaration>,
+    span: SourceSpan,
+) {
+    let header = format!("instrument {name} = synth supersaw");
+    let mut items = vec![
+        SupersawField::Voices(voices.0, voices.1),
+        SupersawField::Detune(detune),
+        SupersawField::Spread(spread),
+    ];
+    if let Some(envelope) = envelope {
+        items.push(SupersawField::Envelope(envelope));
+    }
+    print_block(
+        ctx,
+        &header,
+        span,
+        &items,
+        supersaw_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            SupersawField::Voices(voices, _) => {
+                ctx.printer.line(format!("voices {voices}"));
+            }
+            SupersawField::Detune(factor) => {
+                ctx.printer.line(format!("detune {}", factor.value));
+            }
+            SupersawField::Spread(factor) => {
+                ctx.printer.line(format!("spread {}", factor.value));
+            }
+            SupersawField::Envelope(envelope) => print_envelope(ctx, envelope),
+        },
+    );
+}
+
 fn print_instrument(ctx: &mut Ctx<'_>, decl: &InstrumentDeclaration) {
     let name = ctx.text(decl.name.span).to_owned();
     match &decl.body {
-        InstrumentBody::Builtin(kind) => {
-            ctx.printer
-                .line(format!("instrument {name} = {}", ctx.text(kind.span)));
-        }
+        InstrumentBody::Oscillator {
+            waveform, envelope, ..
+        } => print_oscillator_instrument(ctx, &name, waveform, envelope.as_ref(), decl.span),
+        InstrumentBody::Supersaw {
+            voices,
+            voices_span,
+            detune,
+            spread,
+            envelope,
+            ..
+        } => print_supersaw_instrument(
+            ctx,
+            &name,
+            (*voices, *voices_span),
+            detune,
+            spread,
+            envelope.as_ref(),
+            decl.span,
+        ),
         InstrumentBody::Sampled { source, root, .. } => {
             let header = format!("instrument {name} = sampled");
             let fields = [SampledField::Source(source), SampledField::Root(root)];

@@ -385,6 +385,9 @@ enum CompletionBlock {
     Sampler,
     DrumMachine,
     Chance,
+    Oscillator,
+    Supersaw,
+    Envelope,
     Other,
 }
 
@@ -427,7 +430,14 @@ fn completion_labels(
 ) -> &'static [&'static str] {
     if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Equal) {
         if matches!(line_tokens.first(), Some(token) if token.kind == TokenKind::Instrument) {
-            &["sine", "triangle", "sampled", "sampler", "drum_machine"]
+            &[
+                "sine",
+                "triangle",
+                "synth",
+                "sampled",
+                "sampler",
+                "drum_machine",
+            ]
         } else {
             &["sequence", "steps"]
         }
@@ -437,6 +447,8 @@ fn completion_labels(
         labels
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
         &["alternate"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Synth) {
+        &["supersaw"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
         &["delay", "filter", "reverb"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Automate) {
@@ -554,6 +566,9 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Sampler) => &["pack"],
         Some(CompletionBlock::DrumMachine) => &["bank"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
+        Some(CompletionBlock::Oscillator) => &["envelope"],
+        Some(CompletionBlock::Supersaw) => &["voices", "detune", "spread", "envelope"],
+        Some(CompletionBlock::Envelope) => &["attack", "decay", "sustain", "release"],
         Some(CompletionBlock::Rhythm) => &["hit", "rest"],
         Some(CompletionBlock::Track) => &[
             "instrument",
@@ -650,6 +665,7 @@ fn velocity_keyword_follows(tokens: &[Token]) -> bool {
 
 fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
     let mut pending = None;
+    let mut previous = None;
     let mut blocks = Vec::new();
     for token in tokens {
         match token.kind {
@@ -682,12 +698,25 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
             TokenKind::DrumMachine => pending = Some(CompletionBlock::DrumMachine),
             TokenKind::Chance => pending = Some(CompletionBlock::Chance),
+            TokenKind::Supersaw => pending = Some(CompletionBlock::Supersaw),
+            TokenKind::Envelope => pending = Some(CompletionBlock::Envelope),
+            // `instrument x = sine { ... }` / `= triangle { ... }`: the
+            // bare waveform is a plain identifier (not a dedicated keyword
+            // token, like `sampled`/`sampler`/`drum_machine` are), so it is
+            // recognized by position instead — `=` immediately followed by
+            // an identifier is unique to this grammar production (every
+            // other `<keyword> =` in the language is followed by a
+            // dedicated keyword token, not a bare identifier).
+            TokenKind::Identifier if previous == Some(TokenKind::Equal) => {
+                pending = Some(CompletionBlock::Oscillator);
+            }
             TokenKind::LeftBrace => blocks.push(pending.take().unwrap_or(CompletionBlock::Other)),
             TokenKind::RightBrace => {
                 blocks.pop();
             }
             _ => {}
         }
+        previous = Some(token.kind);
     }
     blocks.last().copied()
 }
@@ -773,7 +802,17 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Exact
                     | TokenKind::Master
                     | TokenKind::Limiter
-                    | TokenKind::Ceiling,
+                    | TokenKind::Ceiling
+                    | TokenKind::Synth
+                    | TokenKind::Supersaw
+                    | TokenKind::Envelope
+                    | TokenKind::Attack
+                    | TokenKind::Decay
+                    | TokenKind::Sustain
+                    | TokenKind::Release
+                    | TokenKind::Voices
+                    | TokenKind::Detune
+                    | TokenKind::Spread,
                 ..
             }]
         )
@@ -992,6 +1031,16 @@ const fn keyword_description_declarations(kind: TokenKind) -> Option<&'static st
         TokenKind::Range => "sets an `lfo`'s sweep bounds, such as `600hz..2800hz`.",
         TokenKind::Rate => "sets an `lfo`'s speed, such as `2 cycles/bar`.",
         TokenKind::Cycles => "used in `rate N cycles/bar` to set an `lfo`'s speed.",
+        TokenKind::Synth => "introduces a synthesizer instrument kind, such as `supersaw`.",
+        TokenKind::Supersaw => "a unison of detuned sawtooth oscillators.",
+        TokenKind::Voices => "sets a `supersaw`'s oscillator count, such as `voices 5`.",
+        TokenKind::Detune => "sets a `supersaw`'s pitch spread, `0.0` to `1.0`.",
+        TokenKind::Spread => "sets a `supersaw`'s voice blend, `0.0` (thin) to `1.0` (thick).",
+        TokenKind::Envelope => "replaces an oscillator's fixed edge fade with an ADSR shape.",
+        TokenKind::Attack => "sets an envelope's ramp-up time, such as `4ms`.",
+        TokenKind::Decay => "sets an envelope's ramp-down-to-sustain time, such as `200ms`.",
+        TokenKind::Sustain => "sets an envelope's held level, `0.0` to `1.0`.",
+        TokenKind::Release => "sets an envelope's ramp-to-silence time, such as `150ms`.",
         _ => return None,
     })
 }
@@ -1263,7 +1312,14 @@ mod tests {
 
         assert_eq!(
             labels("song \"Test\" {\n  instrument lead = ", 1, 20),
-            ["sine", "triangle", "sampled", "sampler", "drum_machine"]
+            [
+                "sine",
+                "triangle",
+                "synth",
+                "sampled",
+                "sampler",
+                "drum_machine"
+            ]
         );
         assert_eq!(
             labels(
@@ -1443,6 +1499,44 @@ mod tests {
                 4
             ),
             ["mix", "size"]
+        );
+    }
+
+    #[test]
+    fn completes_oscillator_and_supersaw_envelope_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels("song \"Test\" {\ninstrument lead = synth ", 1, 24),
+            ["supersaw"]
+        );
+        assert_eq!(
+            labels("song \"Test\" {\ninstrument lead = sine {\n  ", 2, 2),
+            ["envelope"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ninstrument lead = synth supersaw {\n  ",
+                2,
+                2
+            ),
+            ["voices", "detune", "spread", "envelope"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ninstrument lead = sine {\n  envelope {\n    ",
+                3,
+                4
+            ),
+            ["attack", "decay", "sustain", "release"]
         );
     }
 

@@ -149,7 +149,7 @@ fn parses_instrument_assignments_in_arrangements() {
     let SongStatement::Instrument(instrument) = &song.statements[0] else {
         panic!("first statement should be an instrument");
     };
-    let InstrumentBody::Builtin(kind) = &instrument.body else {
+    let InstrumentBody::Oscillator { waveform: kind, .. } = &instrument.body else {
         panic!("instrument should be built in");
     };
     let SongStatement::Arrangement { entries, .. } = &song.statements[2] else {
@@ -244,6 +244,75 @@ fn parses_drum_machine_instruments() {
     };
 
     assert_eq!(bank.value, "RolandTR909");
+}
+
+#[test]
+fn parses_oscillator_instruments_with_envelope() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Envelope" {
+  instrument lead = sine { envelope { attack 4ms decay 200ms sustain 0.50 release 150ms } }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::Oscillator {
+        waveform,
+        envelope: Some(envelope),
+        ..
+    } = &instrument.body
+    else {
+        panic!("instrument should be an oscillator with an envelope");
+    };
+
+    assert_eq!(waveform.text, "sine");
+    assert_eq!(
+        (
+            envelope.attack.value.value,
+            envelope.attack.unit.text.as_str(),
+            envelope.decay.value.value,
+            envelope.sustain.value,
+            envelope.release.value.value,
+        ),
+        (4.0, "ms", 200.0, 0.50, 150.0)
+    );
+}
+
+#[test]
+fn parses_supersaw_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Supersaw" {
+  instrument chord_saw = synth supersaw { voices 5 detune 0.35 spread 0.80 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::Supersaw {
+        voices,
+        detune,
+        spread,
+        envelope,
+        ..
+    } = &instrument.body
+    else {
+        panic!("instrument should be a supersaw");
+    };
+
+    assert_eq!(
+        (*voices, detune.value, spread.value, envelope.is_none()),
+        (5, 0.35, 0.80, true)
+    );
 }
 
 #[test]

@@ -267,9 +267,42 @@ pub struct InstrumentDeclaration {
     pub span: SourceSpan,
 }
 
+/// `envelope { attack Ams decay Dms sustain S release Rms }`, replacing an
+/// oscillator instrument's (`sine`, `triangle`, `synth supersaw`) fixed edge
+/// fade with a real ADSR amplitude shape. `attack`/`decay`/`release` reuse
+/// the `ms`-unit `RateLiteral` grammar (validated at compile time, the same
+/// way `effect filter { cutoff }` validates `hz`/`khz`); `sustain` reuses
+/// `EffectFactor`, a plain `0.0..=1.0` level rather than a duration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnvelopeDeclaration {
+    pub attack: RateLiteral,
+    pub decay: RateLiteral,
+    pub sustain: EffectFactor,
+    pub release: RateLiteral,
+    pub span: SourceSpan,
+}
+
+/// `sine`/`triangle` (`waveform.text`, validated at compile time like
+/// before), or `synth supersaw { voices N detune D spread S }` — `voices`
+/// detuned sawtooth oscillators mixed together. Each accepts an optional
+/// trailing `envelope { ... }`; absent it, an instrument keeps the
+/// renderer's pre-existing fixed edge fade, so the bare `instrument x =
+/// sine` form keeps working unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InstrumentBody {
-    Builtin(Identifier),
+    Oscillator {
+        waveform: Identifier,
+        envelope: Option<EnvelopeDeclaration>,
+        span: SourceSpan,
+    },
+    Supersaw {
+        voices: u32,
+        voices_span: SourceSpan,
+        detune: EffectFactor,
+        spread: EffectFactor,
+        envelope: Option<EnvelopeDeclaration>,
+        span: SourceSpan,
+    },
     Sampled {
         source: QuotedString,
         root: Identifier,
@@ -368,7 +401,7 @@ pub enum SongStatement {
         mode: Identifier,
         span: SourceSpan,
     },
-    Instrument(InstrumentDeclaration),
+    Instrument(Box<InstrumentDeclaration>),
     Rhythm(RhythmDeclaration),
     Track(Box<TrackDeclaration>),
     Section(SectionDeclaration),

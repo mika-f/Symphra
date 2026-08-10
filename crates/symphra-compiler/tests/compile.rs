@@ -1,6 +1,7 @@
 use symphra_compiler::hir::{
-    Arrangement, Channels, Duration, InstrumentKind, Key, Meter, Mode, NodeId, Note, Pattern,
-    PatternOccurrence, PatternStep, PitchClass, Program, Project, Rhythm, RhythmItem, Song,
+    Arrangement, Channels, Duration, Envelope, InstrumentKind, Key, Meter, Mode, NodeId, Note,
+    Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rhythm, RhythmItem,
+    Song,
 };
 use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::{Effect, MusicalTime, SampleSelector};
@@ -1099,19 +1100,19 @@ fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
     program.songs[0].arrangement = Some(Arrangement::Patterns(vec![PatternOccurrence {
         id: NodeId(99),
         pattern: NodeId(u32::MAX),
-        instrument: InstrumentKind::Sine,
+        instrument: InstrumentKind::Sine { envelope: None },
     }]));
     let unknown = schedule(&program);
     program.songs[0].arrangement = Some(Arrangement::Patterns(vec![
         PatternOccurrence {
             id: NodeId(99),
             pattern: NodeId(1),
-            instrument: InstrumentKind::Sine,
+            instrument: InstrumentKind::Sine { envelope: None },
         },
         PatternOccurrence {
             id: NodeId(99),
             pattern: NodeId(1),
-            instrument: InstrumentKind::Sine,
+            instrument: InstrumentKind::Sine { envelope: None },
         },
     ]));
     let duplicate = schedule(&program);
@@ -1161,10 +1162,13 @@ song "Instruments" {
                 .collect::<Vec<_>>(),
         ),
         (
-            Some(vec![InstrumentKind::Triangle, InstrumentKind::Sine]),
+            Some(vec![
+                InstrumentKind::Triangle { envelope: None },
+                InstrumentKind::Sine { envelope: None },
+            ]),
             vec![
-                symphra_score::InstrumentKind::Triangle,
-                symphra_score::InstrumentKind::Sine,
+                symphra_score::InstrumentKind::Triangle { envelope: None },
+                symphra_score::InstrumentKind::Sine { envelope: None },
             ],
         )
     );
@@ -1203,8 +1207,14 @@ song "Layers" {
             .map(|track| (track.name.as_str(), track.instrument.clone()))
             .collect::<Vec<_>>(),
         vec![
-            ("bass", symphra_score::InstrumentKind::Sine),
-            ("bass", symphra_score::InstrumentKind::Triangle),
+            (
+                "bass",
+                symphra_score::InstrumentKind::Sine { envelope: None }
+            ),
+            (
+                "bass",
+                symphra_score::InstrumentKind::Triangle { envelope: None },
+            ),
         ],
         "layers share the declared track name but keep their own instrument"
     );
@@ -2497,6 +2507,136 @@ song "Empty voice" {
     let diagnostics = compile(&parsed.file).expect_err("empty voice name should fail");
 
     assert_eq!(diagnostics[0].message, "drum voice name must not be empty");
+}
+
+#[test]
+fn compile_should_lower_oscillator_envelope_and_supersaw_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Envelope" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine { envelope { attack 4ms decay 200ms sustain 0.50 release 150ms } }
+  instrument chord_saw = synth supersaw { voices 5 detune 0.35 spread 0.80 }
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+  }
+  track chords role harmony {
+    instrument chord_saw
+    play melody
+  }
+}
+"#,
+    );
+
+    let program = compile(&parsed.file).expect("envelope and supersaw instruments should compile");
+
+    let instrument_kinds: Vec<_> = program.songs[0]
+        .tracks
+        .iter()
+        .map(|track| track.instrument.clone())
+        .collect();
+
+    assert_eq!(
+        instrument_kinds,
+        vec![
+            InstrumentKind::Sine {
+                envelope: Some(Envelope {
+                    attack_ms: 4.0,
+                    decay_ms: 200.0,
+                    sustain: 0.50,
+                    release_ms: 150.0,
+                })
+            },
+            InstrumentKind::Supersaw {
+                voices: 5,
+                detune: 0.35,
+                spread: 0.80,
+                envelope: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_envelope_sustain_out_of_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "BadEnvelope" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine { envelope { attack 4ms decay 200ms sustain 1.50 release 150ms } }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range sustain should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "envelope sustain must be from 0.0 to 1.0"
+    );
+}
+
+#[test]
+fn compile_should_reject_envelope_duration_with_the_wrong_unit() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "BadEnvelopeUnit" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine { envelope { attack 4hz decay 200ms sustain 0.50 release 150ms } }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("non-ms attack unit should fail");
+
+    assert_eq!(diagnostics[0].message, "envelope attack unit must be `ms`");
+}
+
+#[test]
+fn compile_should_reject_zero_supersaw_voices() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "ZeroVoices" {
+  tempo 120bpm meter 4/4 key C major
+  instrument chord_saw = synth supersaw { voices 0 detune 0.35 spread 0.80 }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero voices should fail");
+
+    assert_eq!(diagnostics[0].message, "supersaw voices must be at least 1");
+}
+
+#[test]
+fn compile_should_reject_supersaw_detune_out_of_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "BadDetune" {
+  tempo 120bpm meter 4/4 key C major
+  instrument chord_saw = synth supersaw { voices 5 detune 1.50 spread 0.80 }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range detune should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "supersaw detune must be from 0.0 to 1.0"
+    );
 }
 
 #[test]

@@ -70,6 +70,18 @@ playback speed`). Since then, two further slices landed:
   value. This is the first (and, so far, only) implemented case of the
   original's general `automate { lfo ... }` mechanism. See §7 below for the
   scoping/topology decisions and implementation details.
+- A tenth slice, in a new session on 2026-08-10, closes most of §4's gap:
+  `instrument x = sine { envelope { attack Ams decay Dms sustain S release
+  Rms } }` / `= triangle { envelope { ... } }` add an optional configurable
+  ADSR amplitude envelope to the two existing oscillator instrument kinds,
+  and a new `instrument x = synth supersaw { voices N detune D spread S
+  [envelope { ... }] }` instrument kind adds a detuned-sawtooth-unison
+  instrument reusing the same envelope. `sine`/`triangle` keep their bare,
+  envelope-less form as a fully backward-compatible default; the `synth`
+  keyword is only ever paired with `supersaw`. SoundFont and VST3
+  instruments (§5) remain unimplemented. See §4 below for the envelope gain
+  formula, the supersaw detune/blend model, and why `sine`/`triangle`
+  weren't wrapped in `synth` to match the original verbatim.
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -138,7 +150,17 @@ the adjusted syntax described later:
 - `master { limiter { ceiling C } }`: a song-level peak-detect-and-scale
   limiter, applied to the whole summed master buffer after every track
   (and its effects) is mixed, before the renderer's final safety clamp and
-  PCM output conversion.
+  PCM output conversion;
+- `instrument x = sine { envelope { attack Ams decay Dms sustain S release
+  Rms } }` / `= triangle { envelope { ... } }`: an optional configurable ADSR
+  amplitude envelope on the two oscillator instrument kinds, replacing the
+  renderer's fixed edge fade for that instrument; absent `envelope`, the bare
+  `instrument x = sine` form renders exactly as before;
+- `instrument x = synth supersaw { voices N detune D spread S [envelope {
+  ... }] }`: a unison of `voices` detuned sawtooth oscillators (a new
+  `Waveform::Sawtooth`), `detune` controlling the pitch spread and `spread`
+  controlling the blend between the center and outer voices, sharing the
+  same optional `envelope` and the existing note-scheduling pipeline.
 
 ## Remaining language and runtime gaps
 
@@ -295,9 +317,7 @@ operates on the numeric `Index` half of `SampleSelector` and named drum voices
 have no ordinal range to pick from. `choose` blocks (compile-time weighted
 pattern alternatives) are unrelated and unchanged.
 
-### 4. Synth declarations and envelopes
-
-The original instrument syntax is not implemented:
+### 4. Synth declarations and envelopes — envelope and supersaw done, SoundFont/VST3 out of scope (see §5)
 
 ```symphra
 instrument chord_saw = synth supersaw {
@@ -313,18 +333,108 @@ instrument chord_saw = synth supersaw {
 }
 ```
 
-The same applies to `synth sine { envelope ... }` and `synth triangle {
-envelope ... }`. Current syntax declares the two oscillators directly:
+is implemented, along with `instrument lead = sine { envelope { ... } }` /
+`= triangle { envelope { ... } }`. Current syntax still declares the bare
+oscillators without a `synth` wrapper when no envelope is wanted:
 
 ```symphra
 instrument lead = sine
 instrument soft = triangle
 ```
 
-The renderer has no supersaw, configurable voice count, detune, spread, or
-ADSR envelope. It applies only its fixed edge fade. Implement a configurable
-envelope before promising the original synth blocks; supersaw can then reuse
-that instrument envelope and the existing oscillator/mixer boundary.
+**Design: `sine`/`triangle` keep their bare form; `synth` only pairs with
+`supersaw`.** The original always wraps every oscillator instrument in
+`synth <kind> { ... }`, even a plain `synth sine { envelope ... }`. This
+repo's `instrument x = sine` (no `synth`, no braces) was already an
+intentional simplification from an earlier session (see the
+intentional-differences table). Rather than reopening that decision, `sine`/
+`triangle` gained an *optional* trailing `{ envelope { ... } }` — the bare,
+brace-less form keeps working unchanged, so every existing `instrument x =
+sine` in this document's own examples still parses and renders identically.
+`synth` was introduced only as the new supersaw's prefix (`synth supersaw {
+... }`), since supersaw has no existing bare form to preserve — this mirrors
+how `sampled`/`sampler`/`drum_machine` are also dedicated keyword-and-brace
+instrument kinds, just gated behind one extra `synth` keyword the way the
+original spells it. `TokenKind::Synth`/`Supersaw`/`Envelope`/`Attack`/
+`Decay`/`Sustain`/`Release`/`Voices`/`Detune`/`Spread` are ten new real
+keyword tokens (mirroring how `Delay`/`Mix`/`Time`/`Feedback` were added for
+`effect`) — `sine`/`triangle` remain plain identifier text, validated at
+compile time exactly as before.
+
+**Grammar.** `InstrumentBody::Builtin(Identifier)` became `InstrumentBody::
+Oscillator { waveform, envelope: Option<EnvelopeDeclaration>, span }` and a
+new `InstrumentBody::Supersaw { voices, voices_span, detune: EffectFactor,
+spread: EffectFactor, envelope: Option<EnvelopeDeclaration>, span }`.
+`envelope { attack Ams decay Dms sustain S release Rms }` is its own small
+grammar production (`fn envelope` in the parser), reused identically by
+both instrument kinds: `attack`/`decay`/`release` reuse the `RateLiteral`
+grammar already used by `hz`/`khz`/`bpm` (validated as `ms` at compile
+time, the same `context`-parameterized-error convention `frequency_hz`
+already established for `hz`/`khz`); `sustain` reuses `EffectFactor`, the
+same dimensionless `0.0..=1.0` ratio `mix`/`resonance`/`size` already use.
+`SongStatement::Instrument` had to become `Instrument(Box<InstrumentDeclaration>)`
+(clippy's `large_enum_variant`, since `InstrumentBody` grew once `Supersaw`
+carries four value fields plus an optional four-field envelope) — a pure
+indirection change with no effect on any existing match/construction site
+past updating one parser call site.
+
+**Validation.** `envelope`'s `attack`/`decay`/`release` must be finite and
+`>= 0ms` (unlike `effect delay { time }`, a *zero*-length stage is a
+legitimate "skip this stage" value — `attack 0ms` means an instant attack —
+so, unlike `effect`'s existing zero-duration rejection, these are allowed to
+be zero); `sustain` must be finite and in `0.0..=1.0`. `supersaw`'s `voices`
+must be at least 1 (rejected below that, no upper bound — consistent with
+`repeat`'s uncapped `u32` count elsewhere in this grammar); `detune`/
+`spread` are both finite `0.0..=1.0` factors, identical checks to `effect`'s
+`mix`/`resonance`/`size`.
+
+**DSP — envelope.** `symphra_dsp::Envelope { attack_frames, decay_frames,
+sustain, release_frames }` (already-resolved sample frames, not `ms`) and
+`envelope_gain(sample_index, total_samples, envelope) -> f32` are new
+primitives. Unlike `fade_gain`'s symmetric attack/release ramp (both sides
+independently peak at `1.0`, so `.min()` is enough to combine them),
+`sustain` can be below `1.0`, so `envelope_gain` computes an attack-decay-
+sustain *level* first (ramping `0.0` to `1.0` over `attack_frames`, then to
+`sustain` over `decay_frames`, then holding), and multiplies that level by
+a separate `0.0..=1.0` release ramp anchored to the note's *end* (mirroring
+`fade_gain`'s "final `release_frames` before the end" window) — release
+scales whatever level attack/decay left the note at, rather than always
+ramping from `1.0`, so a `sustain` below `1.0` still glides smoothly to
+silence instead of jumping. `symphra-render`'s `dsp_envelope`/
+`envelope_ms_to_frames` resolve a score-level `Envelope` (milliseconds) to
+this frame-based one at the render sample rate — allowing zero frames,
+unlike `symphra_dsp`'s own internal `ms_to_frames` (used by `apply_reverb`,
+which clamps to at least one frame since a zero comb/allpass delay would
+read and write the same sample in one step).
+
+**DSP — supersaw.** `symphra_dsp::Waveform` gained a third `Sawtooth`
+variant: a naive (non-band-limited) ramp computed directly from
+`SineOscillator`'s existing phase (`phase / PI - 1.0`), the same
+simplification precedent `Triangle`'s `asin`-derived shape already
+established (no band-limiting there either). `SupersawOscillator::from_midi`
+builds `voices` `Oscillator`s of `Waveform::Sawtooth`, each detuned by a
+cents offset spread evenly across `+-50 * detune` cents (`50` cents at
+`detune 1.0` is a conventional supersaw detune range) and weighted by
+`spread` — `next_sample` returns the weighted average. **`spread`
+simplification:** the original's `spread` most likely means stereo pan
+width (spreading detuned voices left/right), but this renderer's note loop
+mixes one oscillator voice down to a single scalar sample under one
+track-level `Pan` (`render_track_notes`'s existing `Voice`/`mix_sample`
+pipeline, shared by every instrument kind); giving supersaw a genuinely
+independent per-voice stereo path would mean a second, divergent render
+loop just for this one instrument. Instead `spread` is implemented as a
+blend control — `0.0` weights only the least-detuned (center-most) voices,
+`1.0` weights every voice equally — which stays entirely inside the
+existing single-voice-per-instrument abstraction (`SupersawOscillator`
+plugs into `Voice` exactly like `Oscillator` already does) at the cost of
+not matching the original's literal stereo-width reading. `render_track_notes`
+gained a `Voice::Supersaw` arm alongside `Voice::Oscillator`/`Voice::Sample`;
+`render_track_samples`'s sampler/drum-machine-only container match gained a
+`Supersaw` arm on the same "not sample-based" side as `Sine`/`Triangle`/
+`Sampled`.
+
+**Still missing:** SoundFont and VST3 instruments (§5) — separate,
+larger, external-dependency-heavy backends left for their own slice.
 
 ### 5. SoundFont and VST3 instruments
 
@@ -804,7 +914,7 @@ not compile without translation:
 
 | Original Draft 0.1 | Current implementation |
 | --- | --- |
-| `instrument x = synth sine { ... }` | `instrument x = sine` |
+| `instrument x = synth sine { ... }` | `instrument x = sine`, optionally `instrument x = sine { envelope { ... } } }` — envelope supported, `synth` wrapper not (only `synth supersaw` uses `synth`) |
 | `chord [C4 E4 G4] for 1bar` | `chord C4 E4 G4 for 1bar` — brackets not restored, `1bar` now supported |
 | pattern declaration inside a track | pattern declaration at song scope |
 | `layer { use x { pattern phrase ... play ... } }` with inline patterns | `layer { use x { play ... } }` — layers supported, but patterns must still be declared at song scope |
@@ -901,11 +1011,23 @@ original intent before expanding degree-based harmony.
     worked `automate` example; `N cycles/bar` stays tempo/meter-agnostic
     through HIR/score and is resolved to Hz only in `symphra-render`, the
     same boundary `DelayEffect.time` already crosses.
-17. The next milestone, if wanted, is §4 synth envelopes/supersaw (needs a
-    configurable ADSR envelope designed first, before automating any of its
-    parameters); then §5 SoundFont/VST3 (largest, most
-    external-dependency-heavy, last). Automating parameters other than
-    `filter`'s `cutoff` (delay/reverb mix, resonance, etc.) remains
+17. ~~Design a configurable ADSR envelope, then add `synth supersaw` and
+    `envelope` blocks (§4).~~ Done, in a new session on 2026-08-10 —
+    `instrument x = sine { envelope { attack Ams decay Dms sustain S
+    release Rms } }` / `= triangle { envelope { ... } }` add an optional
+    ADSR envelope to the two existing oscillators (bare `sine`/`triangle`,
+    with no `synth` wrapper, still work unchanged as the envelope-less
+    default); `instrument x = synth supersaw { voices N detune D spread S
+    [envelope { ... }] }` adds a new detuned-sawtooth-unison instrument
+    kind reusing the same envelope. See §4 for the envelope gain formula
+    and the supersaw detune/blend design (`spread` is a blend control, not
+    literal stereo pan width — the renderer's existing per-note pipeline
+    mixes every instrument down to one scalar sample under one track-level
+    pan).
+18. The next milestone, if wanted, is §5 SoundFont/VST3 — the largest, most
+    external-dependency-heavy piece, left for last as originally planned.
+    Automating parameters other than `filter`'s `cutoff` (delay/reverb mix,
+    resonance, envelope stages, supersaw detune/spread, etc.) remains
     unimplemented and could be picked up at any point once wanted — see
     §7's "still missing" note.
 
@@ -1018,4 +1140,31 @@ further into `idempotency_sources_core`/`idempotency_sources_effects`, and
 `keyword_description_declarations`/`keyword_description_playback`; neither
 changes behavior. `cargo fmt --all -- --check` is clean except for the same
 two pre-existing, unrelated differences.
+
+The same also holds for the envelope/supersaw slice added in a new session
+on 2026-08-10: `cargo build --workspace --all-targets`, `cargo test
+--workspace` (with `symphra-lsp` run separately via `cargo test -p
+symphra-lsp --target-dir <alternate-dir>`), and `cargo clippy --workspace
+--all-targets -- -D warnings` all pass — 7 new DSP unit tests
+(`crates/symphra-dsp/src/lib.rs`, covering `envelope_gain`, the new
+`Waveform::Sawtooth`, and `SupersawOscillator`), 2 new parser tests
+(`crates/symphra-syntax/tests/syntax.rs`), 5 new compiler tests
+(`crates/symphra-compiler/tests/compile.rs`), 2 new render tests
+(`crates/symphra-render/src/lib.rs`), 1 new formatter round-trip test plus
+one idempotency source addition (`crates/symphra-fmt/tests/formatting.rs`),
+and 1 new LSP completion test (`apps/symphra-lsp/src/main.rs`) were added.
+Three mechanical, behavior-preserving changes were needed to satisfy strict
+clippy after the new variants/fields landed: `SongStatement::Instrument`
+became `Instrument(Box<InstrumentDeclaration>)` (`large_enum_variant`, since
+`InstrumentBody::Supersaw` grew the enum's largest variant well past
+`Pattern`'s, the previous runner-up); `fn instrument` in
+`crates/symphra-syntax/src/parser/mod.rs` was split into
+`supersaw_instrument_body`/`oscillator_instrument_body` helpers
+(`too_many_lines`); and `fn print_instrument` in
+`crates/symphra-fmt/src/format.rs` was similarly split into
+`print_oscillator_instrument`/`print_supersaw_instrument`
+(`too_many_lines`, then `too_many_arguments` once split, fixed by bundling
+`voices`/`voices_span` into one tuple parameter). `cargo fmt --all --
+--check` is clean except for the same two pre-existing, unrelated
+differences.
 

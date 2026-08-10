@@ -196,13 +196,13 @@ pub enum RhythmItem {
 /// (track-less, pattern-only songs — the original form), or a sequence of
 /// section references (songs with declared tracks + declared sections). The
 /// two never mix within one song.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Arrangement {
     Patterns(Vec<PatternOccurrence>),
     Sections(Vec<SectionOccurrence>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PatternOccurrence {
     pub id: NodeId,
     pub pattern: NodeId,
@@ -215,13 +215,49 @@ pub struct SectionOccurrence {
     pub section: NodeId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `envelope { attack Ams decay Dms sustain S release Rms }`, replacing an
+/// oscillator instrument's fixed edge fade with a real ADSR amplitude
+/// shape. `attack_ms`/`decay_ms`/`release_ms` stay tempo-agnostic
+/// milliseconds — like [`DelayEffect`]'s `time`, they are not converted to
+/// sample frames until render time, since only the renderer knows the
+/// sample rate. `sustain` is a `0.0..=1.0` level, not a duration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Envelope {
+    pub attack_ms: f32,
+    pub decay_ms: f32,
+    pub sustain: f32,
+    pub release_ms: f32,
+}
+
+/// `sine`/`triangle`, or `synth supersaw { voices N detune D spread S }` —
+/// `voices` detuned sawtooth oscillators mixed together. Each accepts an
+/// optional `envelope`; `None` keeps the renderer's pre-existing fixed edge
+/// fade, so a bare `instrument x = sine` (with no envelope) renders exactly
+/// as before this feature existed.
+#[derive(Clone, Debug, PartialEq)]
 pub enum InstrumentKind {
-    Sine,
-    Triangle,
-    Sampled { source: String, root_midi: u8 },
-    Sampler { pack: String },
-    DrumMachine { bank: String },
+    Sine {
+        envelope: Option<Envelope>,
+    },
+    Triangle {
+        envelope: Option<Envelope>,
+    },
+    Supersaw {
+        voices: u32,
+        detune: f32,
+        spread: f32,
+        envelope: Option<Envelope>,
+    },
+    Sampled {
+        source: String,
+        root_midi: u8,
+    },
+    Sampler {
+        pack: String,
+    },
+    DrumMachine {
+        bank: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

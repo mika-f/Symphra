@@ -362,9 +362,67 @@ fn parses_weighted_sample_choices() {
     assert_eq!(
         alternatives
             .iter()
-            .map(|alternative| (alternative.indices.clone(), alternative.weight))
+            .map(|alternative| (
+                alternative
+                    .selectors
+                    .iter()
+                    .map(|selector| match selector {
+                        symphra_syntax::ast::SampleSelectorExpression::Index(index) => *index,
+                        symphra_syntax::ast::SampleSelectorExpression::Named(_) =>
+                            panic!("unexpected drum selector"),
+                    })
+                    .collect::<Vec<_>>(),
+                alternative.weight
+            ))
             .collect::<Vec<_>>(),
         [(vec![1], 1), (vec![3, 5], 2)]
+    );
+}
+
+#[test]
+fn parses_drum_choice_alternatives() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "Choice" {
+  pattern kit = steps 1/8 {
+    choose { drum "bd" weight 1 sequence weight 2 { drum "hh" sample 3 } }
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+    let StepItem::Choose { alternatives, .. } = &items[0] else {
+        panic!("step should be a choice");
+    };
+
+    let describe = |selector: &symphra_syntax::ast::SampleSelectorExpression| match selector {
+        symphra_syntax::ast::SampleSelectorExpression::Index(index) => index.to_string(),
+        symphra_syntax::ast::SampleSelectorExpression::Named(name) => name.value.clone(),
+    };
+    assert_eq!(
+        alternatives
+            .iter()
+            .map(|alternative| (
+                alternative
+                    .selectors
+                    .iter()
+                    .map(describe)
+                    .collect::<Vec<_>>(),
+                alternative.weight
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (vec!["bd".to_owned()], 1),
+            (vec!["hh".to_owned(), "3".to_owned()], 2)
+        ]
     );
 }
 

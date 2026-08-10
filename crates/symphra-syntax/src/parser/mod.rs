@@ -6,9 +6,10 @@ use crate::ast::{
     GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
     NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
     ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
-    TransposeExpression, VelocityExpression, VolumeExpression,
+    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SampleSelectorExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackDeclaration, TransposeExpression, VelocityExpression,
+    VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -969,11 +970,21 @@ impl Parser {
         let mut alternatives = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             let alternative_start = self.current().span;
-            let (indices, default_weight_span) = match self.current().kind {
+            let (selectors, default_weight_span) = match self.current().kind {
                 TokenKind::Sample => {
                     self.bump();
                     let index = self.required(TokenKind::Integer, "expected sample index")?;
-                    (vec![self.parse_u32(&index)?], index.span)
+                    let span = index.span;
+                    (
+                        vec![SampleSelectorExpression::Index(self.parse_u32(&index)?)],
+                        span,
+                    )
+                }
+                TokenKind::Drum => {
+                    self.bump();
+                    let name = self.string("expected a quoted drum voice name")?;
+                    let span = name.span;
+                    (vec![SampleSelectorExpression::Named(name)], span)
                 }
                 TokenKind::Sequence => {
                     self.bump();
@@ -984,11 +995,26 @@ impl Parser {
                         None
                     };
                     self.required(TokenKind::LeftBrace, "expected `{` after choice sequence")?;
-                    let mut indices = Vec::new();
+                    let mut selectors = Vec::new();
                     while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-                        self.required(TokenKind::Sample, "expected `sample` in choice sequence")?;
-                        let index = self.required(TokenKind::Integer, "expected sample index")?;
-                        indices.push(self.parse_u32(&index)?);
+                        match self.current().kind {
+                            TokenKind::Sample => {
+                                self.bump();
+                                let index =
+                                    self.required(TokenKind::Integer, "expected sample index")?;
+                                selectors
+                                    .push(SampleSelectorExpression::Index(self.parse_u32(&index)?));
+                            }
+                            TokenKind::Drum => {
+                                self.bump();
+                                let name = self.string("expected a quoted drum voice name")?;
+                                selectors.push(SampleSelectorExpression::Named(name));
+                            }
+                            _ => {
+                                self.error("expected `sample` or `drum` in choice sequence");
+                                return None;
+                            }
+                        }
                     }
                     let end = self
                         .required(
@@ -1002,14 +1028,14 @@ impl Parser {
                         span: end,
                     });
                     alternatives.push(SampleChoiceAlternative {
-                        indices,
+                        selectors,
                         weight: self.parse_u32(&weight)?,
                         span: alternative_start.cover(end),
                     });
                     continue;
                 }
                 _ => {
-                    self.error("expected `sample` or `sequence` in choose");
+                    self.error("expected `sample`, `drum`, or `sequence` in choose");
                     return None;
                 }
             };
@@ -1024,7 +1050,7 @@ impl Parser {
                 }
             };
             alternatives.push(SampleChoiceAlternative {
-                indices,
+                selectors,
                 weight: self.parse_u32(&weight)?,
                 span: alternative_start.cover(weight.span),
             });

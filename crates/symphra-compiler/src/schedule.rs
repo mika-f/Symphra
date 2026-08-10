@@ -451,11 +451,25 @@ fn step_duration(step: &hir::PatternStep) -> Result<hir::Duration, ScheduleError
             .first()
             .map(|alternative| alternative.note.duration)
             .ok_or(ScheduleError::UnsupportedTriggeredStep),
-        // A Choice alternative's duration depends on how many samples its
-        // chosen sequence contains, which isn't known until the weighted
-        // selection runs during scheduling — incompatible with computing a
-        // fixed rhythm cell count ahead of time.
-        hir::PatternStep::Choice(_) => Err(ScheduleError::UnsupportedTriggeredStep),
+        // A Choice alternative's duration only stays fixed when it selects
+        // exactly one sample; a multi-sample sequence's duration depends on
+        // which alternative gets picked, which isn't known until the
+        // weighted selection runs during scheduling.
+        hir::PatternStep::Choice(choice) => {
+            if choice
+                .alternatives
+                .iter()
+                .any(|alternative| alternative.samples.len() != 1)
+            {
+                return Err(ScheduleError::UnsupportedTriggeredStep);
+            }
+            choice
+                .alternatives
+                .first()
+                .and_then(|alternative| alternative.samples.first())
+                .map(|sample| sample.duration)
+                .ok_or(ScheduleError::UnsupportedTriggeredStep)
+        }
     }
 }
 
@@ -517,7 +531,28 @@ fn triggered_step(
                     .collect::<Result<_, ScheduleError>>()?,
             }))
         }
-        hir::PatternStep::Choice(_) => Err(ScheduleError::UnsupportedTriggeredStep),
+        hir::PatternStep::Choice(choice) => Ok(hir::PatternStep::Choice(hir::SampleChoice {
+            id: generated_id(next_id)?,
+            alternatives: choice
+                .alternatives
+                .iter()
+                .map(|alternative| {
+                    let sample = alternative
+                        .samples
+                        .first()
+                        .ok_or(ScheduleError::UnsupportedTriggeredStep)?;
+                    Ok(hir::WeightedSampleSequence {
+                        samples: vec![hir::SampleTrigger {
+                            id: generated_id(next_id)?,
+                            duration,
+                            selector: sample.selector.clone(),
+                            velocity: sample.velocity,
+                        }],
+                        weight: alternative.weight,
+                    })
+                })
+                .collect::<Result<_, ScheduleError>>()?,
+        })),
     }
 }
 
@@ -775,9 +810,7 @@ pub enum ScheduleError {
     EmptyRhythm(hir::NodeId),
     #[error("pattern step duration must be divisible by rhythm resolution")]
     IncompatibleRhythmResolution,
-    #[error(
-        "trigger_with supports only note, chord, rest, sample, drum, and degree-choice pattern steps"
-    )]
+    #[error("trigger_with requires every choose alternative to select exactly one sample")]
     UnsupportedTriggeredStep,
     #[error("triggered pattern contains too many events")]
     TriggeredPatternTooLong,

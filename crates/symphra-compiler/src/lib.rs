@@ -6,8 +6,9 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
     Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration, PlaySource,
-    ProjectDeclaration, ProjectStatement, QuotedString, RhythmDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration,
+    ProjectDeclaration, ProjectStatement, QuotedString, RhythmDeclaration, SampleChoiceAlternative,
+    SampleSelectorExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackDeclaration,
 };
 
 use crate::hir::{
@@ -889,12 +890,31 @@ impl Compiler {
                     Some(alternative) => alternative.note.duration,
                     None => continue,
                 },
-                PatternStep::Choice(_) => {
-                    self.error(
-                        "trigger_with supports only note, chord, rest, sample, drum, and degree-choice pattern steps",
-                        span,
-                    );
-                    return;
+                // A Choice alternative's duration only stays fixed when it
+                // selects exactly one sample; a multi-sample sequence's
+                // duration depends on which alternative gets picked, which
+                // isn't known until the weighted selection runs during
+                // scheduling.
+                PatternStep::Choice(choice) => {
+                    if choice
+                        .alternatives
+                        .iter()
+                        .any(|alternative| alternative.samples.len() != 1)
+                    {
+                        self.error(
+                            "trigger_with requires every choose alternative to select exactly one sample",
+                            span,
+                        );
+                        return;
+                    }
+                    match choice
+                        .alternatives
+                        .first()
+                        .and_then(|alternative| alternative.samples.first())
+                    {
+                        Some(sample) => sample.duration,
+                        None => continue,
+                    }
                 }
             };
             if rhythm_cell_count(duration, rhythm.resolution).is_none() {
@@ -1156,47 +1176,66 @@ impl Compiler {
                     if alternatives.is_empty() {
                         self.error("choose must contain at least one sample", *span);
                     }
-                    let alternatives = alternatives
-                        .iter()
-                        .filter_map(|alternative| {
-                            if alternative.indices.is_empty() {
-                                self.error(
-                                    "choice sequence must contain at least one sample",
-                                    alternative.span,
-                                );
-                                return None;
-                            }
-                            if alternative.weight == 0 {
-                                self.error(
-                                    "choice weight must be greater than zero",
-                                    alternative.span,
-                                );
-                                None
-                            } else {
-                                Some(WeightedSampleSequence {
-                                    samples: alternative
-                                        .indices
-                                        .iter()
-                                        .map(|index| SampleTrigger {
-                                            id: self.id(),
-                                            selector: SampleSelector::Index(*index),
-                                            duration,
-                                            velocity: DEFAULT_VELOCITY,
-                                        })
-                                        .collect(),
-                                    weight: alternative.weight,
-                                })
-                            }
-                        })
-                        .collect();
                     Some(PatternStep::Choice(SampleChoice {
                         id: self.id(),
-                        alternatives,
+                        alternatives: self.sample_choice_alternatives(alternatives, duration),
                     }))
                 }
                 StepItem::ChooseDegrees { alternatives, span } => Some(PatternStep::DegreeChoice(
                     self.degree_choice(alternatives, *span, duration, key),
                 )),
+            })
+            .collect()
+    }
+
+    fn sample_choice_alternatives(
+        &mut self,
+        alternatives: &[SampleChoiceAlternative],
+        duration: Duration,
+    ) -> Vec<WeightedSampleSequence> {
+        alternatives
+            .iter()
+            .filter_map(|alternative| {
+                if alternative.selectors.is_empty() {
+                    self.error(
+                        "choice sequence must contain at least one sample",
+                        alternative.span,
+                    );
+                    return None;
+                }
+                if alternative.weight == 0 {
+                    self.error("choice weight must be greater than zero", alternative.span);
+                    return None;
+                }
+                if alternative.selectors.iter().any(|selector| {
+                    matches!(
+                        selector,
+                        SampleSelectorExpression::Named(name) if name.value.is_empty()
+                    )
+                }) {
+                    self.error("drum voice name must not be empty", alternative.span);
+                    return None;
+                }
+                Some(WeightedSampleSequence {
+                    samples: alternative
+                        .selectors
+                        .iter()
+                        .map(|selector| SampleTrigger {
+                            id: self.id(),
+                            selector: match selector {
+                                SampleSelectorExpression::Index(index) => {
+                                    SampleSelector::Index(*index)
+                                }
+                                SampleSelectorExpression::Named(name) => {
+                                    SampleSelector::Named(name.value.clone())
+                                }
+                            },
+                            duration,
+                            velocity: DEFAULT_VELOCITY,
+                        })
+                        .collect(),
+                    weight: alternative.weight,
+                })
             })
             .collect()
     }

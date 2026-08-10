@@ -60,9 +60,15 @@ pub struct DegreeChoiceAlternative {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SampleChoiceAlternative {
-    pub indices: Vec<u32>,
+    pub selectors: Vec<SampleSelectorExpression>,
     pub weight: u32,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SampleSelectorExpression {
+    Index(u32),
+    Named(QuotedString),
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -1647,7 +1647,61 @@ song "Melody" {
 }
 
 #[test]
-fn compile_should_reject_triggered_sample_choice_steps() {
+fn schedule_should_trigger_single_sample_choice_steps_with_rhythm() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 20260809 sample_rate 8khz output mono }
+song "Sampler" {
+  tempo 120bpm meter 4/4 key C major
+  instrument voice = sampler { pack "numbers" }
+  rhythm off_beat resolution 1/8 { hit rest }
+  pattern phrase = steps 1/8 { choose { sample 1 weight 1 sample 2 weight 1 } choose { sample 3 weight 1 sample 4 weight 1 } }
+  track voice role melody {
+    instrument voice
+    play phrase |> trigger_with off_beat
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("triggered single-sample choice should compile");
+
+    let score = schedule(&program).expect("triggered single-sample choice should schedule");
+
+    let samples = &score.songs[0].tracks[0].samples;
+    assert_eq!(samples.len(), 1);
+    assert!(matches!(sample_index(&samples[0].selector), 1 | 2));
+}
+
+#[test]
+fn schedule_should_trigger_single_drum_choice_steps_with_rhythm() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Drums" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tr909 = drum_machine { bank "RolandTR909" }
+  rhythm off_beat resolution 1/8 { hit rest }
+  pattern kit = steps 1/8 { choose { drum "bd" weight 1 drum "sn" weight 1 } choose { drum "hh" weight 1 } }
+  track drums role beat {
+    instrument tr909
+    play kit |> trigger_with off_beat
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("triggered single-drum choice should compile");
+
+    let score = schedule(&program).expect("triggered single-drum choice should schedule");
+
+    let samples = &score.songs[0].tracks[0].samples;
+    assert_eq!(samples.len(), 1);
+    assert!(matches!(sample_name(&samples[0].selector), "bd" | "sn"));
+}
+
+#[test]
+fn compile_should_reject_triggered_multi_sample_choice_sequence() {
     let parsed = parse(
         SourceId(0),
         r#"
@@ -1656,7 +1710,7 @@ song "Sampler" {
   tempo 120bpm meter 4/4 key C major
   instrument voice = sampler { pack "numbers" }
   rhythm off_beat resolution 1/8 { hit rest }
-  pattern phrase = steps 1/8 { choose { sample 1 weight 1 sample 2 weight 1 } }
+  pattern phrase = steps 1/8 { choose { sequence weight 1 { sample 1 sample 2 } } }
   track voice role melody {
     instrument voice
     play phrase |> trigger_with off_beat
@@ -1665,11 +1719,12 @@ song "Sampler" {
 "#,
     );
 
-    let diagnostics = compile(&parsed.file).expect_err("triggered sample choice should fail");
+    let diagnostics =
+        compile(&parsed.file).expect_err("triggered multi-sample sequence should fail");
 
     assert_eq!(
         diagnostics[0].message,
-        "trigger_with supports only note, chord, rest, sample, drum, and degree-choice pattern steps"
+        "trigger_with requires every choose alternative to select exactly one sample"
     );
 }
 

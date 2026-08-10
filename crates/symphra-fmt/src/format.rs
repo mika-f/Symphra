@@ -6,8 +6,8 @@ use symphra_syntax::ast::{
     DegreeChoiceAlternative, Identifier, InstrumentBody, InstrumentDeclaration, NoteExpression,
     PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
     ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    SpeedExpression, StepItem, TrackDeclaration, VolumeExpression,
+    SampleChoiceAlternative, SampleSelectorExpression, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, SpeedExpression, StepItem, TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -737,17 +737,26 @@ fn print_degree_choice_alternative(ctx: &mut Ctx<'_>, alternative: &DegreeChoice
 /// and the AST does not distinguish which one the author used, so the
 /// formatter always normalizes to the shorter form.
 fn print_sample_choice_alternative(ctx: &mut Ctx<'_>, alternative: &SampleChoiceAlternative) {
-    if let [index] = alternative.indices[..] {
+    if let [selector] = &alternative.selectors[..] {
+        let text = selector_text(ctx, selector);
         ctx.printer
-            .line(format!("sample {index} weight {}", alternative.weight));
+            .line(format!("{text} weight {}", alternative.weight));
         return;
     }
     ctx.printer
         .line(format!("sequence weight {} {{", alternative.weight));
     ctx.printer.indent();
-    for index in &alternative.indices {
-        ctx.printer.line(format!("sample {index}"));
+    for selector in &alternative.selectors {
+        let text = selector_text(ctx, selector);
+        ctx.printer.line(text);
     }
     ctx.printer.dedent();
     ctx.printer.line("}");
+}
+
+fn selector_text(ctx: &mut Ctx<'_>, selector: &SampleSelectorExpression) -> String {
+    match selector {
+        SampleSelectorExpression::Index(index) => format!("sample {index}"),
+        SampleSelectorExpression::Named(name) => format!("drum {}", ctx.text(name.span)),
+    }
 }

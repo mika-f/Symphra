@@ -502,8 +502,8 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         ],
         Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
         Some(CompletionBlock::Steps) => &["degree", "sample", "drum", "rest", "choose"],
-        Some(CompletionBlock::Choice) => &["degree", "sample", "sequence"],
-        Some(CompletionBlock::ChoiceSequence) => &["sample"],
+        Some(CompletionBlock::Choice) => &["degree", "sample", "drum", "sequence"],
+        Some(CompletionBlock::ChoiceSequence) => &["sample", "drum"],
         Some(CompletionBlock::Sampled) => &["source", "root"],
         Some(CompletionBlock::Sampler) => &["pack"],
         Some(CompletionBlock::DrumMachine) => &["bank"],
@@ -985,7 +985,7 @@ mod tests {
                 3,
                 4
             ),
-            ["degree", "sample", "sequence"]
+            ["degree", "sample", "drum", "sequence"]
         );
         assert_eq!(
             labels(
@@ -993,7 +993,7 @@ mod tests {
                 4,
                 6
             ),
-            ["sample"]
+            ["sample", "drum"]
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = sequence {\n  note C4 ", 2, 10),

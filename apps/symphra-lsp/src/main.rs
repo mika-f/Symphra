@@ -15,13 +15,14 @@ use tower_lsp_server::ls_types::{
     CodeLens, CodeLensOptions, CodeLensParams, Command, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
-    MarkupKind, OneOf, Position, PositionEncodingKind, PrepareRenameResponse, Range,
-    ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
-    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
+    InitializeParams, InitializeResult, Location, MarkupContent, MarkupKind, OneOf, Position,
+    PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, RenameOptions,
+    RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgressOptions, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -65,6 +66,7 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
@@ -173,6 +175,18 @@ impl LanguageServer for Backend {
         Ok(documents
             .get(&uri)
             .map(|source| references(source, &uri, position, include_declaration)))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let documents = self.documents.read().await;
+        let position = params.text_document_position_params.position;
+        let uri = params.text_document_position_params.text_document.uri;
+        Ok(documents
+            .get(&uri)
+            .map(|source| document_highlights(source, position)))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -1096,20 +1110,7 @@ fn references(
     position: Position,
     include_declaration: bool,
 ) -> Vec<Location> {
-    let Some(offset) = source.byte_offset_utf16(SourcePosition {
-        line: position.line,
-        utf16_column: position.character,
-    }) else {
-        return Vec::new();
-    };
-    let parsed = parse(source.id, &source.text);
-    let Some((declaration, ref_spans)) = parsed.file.declarations.iter().find_map(|declaration| {
-        let Declaration::Song(song) = declaration else {
-            return None;
-        };
-        let (kind, name, declaration_span) = named_symbol_at(song, offset)?;
-        Some((declaration_span, reference_spans(song, kind, name)))
-    }) else {
+    let Some((declaration, ref_spans)) = named_symbol_spans(source, position) else {
         return Vec::new();
     };
 
@@ -1125,6 +1126,48 @@ fn references(
         }
     }
     locations
+}
+
+fn document_highlights(source: &SourceText, position: Position) -> Vec<DocumentHighlight> {
+    let Some((declaration, ref_spans)) = named_symbol_spans(source, position) else {
+        return Vec::new();
+    };
+
+    let mut highlights = Vec::with_capacity(ref_spans.len() + 1);
+    if let Some(range) = lsp_range(source, declaration) {
+        highlights.push(DocumentHighlight {
+            range,
+            kind: Some(DocumentHighlightKind::WRITE),
+        });
+    }
+    for span in ref_spans {
+        if let Some(range) = lsp_range(source, span) {
+            highlights.push(DocumentHighlight {
+                range,
+                kind: Some(DocumentHighlightKind::READ),
+            });
+        }
+    }
+    highlights
+}
+
+/// Song-local declaration span plus reference spans for the symbol under `position`.
+fn named_symbol_spans(
+    source: &SourceText,
+    position: Position,
+) -> Option<(SourceSpan, Vec<SourceSpan>)> {
+    let offset = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    })?;
+    let parsed = parse(source.id, &source.text);
+    parsed.file.declarations.iter().find_map(|declaration| {
+        let Declaration::Song(song) = declaration else {
+            return None;
+        };
+        let (kind, name, declaration_span) = named_symbol_at(song, offset)?;
+        Some((declaration_span, reference_spans(song, kind, name)))
+    })
 }
 
 fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
@@ -1645,12 +1688,13 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceId, SourceText, code_lenses, completions, definition, diagnostics, document_symbols,
-        flatten_document_symbols, formatting_edits, hover, prepare_rename, references, rename,
+        SourceId, SourceText, code_lenses, completions, definition, diagnostics,
+        document_highlights, document_symbols, flatten_document_symbols, formatting_edits, hover,
+        prepare_rename, references, rename,
     };
     use tower_lsp_server::ls_types::{
-        CompletionItemKind, DiagnosticSeverity, Position, PrepareRenameResponse, Range, SymbolKind,
-        Uri,
+        CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, Position,
+        PrepareRenameResponse, Range, SymbolKind, Uri,
     };
 
     #[test]
@@ -2778,6 +2822,47 @@ mod tests {
         // First.melody is a different symbol with zero uses in its song.
         let other_song = references(&source, &uri, Position::new(1, 10), false);
         assert!(other_song.is_empty());
+    }
+
+    #[test]
+    fn highlights_named_symbol_reads_and_writes() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  pattern melody = sequence {}\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  arrangement { melody }\n",
+                "}\n",
+            ),
+        );
+
+        // Declaration site in Second: write + one read.
+        let from_decl = document_highlights(&source, Position::new(4, 10));
+        assert_eq!(from_decl.len(), 2);
+        assert_eq!(from_decl[0].kind, Some(DocumentHighlightKind::WRITE));
+        assert_eq!(
+            from_decl[0].range,
+            Range::new(Position::new(4, 10), Position::new(4, 16))
+        );
+        assert_eq!(from_decl[1].kind, Some(DocumentHighlightKind::READ));
+        assert_eq!(
+            from_decl[1].range,
+            Range::new(Position::new(5, 16), Position::new(5, 22))
+        );
+
+        // Use site yields the same set.
+        let from_use = document_highlights(&source, Position::new(5, 17));
+        assert_eq!(from_use, from_decl);
+
+        // First.melody has only its declaration write.
+        let other = document_highlights(&source, Position::new(1, 10));
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].kind, Some(DocumentHighlightKind::WRITE));
+        assert!(document_highlights(&source, Position::new(0, 1)).is_empty());
     }
 
     #[test]

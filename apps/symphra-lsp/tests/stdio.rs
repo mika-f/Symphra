@@ -154,6 +154,10 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         true
     );
     assert_eq!(
+        initialized["result"]["capabilities"]["documentHighlightProvider"],
+        true
+    );
+    assert_eq!(
         initialized["result"]["capabilities"]["codeLensProvider"],
         json!({ "resolveProvider": false })
     );
@@ -328,6 +332,36 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     server.send(&json!({
         "jsonrpc": "2.0",
         "id": 8,
+        "method": "textDocument/documentHighlight",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 2, "character": 10 }
+        }
+    }));
+    let highlights = server.receive();
+    assert_eq!(
+        highlights["result"],
+        json!([
+            {
+                "range": {
+                    "start": { "line": 2, "character": 10 },
+                    "end": { "line": 2, "character": 16 }
+                },
+                "kind": 3
+            },
+            {
+                "range": {
+                    "start": { "line": 3, "character": 16 },
+                    "end": { "line": 3, "character": 22 }
+                },
+                "kind": 2
+            }
+        ])
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 9,
         "method": "textDocument/prepareRename",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
@@ -348,7 +382,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 9,
+        "id": 10,
         "method": "textDocument/rename",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
@@ -400,11 +434,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 10,
+        "id": 11,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 10);
+    assert_eq!(server.receive()["id"], 11);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

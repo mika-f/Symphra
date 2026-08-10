@@ -1,0 +1,436 @@
+// aoharu-signal.sym
+// Phase A skeleton of examples/draft-0.1/001-example.str (Strudel)
+// "Kawaii Future Bass — Aoharu Signal"
+//
+// Structure: Intro 4 → Build 4 → Drop 8 → Outro 4 (20 bars @ 150bpm)
+// Harmony: D major 4536 — Gmaj7 → A7 → F#m7 → Bm7
+//
+// Phase A (this file): built-in oscillators only — no SF2 / drum banks / noise.
+// Phase B (later): gm_music_box, gm_pad_2_warm, gm_voice_oohs, RolandTR909,
+//                  white-noise riser, dual delay+reverb where wanted.
+//
+// Deliberate simplifications vs Strudel:
+// - no drums / snare roll / riser (need samples)
+// - one effect per track (reverb OR filter OR delay, not both)
+// - no continuous pan/gain LFO (fixed volume; filter LFO only on fb_chords)
+// - square → triangle; sawtooth bass → supersaw voices 1; music-box/pad/oohs
+//   → sine/triangle placeholders
+// - mini-notation expanded to sequence / steps / rhythm
+
+project {
+  seed 20260811
+  sample_rate 48khz
+  output stereo
+}
+
+song "Aoharu Signal" {
+  tempo 150bpm
+  meter 4/4
+  key D major
+
+  // ─────────────────────────────────────────────
+  // Instruments (Phase A placeholders)
+  // ─────────────────────────────────────────────
+
+  // Strudel: supersaw + detune + short ADSR
+  instrument fb_saw = synth supersaw {
+    voices 5
+    detune 0.40
+    spread 0.70
+
+    envelope {
+      attack  10ms
+      decay   150ms
+      sustain 0.30
+      release 100ms
+    }
+  }
+
+  // Strudel: sawtooth bass — single detuned saw approximation
+  instrument bass_saw = synth supersaw {
+    voices 1
+    detune 0.0
+    spread 0.0
+
+    envelope {
+      attack  10ms
+      decay   100ms
+      sustain 0.60
+      release 50ms
+    }
+  }
+
+  // Strudel: gm_music_box → bright short tone
+  instrument arp_tone = triangle {
+    envelope {
+      attack  5ms
+      decay   120ms
+      sustain 0.20
+      release 80ms
+    }
+  }
+
+  // Strudel: gm_pad_2_warm → slow sine pad
+  instrument pad_tone = sine {
+    envelope {
+      attack  300ms
+      decay   200ms
+      sustain 0.85
+      release 500ms
+    }
+  }
+
+  // Strudel: gm_voice_oohs → soft mid pad-ish tone
+  instrument vox_tone = sine {
+    envelope {
+      attack  40ms
+      decay   100ms
+      sustain 0.50
+      release 120ms
+    }
+  }
+
+  // Strudel: square lead → triangle (no square oscillator yet)
+  instrument lead_tone = triangle {
+    envelope {
+      attack  10ms
+      decay   80ms
+      sustain 0.40
+      release 80ms
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Rhythms
+  // ─────────────────────────────────────────────
+
+  // Strudel fbChords struct: <[x ~ ~ x ~ ~ x ~] [x ~ ~ x ~ ~ x x]>
+  // (alternating tresillo-ish bars, two-bar cycle)
+  rhythm chord_stabs resolution 1/8 {
+    hit rest rest hit rest rest hit rest
+    hit rest rest hit rest rest hit hit
+  }
+
+  // Strudel vox struct: "[~ x] ~ [x x] ~" → 8ths
+  rhythm vox_hits resolution 1/8 {
+    rest hit rest rest hit hit rest rest
+  }
+
+  // Strudel bass struct: "x ~ [~ x] x ~ x ~ ~" on a 16th grid
+  rhythm bass_pulse resolution 1/16 {
+    hit rest rest rest rest hit hit rest
+    rest rest hit rest rest rest rest rest
+  }
+
+  // ─────────────────────────────────────────────
+  // Harmonic material (4-bar phrase)
+  // ─────────────────────────────────────────────
+
+  // Gmaj7 | A7 | F#m7 | Bm7  (mid voicing)
+  pattern pad_chords = sequence {
+    chord G3 B3 D4 F#4 for 1bar
+    chord A3 C#4 E4 G4 for 1bar
+    chord F#3 A3 C#4 E4 for 1bar
+    chord B3 D4 F#4 A4 for 1bar
+  }
+
+  // Same progression +1 octave (Strudel .add(note(12)))
+  pattern drop_chords = sequence {
+    chord G4 B4 D5 F#5 for 1bar
+    chord A4 C#5 E5 G5 for 1bar
+    chord F#4 A4 C#5 E5 for 1bar
+    chord B4 D5 F#5 A5 for 1bar
+  }
+
+  pattern bass_roots = sequence {
+    note G2 for 1bar
+    note A2 for 1bar
+    note F#2 for 1bar
+    note B2 for 1bar
+  }
+
+  // Music-box style arpeggio, 1/8, 4 bars
+  pattern arpeggio = sequence {
+    note G4 for 1/8
+    note B4 for 1/8
+    note D5 for 1/8
+    note F#5 for 1/8
+    note G5 for 1/8
+    note F#5 for 1/8
+    note D5 for 1/8
+    note B4 for 1/8
+
+    note A4 for 1/8
+    note C#5 for 1/8
+    note E5 for 1/8
+    note G5 for 1/8
+    note A5 for 1/8
+    note G5 for 1/8
+    note E5 for 1/8
+    note C#5 for 1/8
+
+    note F#4 for 1/8
+    note A4 for 1/8
+    note C#5 for 1/8
+    note E5 for 1/8
+    note F#5 for 1/8
+    note E5 for 1/8
+    note C#5 for 1/8
+    note A4 for 1/8
+
+    note B4 for 1/8
+    note D5 for 1/8
+    note F#5 for 1/8
+    note A5 for 1/8
+    note B5 for 1/8
+    note A5 for 1/8
+    note F#5 for 1/8
+    note D5 for 1/8
+  }
+
+  // Lead: nested mini-notation expanded (8ths + 16ths where [a b] appeared)
+  pattern lead_line = sequence {
+    // bar 1: [d5 [d5 e5] f#5 a5 ~ b5 a5 f#5]
+    note D5 for 1/8
+    note D5 for 1/16
+    note E5 for 1/16
+    note F#5 for 1/8
+    note A5 for 1/8
+    rest for 1/8
+    note B5 for 1/8
+    note A5 for 1/8
+    note F#5 for 1/8
+
+    // bar 2: [c#5 [c#5 e5] g5 a5 ~ b5 a5 e5]
+    note C#5 for 1/8
+    note C#5 for 1/16
+    note E5 for 1/16
+    note G5 for 1/8
+    note A5 for 1/8
+    rest for 1/8
+    note B5 for 1/8
+    note A5 for 1/8
+    note E5 for 1/8
+
+    // bar 3: [a4 [a4 c#5] e5 f#5 ~ a5 f#5 e5]
+    note A4 for 1/8
+    note A4 for 1/16
+    note C#5 for 1/16
+    note E5 for 1/8
+    note F#5 for 1/8
+    rest for 1/8
+    note A5 for 1/8
+    note F#5 for 1/8
+    note E5 for 1/8
+
+    // bar 4: [b4 d5 f#5 [a5 b5] a5 f#5 e5 d5]
+    note B4 for 1/8
+    note D5 for 1/8
+    note F#5 for 1/8
+    note A5 for 1/16
+    note B5 for 1/16
+    note A5 for 1/8
+    note F#5 for 1/8
+    note E5 for 1/8
+    note D5 for 1/8
+  }
+
+  // ─────────────────────────────────────────────
+  // Tracks
+  // ─────────────────────────────────────────────
+
+  track arp role harmony {
+    instrument arp_tone
+    volume -8db
+
+    play arpeggio
+
+    effect reverb {
+      mix 0.60
+      size 0.80
+    }
+  }
+
+  // Quieter double for the drop (Strudel arp.gain(.3))
+  track arp_drop role harmony {
+    instrument arp_tone
+    volume -14db
+
+    play arpeggio
+      |> repeat 2
+
+    effect reverb {
+      mix 0.50
+      size 0.70
+    }
+  }
+
+  track pad role harmony {
+    instrument pad_tone
+    volume -10db
+
+    play pad_chords
+
+    effect reverb {
+      mix 0.50
+      size 0.70
+    }
+  }
+
+  // Slightly louder pad for the build (Strudel pad.gain(.5))
+  track pad_build role harmony {
+    instrument pad_tone
+    volume -7db
+
+    play pad_chords
+
+    effect reverb {
+      mix 0.50
+      size 0.70
+    }
+  }
+
+  track fb_chords role harmony {
+    instrument fb_saw
+    volume -6db
+
+    play drop_chords
+      |> trigger_with chord_stabs
+      |> gate 90%
+      |> repeat 2
+
+    // Strudel: lpf(sine.range(1400, 5200).fast(2))
+    effect filter {
+      cutoff 1400hz
+      resonance 0.55
+    }
+
+    automate cutoff {
+      lfo sine {
+        range 1400hz..5200hz
+        rate 2 cycles/bar
+      }
+    }
+  }
+
+  track vox role lead {
+    instrument vox_tone
+    volume -9db
+
+    play drop_chords
+      |> trigger_with vox_hits
+      |> gate 50%
+      |> repeat 2
+
+    effect reverb {
+      mix 0.55
+      size 0.70
+    }
+  }
+
+  track vox_outro role lead {
+    instrument vox_tone
+    volume -14db
+
+    play drop_chords
+      |> trigger_with vox_hits
+      |> gate 50%
+
+    effect reverb {
+      mix 0.55
+      size 0.70
+    }
+  }
+
+  track bass role bass {
+    instrument bass_saw
+    volume -3db
+
+    play bass_roots
+      |> trigger_with bass_pulse
+      |> gate 85%
+      |> repeat 2
+
+    effect filter {
+      cutoff 500hz
+      resonance 0.20
+    }
+  }
+
+  // Lead + thin +12 layer (Strudel superimpose octave)
+  track lead role lead {
+    volume -5db
+
+    layer {
+      use lead_tone {
+        play lead_line
+          |> gate 85%
+          |> repeat 2
+      }
+
+      use lead_tone {
+        play lead_line
+          |> transpose +12st
+          |> gain 0.20
+          |> gate 85%
+          |> repeat 2
+      }
+    }
+
+    effect delay {
+      mix 0.25
+      time 1/4
+      feedback 0.20
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  // Arrangement — 4 phrases
+  // Phase B: add light_drums / bd+roll+riser / drop_drums per section
+  // ─────────────────────────────────────────────
+
+  section intro bars 4 {
+    parallel exact {
+      play track arp
+      play track pad
+    }
+  }
+
+  section build bars 4 {
+    parallel exact {
+      play track arp
+      play track pad_build
+    }
+  }
+
+  section drop bars 8 {
+    parallel exact {
+      play track fb_chords
+      play track vox
+      play track bass
+      play track lead
+      play track arp_drop
+    }
+  }
+
+  section outro bars 4 {
+    parallel exact {
+      play track arp
+      play track pad
+      play track vox_outro
+    }
+  }
+
+  arrangement {
+    play intro
+    play build
+    play drop
+    play outro
+  }
+
+  master {
+    limiter {
+      ceiling -0.3db
+    }
+  }
+}

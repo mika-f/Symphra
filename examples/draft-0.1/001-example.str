@@ -1,0 +1,122 @@
+// ✧･ﾟ Kawaii Future Bass — "Aoharu Signal" ･ﾟ✧
+// 明るい4フレーズ構成: Intro → Build → Drop → Outro
+// strudel.cc に貼り付けて Ctrl+Enter で再生
+
+setcps(150/60/4) // 150 BPM
+
+// ---- コード進行: 王道進行 4536 (D major: IV△7 → V7 → iiim7 → vim7) ----
+const prog = chord("<G^7 A7 F#m7 Bm7>")
+
+// ---- キラキラ アルペジオ (オルゴール) ----
+const arp = note(`<
+  [g4 b4 d5 f#5 g5 f#5 d5 b4]
+  [a4 c#5 e5 g5 a5 g5 e5 c#5]
+  [f#4 a4 c#5 e5 f#5 e5 c#5 a4]
+  [b4 d5 f#5 a5 b5 a5 f#5 d5]
+>`)
+  .s("gm_music_box")
+  .gain(.45).room(.6).size(.8)
+  .delay(.3).delaytime(.1875)
+  .pan(sine.range(.3, .7).slow(2))
+
+// ---- ふんわりパッド ----
+const pad = prog.voicing()
+  .s("gm_pad_2_warm")
+  .attack(.3).release(.5)
+  .gain(.4).room(.5)
+
+// ---- Future Bass コードスタブ (ドロップの主役) ----
+const fbChords = prog.voicing().add(note(12))
+  .struct("<[x ~ ~ x ~ ~ x ~] [x ~ ~ x ~ ~ x x]>") // トレシーヨ (3-3-2) で安定感のあるノリに
+  .s("supersaw").detune(.4)
+  .adsr(".01:.15:.3:.1")
+  .lpf(sine.range(1400, 5200).fast(2)) // ワブル感 (下限を上げて不安定さを軽減)
+  .lpq(6)
+  .gain(saw.range(.25, .95).fast(4))  // サイドチェイン風ポンピング
+  .room(.4)
+
+// ---- ボーカルチョップ風 (Oohs) ----
+const vox = prog.voicing().add(note(12))
+  .struct("[~ x] ~ [x x] ~")
+  .s("gm_voice_oohs")
+  .clip(.5)
+  .gain(saw.range(.2, .6).fast(4))
+  .room(.6).delay(.2)
+
+// ---- ベース ----
+const bass = prog.rootNotes(2)
+  .struct("x ~ [~ x] x ~ x ~ ~")
+  .s("sawtooth")
+  .lpf(500).adsr(".01:.1:.6:.05")
+  .gain(.9)
+
+// ---- リードメロディ (跳ねる楽しい主旋律) ----
+const lead = note(`<
+  [d5 [d5 e5] f#5 a5 ~ b5 a5 f#5]
+  [c#5 [c#5 e5] g5 a5 ~ b5 a5 e5]
+  [a4 [a4 c#5] e5 f#5 ~ a5 f#5 e5]
+  [b4 d5 f#5 [a5 b5] a5 f#5 e5 d5]
+>`)
+  .s("square")
+  .adsr(".01:.08:.4:.08")
+  .clip(.85) // 少しスタッカートにして弾む感じに
+  .lpf(4500)
+  .gain(.7)
+  .delay(.25).room(.35)
+  .superimpose(x => x.add(note(12)).gain(.2)) // 1オクターブ上を薄く重ねてキラキラに
+
+// ---- ドラム ----
+const dropDrums = stack(
+  s("~ cp ~ cp").bank("RolandTR909").room(.3),
+  s("hh*8").bank("RolandTR909").gain("[.3 .5]*4").degradeBy(.1),
+  s("~ ~ ~ [~ oh]").bank("RolandTR909").gain(.4)
+)
+
+const lightDrums = stack(
+  s("hh*4").bank("RolandTR909").gain(.3),
+  s("~ ~ ~ [~ rim]").bank("RolandTR909").gain(.4)
+)
+
+// ---- ビルドアップ用: スネアロール + ライザー ----
+const snareRoll = s("<cp*2 cp*4 cp*8 cp*16>")
+  .bank("RolandTR909")
+  .gain(saw.range(.4, .9).slow(4))
+
+const riser = s("white")
+  .slow(4).attack(3).release(.5)
+  .lpf(saw.range(400, 9000).slow(4))
+  .gain(.35)
+
+// ═══════════ 4フレーズ構成 ═══════════
+const intro = stack(arp, pad, lightDrums)
+
+const build = stack(
+  arp,
+  pad.gain(.5),
+  s("bd*4").bank("RolandTR909").gain(.9),
+  snareRoll,
+  riser
+)
+
+const drop = stack(
+  fbChords,
+  vox,
+  bass,
+  lead,
+  dropDrums,
+  arp.gain(.3)
+)
+
+const outro = stack(
+  arp,
+  pad,
+  vox.gain(.35),
+  lightDrums.gain(.6)
+)
+
+arrange(
+  [4, intro],  // フレーズ1: きらきら導入
+  [4, build],  // フレーズ2: ビルドアップ
+  [8, drop],   // フレーズ3: フューチャーベース ドロップ
+  [4, outro]   // フレーズ4: ふんわりアウトロ
+)

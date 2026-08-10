@@ -1,7 +1,8 @@
 //! An opinionated formatter for Symphra source.
 //!
 //! [`format_source`] reprints a source file into one canonical layout:
-//! two-space indentation, one item per line inside every block body,
+//! two-space indentation, one item per line inside every block body (except
+//! `rhythm` bodies, which keep `hit`/`rest` on a single compact line),
 //! `project`/`song` settings reordered into a fixed canonical order, a blank
 //! line before each song-level declaration (`instrument`, `pattern`,
 //! `track`, …), and at most one blank line preserved anywhere the author

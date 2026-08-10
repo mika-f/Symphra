@@ -174,12 +174,7 @@ song "S" {
     pack "numbers"
   }
 
-  rhythm stabs resolution 1/4 {
-    hit
-    rest
-    hit
-    rest
-  }
+  rhythm stabs resolution 1/4 { hit rest hit rest }
 
   pattern harmony = sequence {
     chord C4 E4 G4 for 1/1
@@ -469,6 +464,56 @@ fn formats_at_bar_beat_placement() {
   track crash role fx {
     instrument tr909
     at 2:1 play drum "cr" with one_hit
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn keeps_rhythm_hit_rest_on_a_single_compact_line() {
+    let input = r#"song "S" {
+  rhythm stabs resolution 1/4 {
+    hit
+    rest
+    hit
+    rest
+  }
+  rhythm pulse resolution 1/8 { hit rest hit }
+}
+"#;
+
+    let expected = r#"song "S" {
+  rhythm stabs resolution 1/4 { hit rest hit rest }
+
+  rhythm pulse resolution 1/8 { hit rest hit }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn expands_rhythm_body_when_it_contains_comments() {
+    let input = r#"song "S" {
+  rhythm stabs resolution 1/4 {
+    hit // downbeat
+    rest
+    # mid-pattern
+    hit
+    rest
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  rhythm stabs resolution 1/4 {
+    hit // downbeat
+    rest
+    # mid-pattern
+    hit
+    rest
   }
 }
 "#;

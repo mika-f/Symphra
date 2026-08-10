@@ -737,6 +737,20 @@ fn rhythm_item_span(item: &RhythmItem) -> SourceSpan {
     }
 }
 
+fn rhythm_item_text(item: &RhythmItem) -> &'static str {
+    match item {
+        RhythmItem::Hit { .. } => "hit",
+        RhythmItem::Rest { .. } => "rest",
+    }
+}
+
+/// Prints a rhythm as a single compact line when its body has no comments:
+/// `rhythm name resolution 1/4 { hit rest hit rest }`.
+///
+/// `hit`/`rest` cells are short and usually written in one run, so the
+/// formatter does not expand them one-per-line the way other block bodies
+/// are. If any comment sits inside the rhythm span, fall back to the normal
+/// multi-line block so comments can still be reattached.
 fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
     let header = format!(
         "rhythm {} resolution {}/{}",
@@ -744,22 +758,60 @@ fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
         decl.resolution_numerator,
         decl.resolution_denominator
     );
-    let items: Vec<&RhythmItem> = decl.items.iter().collect();
-    print_block(
-        ctx,
-        &header,
-        decl.span,
-        &items,
-        |item: &RhythmItem| rhythm_item_span(item),
-        |_| 0,
-        Reorder::No,
-        |ctx, item| {
-            ctx.printer.line(match item {
-                RhythmItem::Hit { .. } => "hit",
-                RhythmItem::Rest { .. } => "rest",
-            });
-        },
-    );
+
+    if decl.items.is_empty() {
+        let dangling = ctx.cursor.take_leading(decl.span.end, decl.span.start);
+        if dangling.comments.is_empty() {
+            ctx.printer.line(format!("{header} {{}}"));
+            return;
+        }
+        ctx.printer.line(format!("{header} {{"));
+        ctx.printer.indent();
+        print_dangling(ctx, &dangling);
+        ctx.printer.dedent();
+        ctx.printer.line("}");
+        return;
+    }
+
+    if ctx.cursor.has_comment_before(decl.span.end) {
+        let items: Vec<&RhythmItem> = decl.items.iter().collect();
+        print_block(
+            ctx,
+            &header,
+            decl.span,
+            &items,
+            |item: &RhythmItem| rhythm_item_span(item),
+            |_| 0,
+            Reorder::No,
+            |ctx, item| {
+                ctx.printer.line(rhythm_item_text(item));
+            },
+        );
+        return;
+    }
+
+    // No comments in the body: advance the cursor past the item spans so
+    // later siblings do not see leftover trivia, then emit one line.
+    let mut prev_end = decl.span.start;
+    for (index, item) in decl.items.iter().enumerate() {
+        let span = rhythm_item_span(item);
+        let _ = ctx.cursor.take_leading(span.start, prev_end);
+        let next_limit = decl
+            .items
+            .get(index + 1)
+            .map_or(decl.span.end, |next| rhythm_item_span(next).start);
+        let trailing = ctx.cursor.take_trailing_same_line(span.end, next_limit);
+        prev_end = trailing.map_or(span.end, |(_, end)| end);
+    }
+    let _ = ctx.cursor.take_leading(decl.span.end, prev_end);
+
+    let body = decl
+        .items
+        .iter()
+        .map(rhythm_item_text)
+        .collect::<Vec<_>>()
+        .join(" ");
+    ctx.printer.line(format!("{header} {{ {body} }}"));
 }
 
 // --- track -------------------------------------------------------------

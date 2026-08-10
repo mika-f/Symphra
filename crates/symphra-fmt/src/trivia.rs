@@ -55,6 +55,18 @@ impl<'a> CommentCursor<'a> {
         }
     }
 
+    /// Returns whether any unconsumed comment starts before `upto`.
+    ///
+    /// Used to decide whether a compact single-line body is safe: if a
+    /// comment sits inside the span, the printer must fall back to a
+    /// multi-line layout that can reattach it.
+    #[must_use]
+    pub fn has_comment_before(&self, upto: u32) -> bool {
+        self.comments
+            .get(self.index)
+            .is_some_and(|comment| comment.span.start < upto)
+    }
+
     /// Consumes every remaining comment that starts before `upto`, computing
     /// each one's blank-line-before flag against `prev_end` as it goes.
     pub fn take_leading(&mut self, upto: u32, mut prev_end: u32) -> LeadingTrivia {

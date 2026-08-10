@@ -384,6 +384,7 @@ enum CompletionBlock {
     Sampled,
     Sampler,
     DrumMachine,
+    SoundFont,
     Chance,
     Oscillator,
     Supersaw,
@@ -437,6 +438,7 @@ fn completion_labels(
                 "sampled",
                 "sampler",
                 "drum_machine",
+                "soundfont",
             ]
         } else {
             &["sequence", "steps"]
@@ -565,6 +567,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Sampled) => &["source", "root"],
         Some(CompletionBlock::Sampler) => &["pack"],
         Some(CompletionBlock::DrumMachine) => &["bank"],
+        Some(CompletionBlock::SoundFont) => &["source", "preset"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
         Some(CompletionBlock::Oscillator) => &["envelope"],
         Some(CompletionBlock::Supersaw) => &["voices", "detune", "spread", "envelope"],
@@ -697,6 +700,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
             TokenKind::DrumMachine => pending = Some(CompletionBlock::DrumMachine),
+            TokenKind::Soundfont => pending = Some(CompletionBlock::SoundFont),
             TokenKind::Chance => pending = Some(CompletionBlock::Chance),
             TokenKind::Supersaw => pending = Some(CompletionBlock::Supersaw),
             TokenKind::Envelope => pending = Some(CompletionBlock::Envelope),
@@ -796,6 +800,7 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Root
                     | TokenKind::Pack
                     | TokenKind::Bank
+                    | TokenKind::Preset
                     | TokenKind::Section
                     | TokenKind::Bars
                     | TokenKind::Parallel
@@ -1101,10 +1106,14 @@ const fn keyword_description_playback(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Sampled => "declares a pitched instrument backed by one WAV file.",
         TokenKind::Sampler => "declares an instrument backed by a sample pack.",
         TokenKind::DrumMachine => "declares an instrument backed by named drum voices.",
-        TokenKind::Source => "sets the WAV file used by a sampled instrument.",
+        TokenKind::Soundfont => "declares a pitched instrument backed by a SoundFont preset.",
+        TokenKind::Source => {
+            "sets the WAV or SoundFont file used by a sampled/soundfont instrument."
+        }
         TokenKind::Root => "sets the sample's original pitch, such as `C4`.",
         TokenKind::Pack => "sets the sample pack used by a sampler instrument.",
         TokenKind::Bank => "sets the drum bank used by a drum machine instrument.",
+        TokenKind::Preset => "sets the SoundFont preset name used by a soundfont instrument.",
         TokenKind::Drum => "selects a named voice from the current drum bank.",
         _ => return None,
     })
@@ -1318,7 +1327,8 @@ mod tests {
                 "synth",
                 "sampled",
                 "sampler",
-                "drum_machine"
+                "drum_machine",
+                "soundfont"
             ]
         );
         assert_eq!(
@@ -1344,6 +1354,14 @@ mod tests {
                 4
             ),
             ["bank"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\n  instrument music_box = soundfont {\n    ",
+                2,
+                4
+            ),
+            ["source", "preset"]
         );
     }
 

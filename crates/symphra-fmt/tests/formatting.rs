@@ -509,6 +509,24 @@ fn formats_drum_machine_instrument_and_drum_steps() {
 }
 
 #[test]
+fn formats_soundfont_instrument() {
+    let input = r#"song "S" {
+  instrument music_box = soundfont { source "instruments/gm.sf2" preset "gm_music_box" }
+}
+"#;
+
+    let expected = r#"song "S" {
+  instrument music_box = soundfont {
+    source "instruments/gm.sf2"
+    preset "gm_music_box"
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_sample_and_drum_step_velocity() {
     let input = r#"song "S" {
   pattern kit = steps 1/8 { drum "bd" velocity 90 sample 2 velocity 40 rest }
@@ -740,6 +758,7 @@ song "S" {
   instrument lead = sine
   instrument piano = sampled { source "piano.wav" root C4 }
   instrument voice = sampler { pack "numbers" }
+  instrument music_box = soundfont { source "gm.sf2" preset "gm_music_box" }
   rhythm stabs resolution 1/4 { hit rest hit rest }
   pattern harmony = sequence { chord C4 E4 G4 for 1/1 }
   track chords role harmony {

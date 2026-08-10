@@ -285,6 +285,28 @@ impl Parser {
                 bank,
                 span: drum_machine_start.cover(end.span),
             }
+        } else if self.at(TokenKind::Soundfont) {
+            let soundfont_start = self.bump().span;
+            self.required(TokenKind::LeftBrace, "expected `{` after `soundfont`")?;
+            self.required(
+                TokenKind::Source,
+                "expected `source` in soundfont instrument",
+            )?;
+            let source = self.string("expected a quoted soundfont source path")?;
+            self.required(
+                TokenKind::Preset,
+                "expected `preset` after soundfont source",
+            )?;
+            let preset = self.string("expected a quoted preset name")?;
+            let end = self.required(
+                TokenKind::RightBrace,
+                "expected `}` to close soundfont instrument",
+            )?;
+            InstrumentBody::SoundFont {
+                source,
+                preset,
+                span: soundfont_start.cover(end.span),
+            }
         } else if self.at(TokenKind::Synth) {
             self.supersaw_instrument_body()?
         } else {
@@ -295,7 +317,8 @@ impl Parser {
             | InstrumentBody::Supersaw { span, .. }
             | InstrumentBody::Sampled { span, .. }
             | InstrumentBody::Sampler { span, .. }
-            | InstrumentBody::DrumMachine { span, .. } => start.cover(*span),
+            | InstrumentBody::DrumMachine { span, .. }
+            | InstrumentBody::SoundFont { span, .. } => start.cover(*span),
         };
         Some(InstrumentDeclaration { name, body, span })
     }

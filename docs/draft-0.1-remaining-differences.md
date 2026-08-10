@@ -82,6 +82,17 @@ playback speed`). Since then, two further slices landed:
   instruments (§5) remain unimplemented. See §4 below for the envelope gain
   formula, the supersaw detune/blend model, and why `sine`/`triangle`
   weren't wrapped in `synth` to match the original verbatim.
+- An eleventh slice, in a new session on 2026-08-10, adds
+  `instrument x = soundfont { source "..." preset "..." }`: a pitched
+  instrument backed by a `.sf2` `SoundFont` file, synthesized via the
+  external `rustysynth` crate (a pure-Rust, MIT-licensed `SoundFont`
+  synthesizer) rather than a hand-rolled decoder — the first external
+  runtime dependency added to the audio pipeline. A new `symphra-soundfont`
+  crate wraps it behind the same asset-library shape `symphra-sampler`
+  already established (`SoundFontLibrary`, `decode_soundfont`, a
+  `SoundFontVoice` that plugs into `symphra-render`'s existing per-note
+  `Voice` abstraction). VST3 (the other half of §5) remains unimplemented —
+  see §5 below for why they were split and the SoundFont design decisions.
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -160,7 +171,11 @@ the adjusted syntax described later:
   ... }] }`: a unison of `voices` detuned sawtooth oscillators (a new
   `Waveform::Sawtooth`), `detune` controlling the pitch spread and `spread`
   controlling the blend between the center and outer voices, sharing the
-  same optional `envelope` and the existing note-scheduling pipeline.
+  same optional `envelope` and the existing note-scheduling pipeline;
+- `instrument x = soundfont { source "..." preset "..." }`: a pitched
+  instrument backed by a `.sf2` `SoundFont` preset, synthesized offline via
+  `rustysynth` and mixed down to mono under the same track-level `Pan` every
+  other instrument kind uses.
 
 ## Remaining language and runtime gaps
 
@@ -436,21 +451,166 @@ gained a `Voice::Supersaw` arm alongside `Voice::Oscillator`/`Voice::Sample`;
 **Still missing:** SoundFont and VST3 instruments (§5) — separate,
 larger, external-dependency-heavy backends left for their own slice.
 
-### 5. SoundFont and VST3 instruments
-
-The original SoundFont form is absent:
+### 5. SoundFont and VST3 instruments — SoundFont done, VST3 still missing
 
 ```symphra
 instrument music_box = soundfont {
+  source "instruments/gm.sf2"
   preset "gm_music_box"
 }
 ```
 
-There is no SoundFont loader, preset resolver, HIR/score instrument variant, or
-renderer integration. Likewise, there is currently no language-level VST3
-instrument declaration or offline render path for a VST3 plug-in. These should
-remain separate backends even if their declaration syntax eventually shares an
-external-instrument shape.
+is implemented (the `source` field is a repo addition — see the
+intentional-differences table). VST3 remains entirely unimplemented: there is
+no language-level VST3 instrument declaration or offline render path for a
+VST3 plug-in.
+
+**Why SoundFont and VST3 stayed split.** The original groups both under one
+heading, but they are unrelated engineering problems: SoundFont is a static
+sample-and-envelope *asset format* with several mature pure-Rust parsers
+already available, while VST3 is a *live plug-in protocol* (Steinberg's SDK,
+C++, dual-licensed GPLv3/proprietary) requiring FFI bindings, a plug-in host
+implementation, and license-compliance decisions — an order of magnitude
+more work with no shared code between the two. Doing SoundFont first, alone,
+was a scoping decision made with the user rather than an oversight; VST3 is
+left for its own future slice once wanted (see the recommended continuation
+order).
+
+**Dependency decision.** `rustysynth` (MIT-licensed, pure Rust, actively
+maintained, no `unsafe` at this crate's call boundary) was chosen over
+hand-rolling an SF2 parser and wavetable synthesizer. This is a deliberate
+departure from every other instrument/effect in this codebase, which are all
+implemented from scratch in `symphra-dsp`/`symphra-sampler` — but the
+SoundFont 2 spec is a large, precisely-specified binary format (RIFF-based,
+nine interlinked `pdta` sub-chunks, a full generator/modulator/envelope
+model) whose correct reimplementation would dwarf every other slice in this
+document combined, for a result strictly worse than an existing, tested,
+permissively-licensed crate. `rustysynth` is a new dependency of a new
+`symphra-soundfont` crate only — no other crate in the workspace depends on
+it directly, keeping the "hand-rolled DSP" boundary intact everywhere else.
+
+**Grammar.** `instrument x = soundfont { source "..." preset "..." }` is a
+new `InstrumentBody::SoundFont { source, preset, span }` variant, parsed
+exactly like `sampled`/`sampler`/`drum_machine` (a dedicated keyword,
+`soundfont`, opening a brace-delimited body of required fields). Two new
+keyword tokens, `Soundfont` and `Preset`, were added; `source` reuses the
+existing `Source` token `sampled` already uses (same field, generalized
+meaning — see below).
+
+**Design: `source` is required, unlike the original.** The original's
+`soundfont { preset "gm_music_box" }` never names a `.sf2` file at all,
+presumably assuming some implicit soundfont catalog the draft doesn't
+define. Since a `.sf2` asset has to be loaded from somewhere, this adds
+`source` — mirroring `sampled { source "..." root ... }`'s shape exactly,
+the same precedent `sampler`/`drum_machine`'s `pack`/`bank` already
+established for resolving named assets to files (though those resolve to a
+convention-based path, `<container>/<name>.wav`, while `soundfont`'s
+`source` names the file directly, since one `.sf2` file can back many
+different `preset`-selected patches — there is no equivalent one-name-per-
+file convention to build).
+
+**Validation.** `source`/`preset` must both be non-empty strings, checked at
+compile time (mirroring `sample source path must not be empty` for
+`sampled`). Neither the file's existence nor the preset's presence inside it
+can be checked at compile time — like `sampled`/`sampler`/`drum_machine`,
+that only happens once the asset is actually loaded, at render time.
+
+**HIR/Score.** `InstrumentKind::SoundFont { source: String, preset: String }`
+is a new variant in both `hir` and `symphra-score`, alongside the existing
+`Sine`/`Triangle`/`Supersaw`/`Sampled`/`Sampler`/`DrumMachine` — a
+pitched instrument like `Sampled`, not a sample-selector-based one like
+`Sampler`/`DrumMachine`, so it plugs into every place that already
+distinguishes those two families (trigger validation, `at`/`transpose`
+gating, etc.) without new gating logic. `Score` gained a
+`soundfont_sources()` iterator returning `(source, preset)` pairs, mirroring
+`sampled_sources()`/`packed_samples()`'s "asset locations the caller must
+preload" contract — unlike `sampled_sources`, the preset name has to travel
+alongside the source path, since one file can back several presets.
+
+**`symphra-soundfont` (new crate).** Mirrors `symphra-sampler`'s shape:
+`SoundFontLibrary` (a `source -> Arc<rustysynth::SoundFont>` cache, like
+`SampleLibrary`), `decode_soundfont(bytes) -> Result<SoundFont, DecodeError>`
+(like `decode_wav`), `find_preset(font, name) -> Option<&Preset>` (exact
+name match over `SoundFont::get_presets()`), and `SoundFontVoice` (like
+`SamplePlayer`) — a single-note voice that starts a `note_on` immediately at
+construction (selecting the resolved preset's bank/patch via MIDI
+bank-select + program-change messages on channel 0, since `rustysynth`'s
+`Synthesizer` is channel/MIDI-message-driven, not a direct
+"play this preset" API) and renders mono `f32` samples one at a time,
+internally buffering `rustysynth::Synthesizer::render`'s block-based stereo
+output (averaging left/right down to mono — see the render-integration note
+below) and refilling as the buffer drains.
+
+**Render integration.** `render_track_notes` gained a `soundfont_library`
+parameter and a `Voice::SoundFont(Box<SoundFontVoice>)` arm (boxed to keep
+`Voice`'s other, much smaller variants from growing — `large_enum_variant`);
+resolving a note's instrument to a `Voice` was extracted into a new
+`note_voice` helper to stay under clippy's `too_many_lines` threshold once
+the `SoundFont` arm was added (a mechanical extraction, not a behavior
+change). `render_track_samples`'s sampler/drum-machine-only dispatch gained
+`SoundFont` on the "not sample-based, reject" side, same as
+`Sine`/`Triangle`/`Supersaw`/`Sampled`. No configured `envelope` (§4)
+applies to `soundfont` instruments — the `.sf2` preset already carries its
+own attack/decay/sustain/release per the spec, so this instrument kind
+simply keeps the renderer's fixed edge fade (like every other instrument
+without an explicit `envelope`) rather than doubly enveloping the signal;
+similarly, no explicit `note_off` is sent — the note rings for its fixed
+`NoteEvent` duration and is cut off by that same edge fade, mirroring how
+every other instrument's fixed-duration voice already works, rather than
+modeling the preset's own release phase and extending the render buffer for
+it (the way `effect delay`/`reverb` tails already do, for a different
+reason). **Simplification:** `rustysynth::Synthesizer::render` produces
+genuine stereo output (shaped by the `.sf2` preset's own pan/effects
+sends), but this renderer's shared per-note pipeline mixes one voice down to
+a single scalar sample under one track-level `Pan`
+(`render_track_notes`/`mix_sample`, the same pipeline every instrument kind
+already goes through) — so `SoundFontVoice` averages left/right to mono
+before handing a sample back, discarding the preset's own stereo image
+rather than adding a second, divergent stereo-voice render path for this
+one instrument kind.
+
+**API surface.** `symphra-render`'s existing `render_song`/
+`render_song_with_samples` (and `symphra-engine`'s `render_score`/
+`render_source`) keep their exact prior signatures unchanged — a `soundfont`
+instrument with no soundfont loaded simply errors with
+`RenderError::MissingSoundFont`, the same shape `MissingSample` already
+has. A new `render_song_with_assets(score, song_index, sample_library,
+soundfont_library)` (and `symphra-engine`'s matching
+`render_score_with_assets`) is the richer entry point that actually loads
+`soundfont` instruments; `apps/symphra-cli` now calls this one, with a new
+`load_soundfonts` alongside the existing `load_samples` (same relative-path
+resolution and absolute-path rejection). This additive-only shape was
+chosen specifically to avoid a breaking change to two function signatures
+with many existing call sites/tests, mirroring how `Song.master` and other
+past slices stayed "new, orthogonal, optional" additions rather than
+reopening settled contracts.
+
+**Testing.** Unlike every other fixture in this workspace's tests (built as
+byte literals directly in Rust, no fixture files — see `fn wav` in
+`symphra-sampler`/`symphra-cli`'s own tests), a valid `.sf2` file is a
+meaningfully bigger binary format (RIFF `INFO`/`sdta`/`pdta` chunks, the
+`pdta` list alone needing `phdr`/`pbag`/`pmod`/`pgen`/`inst`/`ibag`/`imod`/
+`igen`/`shdr` sub-chunks with fixed-size binary records terminated by
+sentinel records). `symphra-soundfont`'s tests build the smallest buffer
+`rustysynth` accepts this same way anyway — one 8-sample mono tone, one
+instrument zone (a single `sampleID` generator, relying on the spec's
+default full-0..127 key range rather than an explicit `keyRange`
+generator), one preset (a single `instrument` generator) — verified against
+the real `rustysynth` parser rather than assumed correct. `apps/symphra-cli`
+duplicates the same builder for one true end-to-end
+"loads a `.sf2` file from disk and renders audible audio through it" test,
+mirroring the existing WAV-fixture convention of small, deliberate
+duplication over a shared test-only dependency; `symphra-render`'s own
+tests stick to the established "error-path only, no real audio" convention
+already used for `Sampler`/`DrumMachine` (an unloaded soundfont's
+`RenderError::MissingSoundFont`), since `find_preset`/decode correctness
+is already covered directly in `symphra-soundfont`.
+
+**Still missing:** VST3 instruments (a separate, much larger slice — see
+above), and automating any `soundfont` parameter (not applicable today,
+since `soundfont` has no automatable parameter of its own — `.sf2` presets
+are static assets, not song-declared values like `effect filter`'s
+`cutoff`).
 
 ### 6. Layers and per-layer instruments — done
 
@@ -922,6 +1082,7 @@ not compile without translation:
 | arbitrary-looking pipeline chain | each supported stage may appear once and is normalized into fixed scheduling phases |
 | `automate filter.lowpass.cutoff { ... }` — free-floating, dotted parameter path | `automate cutoff { ... }` nested inside the same `track` that declares `effect filter { ... }` — no dotted path, since the track scoping already resolves which filter |
 | `effect filter.lowpass { resonance 0.40 }` with no `cutoff` (driven entirely by `automate`) | `effect filter { cutoff C resonance R }` still requires `cutoff`; `automate cutoff` overrides it at render time rather than replacing it |
+| `soundfont { preset "gm_music_box" }` — no file named | `soundfont { source "..." preset "..." }` — `source` is required, mirroring `sampled { source ... root ... }` |
 
 `degree N octave O` currently treats `N` as a chromatic semitone offset from
 the song tonic, not a diatonic scale index. Confirm that this matches the
@@ -1024,12 +1185,24 @@ original intent before expanding degree-based harmony.
     literal stereo pan width — the renderer's existing per-note pipeline
     mixes every instrument down to one scalar sample under one track-level
     pan).
-18. The next milestone, if wanted, is §5 SoundFont/VST3 — the largest, most
-    external-dependency-heavy piece, left for last as originally planned.
-    Automating parameters other than `filter`'s `cutoff` (delay/reverb mix,
-    resonance, envelope stages, supersaw detune/spread, etc.) remains
-    unimplemented and could be picked up at any point once wanted — see
-    §7's "still missing" note.
+18. ~~Decide the SoundFont/VST3 split and dependency approach, then implement
+    SoundFont (§5).~~ Done, in a new session on 2026-08-10 — user Q&A chose
+    SoundFont first (VST3 deferred, given its much larger scope and GPLv3/
+    proprietary dual-licensed SDK). `instrument x = soundfont { source "..."
+    preset "..." }` is implemented via a new `symphra-soundfont` crate
+    wrapping the external `rustysynth` crate (MIT-licensed, pure Rust) —
+    this codebase's first external audio-processing dependency, chosen
+    because a from-scratch SoundFont 2 parser/synthesizer would dwarf every
+    other slice in this document combined. `source` is a repo addition (the
+    original never names a `.sf2` file), mirroring `sampled`'s `source`
+    field.
+19. The next milestone, if wanted, is VST3 instruments — the largest
+    remaining piece (a live plug-in protocol needing FFI bindings, a host
+    implementation, and license-compliance decisions, not just an asset
+    format), left for last as originally planned. Automating parameters
+    other than `filter`'s `cutoff` (delay/reverb mix, resonance, envelope
+    stages, supersaw detune/spread, etc.) remains unimplemented and could be
+    picked up at any point once wanted — see §7's "still missing" note.
 
 ## Verification notes
 
@@ -1167,4 +1340,31 @@ became `Instrument(Box<InstrumentDeclaration>)` (`large_enum_variant`, since
 `voices`/`voices_span` into one tuple parameter). `cargo fmt --all --
 --check` is clean except for the same two pre-existing, unrelated
 differences.
+
+The same also holds for the SoundFont slice added in a new session on
+2026-08-10: `cargo build --workspace --all-targets`, `cargo test
+--workspace` (with `symphra-lsp` run separately via `cargo test -p
+symphra-lsp --target-dir <alternate-dir>`), and `cargo clippy --workspace
+--all-targets -- -D warnings` all pass — a new `symphra-soundfont` crate
+with 3 unit tests (decode rejection, decode-and-find-preset against a
+hand-built minimal `.sf2` fixture, and real audio rendering through a
+`SoundFontVoice`), 1 new parser test
+(`crates/symphra-syntax/tests/syntax.rs`), 3 new compiler tests
+(`crates/symphra-compiler/tests/compile.rs`), 1 new render error-path test
+(`crates/symphra-render/src/lib.rs`), 1 new formatter round-trip test
+(`crates/symphra-fmt/tests/formatting.rs`, folded into the existing combined
+core idempotency source rather than a new one), 2 new LSP tests
+(completions and the updated instrument-body-keywords assertion in
+`apps/symphra-lsp/src/main.rs`), and 2 new `apps/symphra-cli` tests (a real
+end-to-end "loads a `.sf2` file and renders audible audio" test, duplicating
+the same minimal-fixture builder used in `symphra-soundfont`'s own tests,
+plus an absolute-soundfont-path rejection test) were added. Two mechanical,
+behavior-preserving changes were needed to satisfy strict clippy after the
+new variant/parameter landed: `Voice::SoundFont` was boxed
+(`large_enum_variant`, since `SoundFontVoice` — holding a whole
+`rustysynth::Synthesizer` — is far larger than `Voice`'s other variants),
+and the note-to-`Voice` instrument dispatch in `render_track_notes` was
+extracted into a new `note_voice` helper (`too_many_lines`, after adding the
+`SoundFont` arm). `cargo fmt --all -- --check` is clean except for the same
+two pre-existing, unrelated differences.
 

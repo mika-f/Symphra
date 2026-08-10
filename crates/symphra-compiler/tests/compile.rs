@@ -1865,6 +1865,78 @@ song "Sample" {
 }
 
 #[test]
+fn compile_should_lower_soundfont_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "SoundFont" {
+  tempo 120bpm meter 4/4 key C major
+  arrangement { phrase with music_box }
+  instrument music_box = soundfont { source "instruments/gm.sf2" preset "gm_music_box" }
+  pattern phrase = sequence { note C4 for 1/4 }
+}
+"#,
+    );
+
+    let program = compile(&parsed.file).expect("soundfont instrument should compile");
+
+    assert_eq!(
+        program.songs[0]
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| pattern_occurrences(arrangement).first())
+            .map(|occurrence| &occurrence.instrument),
+        Some(&InstrumentKind::SoundFont {
+            source: "instruments/gm.sf2".to_owned(),
+            preset: "gm_music_box".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn compile_should_reject_empty_soundfont_source_path() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "EmptySoundFontSource" {
+  tempo 120bpm meter 4/4 key C major
+  instrument music_box = soundfont { source "" preset "gm_music_box" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty soundfont source should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "soundfont source path must not be empty"
+    );
+}
+
+#[test]
+fn compile_should_reject_empty_soundfont_preset_name() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "EmptySoundFontPreset" {
+  tempo 120bpm meter 4/4 key C major
+  instrument music_box = soundfont { source "instruments/gm.sf2" preset "" }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("empty soundfont preset should fail");
+
+    assert_eq!(
+        diagnostics[0].message,
+        "soundfont preset name must not be empty"
+    );
+}
+
+#[test]
 fn compile_should_lower_sampler_packs() {
     let parsed = parse(
         SourceId(0),

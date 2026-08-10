@@ -258,6 +258,10 @@ pub enum InstrumentKind {
     DrumMachine {
         bank: String,
     },
+    SoundFont {
+        source: String,
+        preset: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

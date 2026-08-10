@@ -316,6 +316,15 @@ pub enum InstrumentBody {
         bank: QuotedString,
         span: SourceSpan,
     },
+    /// `soundfont { source "..." preset "..." }`. `source` is a repo
+    /// addition — the original's `soundfont { preset "..." }` never names a
+    /// file, but a `.sf2` asset path has to come from somewhere, so this
+    /// mirrors `sampled { source ... root ... }`'s shape.
+    SoundFont {
+        source: QuotedString,
+        preset: QuotedString,
+        span: SourceSpan,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

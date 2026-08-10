@@ -1,5 +1,5 @@
 [package]
-name = "symphra-render"
+name = "symphra-soundfont"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,7 +11,4 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
-symphra-dsp.workspace = true
-symphra-score.workspace = true
-symphra-sampler.workspace = true
-symphra-soundfont.workspace = true
+rustysynth = "1.3"

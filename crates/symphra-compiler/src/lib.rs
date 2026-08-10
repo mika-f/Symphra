@@ -1525,6 +1525,20 @@ impl Compiler {
                     })
                 }
             }
+            InstrumentBody::SoundFont { source, preset, .. } => {
+                if source.value.is_empty() {
+                    self.error("soundfont source path must not be empty", source.span);
+                    None
+                } else if preset.value.is_empty() {
+                    self.error("soundfont preset name must not be empty", preset.span);
+                    None
+                } else {
+                    Some(InstrumentKind::SoundFont {
+                        source: source.value.clone(),
+                        preset: preset.value.clone(),
+                    })
+                }
+            }
         }
     }
 

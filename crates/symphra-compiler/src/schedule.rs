@@ -801,6 +801,10 @@ fn score_instrument(instrument: &hir::InstrumentKind) -> InstrumentKind {
         hir::InstrumentKind::DrumMachine { bank } => {
             InstrumentKind::DrumMachine { bank: bank.clone() }
         }
+        hir::InstrumentKind::SoundFont { source, preset } => InstrumentKind::SoundFont {
+            source: source.clone(),
+            preset: preset.clone(),
+        },
     }
 }
 

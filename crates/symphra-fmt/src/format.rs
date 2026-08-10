@@ -634,6 +634,42 @@ fn print_instrument(ctx: &mut Ctx<'_>, decl: &InstrumentDeclaration) {
                 |ctx, bank| ctx.printer.line(format!("bank {}", ctx.text(bank.span))),
             );
         }
+        InstrumentBody::SoundFont { source, preset, .. } => {
+            let header = format!("instrument {name} = soundfont");
+            let fields = [
+                SoundFontField::Source(source),
+                SoundFontField::Preset(preset),
+            ];
+            let items: Vec<&SoundFontField<'_>> = fields.iter().collect();
+            print_block(
+                ctx,
+                &header,
+                decl.span,
+                &items,
+                |field: &SoundFontField<'_>| soundfont_field_span(field),
+                |_| 0,
+                Reorder::No,
+                |ctx, field| match field {
+                    SoundFontField::Source(source) => ctx
+                        .printer
+                        .line(format!("source {}", ctx.text(source.span))),
+                    SoundFontField::Preset(preset) => ctx
+                        .printer
+                        .line(format!("preset {}", ctx.text(preset.span))),
+                },
+            );
+        }
+    }
+}
+
+enum SoundFontField<'a> {
+    Source(&'a QuotedString),
+    Preset(&'a QuotedString),
+}
+
+fn soundfont_field_span(field: &SoundFontField<'_>) -> SourceSpan {
+    match field {
+        SoundFontField::Source(source) | SoundFontField::Preset(source) => source.span,
     }
 }
 

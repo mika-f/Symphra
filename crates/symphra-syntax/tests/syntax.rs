@@ -247,6 +247,31 @@ fn parses_drum_machine_instruments() {
 }
 
 #[test]
+fn parses_soundfont_instruments() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "SoundFont" {
+  instrument music_box = soundfont { source "instruments/gm.sf2" preset "gm_music_box" }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Instrument(instrument) = &song.statements[0] else {
+        panic!("statement should be an instrument");
+    };
+    let InstrumentBody::SoundFont { source, preset, .. } = &instrument.body else {
+        panic!("instrument should be a soundfont");
+    };
+
+    assert_eq!(
+        (source.value.as_str(), preset.value.as_str()),
+        ("instruments/gm.sf2", "gm_music_box")
+    );
+}
+
+#[test]
 fn parses_oscillator_instruments_with_envelope() {
     let parsed = parse(
         SourceId(0),

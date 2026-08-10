@@ -10,8 +10,10 @@ use symphra_dsp::{
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
     Channels, DelayEffect, Effect, Envelope, FilterEffect, InstrumentKind, LfoWaveform,
-    MasterLimiter, Meter, MusicalTime, ReverbEffect, SampleSelector, Score, Song, TimeError, Track,
+    MasterLimiter, Meter, MusicalTime, NoteEvent, ReverbEffect, SampleSelector, Score, Song,
+    TimeError, Track,
 };
+use symphra_soundfont::{SoundFontLibrary, SoundFontVoice, find_preset};
 
 const MAX_NOTE_GAIN: f32 = 0.2;
 /// Amplitude below which a delay's decaying echo repeats are considered
@@ -63,6 +65,10 @@ pub enum RenderError {
     DrumMachineRequiresSampleEvents(String),
     #[error("sample selection events require a sampler or drum machine instrument")]
     SampleEventsRequireSampler,
+    #[error("soundfont `{0}` was not loaded")]
+    MissingSoundFont(String),
+    #[error("soundfont `{font_source}` has no preset named `{preset}`")]
+    MissingSoundFontPreset { font_source: String, preset: String },
     #[error(transparent)]
     Time(#[from] TimeError),
 }
@@ -87,6 +93,27 @@ pub fn render_song_with_samples(
     score: &Score,
     song_index: usize,
     sample_library: &SampleLibrary,
+) -> Result<AudioBuffer, RenderError> {
+    render_song_with_assets(
+        score,
+        song_index,
+        sample_library,
+        &SoundFontLibrary::default(),
+    )
+}
+
+/// Renders one song using preloaded sample and `SoundFont` assets.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] for an invalid score, a referenced sample that is
+/// absent from `sample_library`, or a referenced SoundFont/preset that is
+/// absent from `soundfont_library`.
+pub fn render_song_with_assets(
+    score: &Score,
+    song_index: usize,
+    sample_library: &SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
 ) -> Result<AudioBuffer, RenderError> {
     let song = score
         .songs
@@ -143,6 +170,7 @@ pub fn render_song_with_samples(
                 score.sample_rate_hz,
                 channels,
                 sample_library,
+                soundfont_library,
                 &mut track_samples,
             )?;
             apply_track_effect(
@@ -163,6 +191,7 @@ pub fn render_song_with_samples(
                 score.sample_rate_hz,
                 channels,
                 sample_library,
+                soundfont_library,
                 &mut samples,
             )?;
         }
@@ -346,6 +375,7 @@ fn render_track(
     sample_rate_hz: u32,
     channels: u16,
     sample_library: &SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
     samples: &mut [f32],
 ) -> Result<(), RenderError> {
     render_track_notes(
@@ -354,6 +384,7 @@ fn render_track(
         sample_rate_hz,
         channels,
         sample_library,
+        soundfont_library,
         samples,
     )?;
     render_track_samples(
@@ -372,6 +403,7 @@ fn render_track_notes(
     sample_rate_hz: u32,
     channels: u16,
     sample_library: &SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
     samples: &mut [f32],
 ) -> Result<(), RenderError> {
     let Some(sample_rate) = NonZeroU32::new(sample_rate_hz) else {
@@ -386,60 +418,13 @@ fn render_track_notes(
             sample_rate_hz,
         )?;
         let note_frames = end.saturating_sub(start);
-        let (mut voice, instrument_gain, envelope) = match &track.instrument {
-            InstrumentKind::Sine { envelope } => (
-                Voice::Oscillator(Oscillator::from_midi(
-                    note.midi_pitch,
-                    sample_rate,
-                    Waveform::Sine,
-                )),
-                MAX_NOTE_GAIN,
-                *envelope,
-            ),
-            InstrumentKind::Triangle { envelope } => (
-                Voice::Oscillator(Oscillator::from_midi(
-                    note.midi_pitch,
-                    sample_rate,
-                    Waveform::Triangle,
-                )),
-                MAX_NOTE_GAIN,
-                *envelope,
-            ),
-            InstrumentKind::Supersaw {
-                voices,
-                detune,
-                spread,
-                envelope,
-            } => (
-                Voice::Supersaw(SupersawOscillator::from_midi(
-                    note.midi_pitch,
-                    sample_rate,
-                    *voices,
-                    *detune,
-                    *spread,
-                )),
-                MAX_NOTE_GAIN,
-                *envelope,
-            ),
-            InstrumentKind::Sampled { source, root_midi } => (
-                Voice::Sample(SamplePlayer::new(
-                    sample_library
-                        .get(source)
-                        .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
-                    sample_rate,
-                    *root_midi,
-                    note.midi_pitch,
-                )),
-                1.0,
-                None,
-            ),
-            InstrumentKind::Sampler { pack } => {
-                return Err(RenderError::SamplerRequiresSampleEvents(pack.clone()));
-            }
-            InstrumentKind::DrumMachine { bank } => {
-                return Err(RenderError::DrumMachineRequiresSampleEvents(bank.clone()));
-            }
-        };
+        let (mut voice, instrument_gain, envelope) = note_voice(
+            &track.instrument,
+            note,
+            sample_rate,
+            sample_library,
+            soundfont_library,
+        )?;
         let dsp_envelope = envelope.map(|envelope| dsp_envelope(envelope, sample_rate_hz));
         for frame in start..end {
             let Some(sample) = voice.next_sample() else {
@@ -470,6 +455,94 @@ fn render_track_notes(
     Ok(())
 }
 
+/// Builds the [`Voice`] (and its instrument-level gain/envelope) for one
+/// note event, dispatching on the track's instrument kind. Split out of
+/// [`render_track_notes`] to stay under clippy's `too_many_lines`
+/// threshold — a mechanical extraction, not a behavior change.
+fn note_voice<'a>(
+    instrument: &InstrumentKind,
+    note: &NoteEvent,
+    sample_rate: NonZeroU32,
+    sample_library: &'a SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
+) -> Result<(Voice<'a>, f32, Option<Envelope>), RenderError> {
+    match instrument {
+        InstrumentKind::Sine { envelope } => Ok((
+            Voice::Oscillator(Oscillator::from_midi(
+                note.midi_pitch,
+                sample_rate,
+                Waveform::Sine,
+            )),
+            MAX_NOTE_GAIN,
+            *envelope,
+        )),
+        InstrumentKind::Triangle { envelope } => Ok((
+            Voice::Oscillator(Oscillator::from_midi(
+                note.midi_pitch,
+                sample_rate,
+                Waveform::Triangle,
+            )),
+            MAX_NOTE_GAIN,
+            *envelope,
+        )),
+        InstrumentKind::Supersaw {
+            voices,
+            detune,
+            spread,
+            envelope,
+        } => Ok((
+            Voice::Supersaw(SupersawOscillator::from_midi(
+                note.midi_pitch,
+                sample_rate,
+                *voices,
+                *detune,
+                *spread,
+            )),
+            MAX_NOTE_GAIN,
+            *envelope,
+        )),
+        InstrumentKind::Sampled { source, root_midi } => Ok((
+            Voice::Sample(SamplePlayer::new(
+                sample_library
+                    .get(source)
+                    .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
+                sample_rate,
+                *root_midi,
+                note.midi_pitch,
+            )),
+            1.0,
+            None,
+        )),
+        InstrumentKind::Sampler { pack } => {
+            Err(RenderError::SamplerRequiresSampleEvents(pack.clone()))
+        }
+        InstrumentKind::DrumMachine { bank } => {
+            Err(RenderError::DrumMachineRequiresSampleEvents(bank.clone()))
+        }
+        InstrumentKind::SoundFont { source, preset } => {
+            let font = soundfont_library
+                .get(source)
+                .ok_or_else(|| RenderError::MissingSoundFont(source.clone()))?;
+            let (bank, patch) = find_preset(font, preset)
+                .map(|preset| (preset.get_bank_number(), preset.get_patch_number()))
+                .ok_or_else(|| RenderError::MissingSoundFontPreset {
+                    font_source: source.clone(),
+                    preset: preset.clone(),
+                })?;
+            let voice = SoundFontVoice::new(
+                font,
+                sample_rate,
+                bank,
+                patch,
+                note.midi_pitch,
+                note.velocity,
+            )
+            .map_err(|_| RenderError::MissingSoundFont(source.clone()))?;
+            Ok((Voice::SoundFont(Box::new(voice)), 1.0, None))
+        }
+    }
+}
+
 fn render_track_samples(
     track: &Track,
     tempo_bpm: f64,
@@ -489,7 +562,8 @@ fn render_track_samples(
         InstrumentKind::Sine { .. }
         | InstrumentKind::Triangle { .. }
         | InstrumentKind::Supersaw { .. }
-        | InstrumentKind::Sampled { .. } => {
+        | InstrumentKind::Sampled { .. }
+        | InstrumentKind::SoundFont { .. } => {
             return Err(RenderError::SampleEventsRequireSampler);
         }
     };
@@ -589,6 +663,7 @@ enum Voice<'a> {
     Oscillator(Oscillator),
     Supersaw(SupersawOscillator),
     Sample(SamplePlayer<'a>),
+    SoundFont(Box<SoundFontVoice>),
 }
 
 impl Voice<'_> {
@@ -597,6 +672,7 @@ impl Voice<'_> {
             Self::Oscillator(oscillator) => Some(oscillator.next_sample()),
             Self::Supersaw(supersaw) => Some(supersaw.next_sample()),
             Self::Sample(player) => player.next_sample(),
+            Self::SoundFont(voice) => Some(voice.next_sample()),
         }
     }
 }
@@ -684,6 +760,23 @@ mod tests {
         assert_eq!(
             error,
             RenderError::DrumMachineRequiresSampleEvents("RolandTR909".to_owned())
+        );
+    }
+
+    #[test]
+    fn render_song_should_reject_notes_for_an_unloaded_soundfont() {
+        let error = render_song(
+            &score(InstrumentKind::SoundFont {
+                source: "instruments/gm.sf2".to_owned(),
+                preset: "gm_music_box".to_owned(),
+            }),
+            0,
+        )
+        .expect_err("an unloaded soundfont should be rejected");
+
+        assert_eq!(
+            error,
+            RenderError::MissingSoundFont("instruments/gm.sf2".to_owned())
         );
     }
 

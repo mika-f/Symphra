@@ -8,9 +8,9 @@ use std::process::ExitCode;
 
 use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
 use symphra_engine::{
-    DecodeError, EngineError, SampleLibrary, SampleSelector, Score, SourceId, SourceSpan,
-    SourceText, compile_source, decode_wav, named_sample_source, packed_sample_source,
-    render_score,
+    DecodeError, EngineError, SampleLibrary, SampleSelector, Score, SoundFontDecodeError,
+    SoundFontLibrary, SourceId, SourceSpan, SourceText, compile_source, decode_soundfont,
+    decode_wav, named_sample_source, packed_sample_source, render_score_with_assets,
 };
 use symphra_export::{ExportError, encode_wav};
 
@@ -53,11 +53,11 @@ fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
     let source_path = PathBuf::from(&name);
     let source = SourceText::new(SourceId(0), name, text);
     let score = compile_source(&source).map_err(|error| engine_error(&source, error))?;
-    let samples = load_samples(
-        &score,
-        source_path.parent().unwrap_or_else(|| Path::new("")),
-    )?;
-    let audio = render_score(&score, 0, &samples).map_err(|error| engine_error(&source, error))?;
+    let base = source_path.parent().unwrap_or_else(|| Path::new(""));
+    let samples = load_samples(&score, base)?;
+    let soundfonts = load_soundfonts(&score, base)?;
+    let audio = render_score_with_assets(&score, 0, &samples, &soundfonts)
+        .map_err(|error| engine_error(&source, error))?;
     encode_wav(&audio).map_err(CliError::Export)
 }
 
@@ -92,6 +92,34 @@ fn load_samples(score: &Score, base: &Path) -> Result<SampleLibrary, CliError> {
         samples.insert(source.into_owned(), sample);
     }
     Ok(samples)
+}
+
+/// Loads every `.sf2` file a `soundfont` instrument references. A single
+/// file can back several presets, so unlike `load_samples` this keys on the
+/// source path alone (`soundfont_sources()` yields one `(source, preset)`
+/// pair per instrument, not per file).
+fn load_soundfonts(score: &Score, base: &Path) -> Result<SoundFontLibrary, CliError> {
+    let mut soundfonts = SoundFontLibrary::default();
+    for (source, _preset) in score.soundfont_sources() {
+        if soundfonts.get(source).is_some() {
+            continue;
+        }
+        let relative = Path::new(source);
+        if relative.is_absolute() {
+            return Err(CliError::AbsoluteSoundFontPath(source.to_owned()));
+        }
+        let path = base.join(relative);
+        let bytes = fs::read(&path).map_err(|error| CliError::SoundFontRead {
+            path: path.display().to_string(),
+            source: error,
+        })?;
+        let font = decode_soundfont(&bytes).map_err(|error| CliError::SoundFontDecode {
+            path: path.display().to_string(),
+            source: error,
+        })?;
+        soundfonts.insert(source.to_owned(), std::sync::Arc::new(font));
+    }
+    Ok(soundfonts)
 }
 
 fn engine_error(source: &SourceText, error: EngineError) -> CliError {
@@ -153,6 +181,20 @@ enum CliError {
         #[source]
         source: DecodeError,
     },
+    #[error("soundfont path must be relative: `{0}`")]
+    AbsoluteSoundFontPath(String),
+    #[error("failed to read soundfont `{path}`: {source}")]
+    SoundFontRead {
+        path: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to decode soundfont `{path}`: {source}")]
+    SoundFontDecode {
+        path: String,
+        #[source]
+        source: SoundFontDecodeError,
+    },
     #[error(transparent)]
     Export(ExportError),
     #[error("failed to write `{path}`: {source}")]
@@ -167,7 +209,7 @@ enum CliError {
 mod tests {
     use std::fs;
 
-    use super::{SourceId, SourceSpan, SourceText, render_diagnostic, source_to_wav};
+    use super::{CliError, SourceId, SourceSpan, SourceText, render_diagnostic, source_to_wav};
 
     #[test]
     fn source_to_wav_should_run_the_complete_offline_pipeline() {
@@ -286,6 +328,63 @@ song "Pack" {
         );
     }
 
+    #[test]
+    fn source_to_wav_should_load_and_render_a_soundfont_instrument() {
+        let directory =
+            std::env::temp_dir().join(format!("symphra-cli-soundfont-test-{}", std::process::id()));
+        fs::create_dir_all(&directory).expect("test directory should be created");
+        fs::write(directory.join("gm.sf2"), minimal_soundfont())
+            .expect("test soundfont should be written");
+
+        let result = source_to_wav(
+            directory.join("song.sym").display().to_string(),
+            r#"
+project { seed 1 sample_rate 44100hz output mono }
+song "SoundFont" {
+  tempo 120bpm meter 4/4 key C major
+  instrument music_box = soundfont { source "gm.sf2" preset "music_box" }
+  pattern phrase = sequence { note C4 for 1/4 }
+  arrangement { phrase with music_box }
+}
+"#
+            .to_owned(),
+        );
+
+        fs::remove_file(directory.join("gm.sf2")).expect("test soundfont should be removed");
+        fs::remove_dir(directory).expect("test directory should be removed");
+        let rendered = result.expect("soundfont instrument should render");
+        assert_eq!(
+            (&rendered[0..4], &rendered[8..12]),
+            (&b"RIFF"[..], &b"WAVE"[..])
+        );
+    }
+
+    #[test]
+    fn source_to_wav_should_reject_an_absolute_soundfont_path() {
+        let absolute = if cfg!(windows) {
+            r"C:\gm.sf2"
+        } else {
+            "/etc/gm.sf2"
+        };
+        let error = source_to_wav(
+            "song.sym".to_owned(),
+            format!(
+                r#"
+project {{ seed 1 sample_rate 8khz output mono }}
+song "SoundFont" {{
+  tempo 120bpm meter 4/4 key C major
+  instrument music_box = soundfont {{ source "{absolute}" preset "music_box" }}
+  pattern phrase = sequence {{ note C4 for 1/4 }}
+  arrangement {{ phrase with music_box }}
+}}
+"#
+            ),
+        )
+        .expect_err("an absolute soundfont path should be rejected");
+
+        assert!(matches!(error, CliError::AbsoluteSoundFontPath(_)));
+    }
+
     fn wav(samples: &[i16], sample_rate_hz: u32) -> Vec<u8> {
         let data_size = u32::try_from(samples.len() * 2).expect("test sample should fit");
         let mut bytes = Vec::new();
@@ -305,5 +404,127 @@ song "Pack" {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
         bytes
+    }
+
+    /// Builds the smallest `SoundFont` (.sf2) byte buffer `rustysynth`
+    /// accepts: one 8-sample mono tone, one instrument zone selecting it
+    /// across the full key range (the default when no `keyRange` generator
+    /// is present), and one preset (bank 0, patch 0) named `"music_box"`
+    /// pointing at that instrument. Mirrors `fn wav` above, and the
+    /// identical helper in `symphra-soundfont`'s own tests — this
+    /// workspace's tests build fixture bytes in code rather than loading
+    /// fixture files; the `SoundFont` 2.01 spec's RIFF layout just has more
+    /// mandatory chunks than WAV's.
+    fn minimal_soundfont() -> Vec<u8> {
+        fn name20(text: &str) -> [u8; 20] {
+            let mut buffer = [0u8; 20];
+            let bytes = text.as_bytes();
+            let len = bytes.len().min(20);
+            buffer[..len].copy_from_slice(&bytes[..len]);
+            buffer
+        }
+
+        fn chunk(id: [u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut out = Vec::new();
+            out.extend_from_slice(&id);
+            let size = u32::try_from(payload.len()).expect("test payload should fit");
+            out.extend_from_slice(&size.to_le_bytes());
+            out.extend_from_slice(payload);
+            if !payload.len().is_multiple_of(2) {
+                out.push(0);
+            }
+            out
+        }
+
+        fn list(list_type: [u8; 4], subchunks: &[Vec<u8>]) -> Vec<u8> {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&list_type);
+            for subchunk in subchunks {
+                payload.extend_from_slice(subchunk);
+            }
+            chunk(*b"LIST", &payload)
+        }
+
+        let mut wave = Vec::new();
+        for value in [
+            8_000i16, -8_000, 8_000, -8_000, 8_000, -8_000, 8_000, -8_000, 0, 0,
+        ] {
+            wave.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let mut phdr = Vec::new();
+        phdr.extend_from_slice(&name20("music_box"));
+        phdr.extend_from_slice(&[0u8; 6]);
+        phdr.extend_from_slice(&[0u8; 12]);
+        phdr.extend_from_slice(&name20("EOP"));
+        phdr.extend_from_slice(&0u16.to_le_bytes());
+        phdr.extend_from_slice(&0u16.to_le_bytes());
+        phdr.extend_from_slice(&1u16.to_le_bytes());
+        phdr.extend_from_slice(&[0u8; 12]);
+
+        let mut pbag = Vec::new();
+        pbag.extend_from_slice(&[0u8; 4]);
+        pbag.extend_from_slice(&1u16.to_le_bytes());
+        pbag.extend_from_slice(&0u16.to_le_bytes());
+
+        let mut pgen = Vec::new();
+        pgen.extend_from_slice(&41u16.to_le_bytes());
+        pgen.extend_from_slice(&0u16.to_le_bytes());
+        pgen.extend_from_slice(&[0u8; 4]);
+
+        let mut inst = Vec::new();
+        inst.extend_from_slice(&name20("music_box_inst"));
+        inst.extend_from_slice(&0u16.to_le_bytes());
+        inst.extend_from_slice(&name20("EOI"));
+        inst.extend_from_slice(&1u16.to_le_bytes());
+
+        let mut ibag = Vec::new();
+        ibag.extend_from_slice(&[0u8; 4]);
+        ibag.extend_from_slice(&1u16.to_le_bytes());
+        ibag.extend_from_slice(&0u16.to_le_bytes());
+
+        let mut igen = Vec::new();
+        igen.extend_from_slice(&53u16.to_le_bytes());
+        igen.extend_from_slice(&0u16.to_le_bytes());
+        igen.extend_from_slice(&[0u8; 4]);
+
+        let mut shdr = Vec::new();
+        shdr.extend_from_slice(&name20("tone"));
+        shdr.extend_from_slice(&0i32.to_le_bytes());
+        shdr.extend_from_slice(&8i32.to_le_bytes());
+        shdr.extend_from_slice(&0i32.to_le_bytes());
+        shdr.extend_from_slice(&0i32.to_le_bytes());
+        shdr.extend_from_slice(&44_100i32.to_le_bytes());
+        shdr.push(60);
+        shdr.push(0);
+        shdr.extend_from_slice(&0u16.to_le_bytes());
+        shdr.extend_from_slice(&1u16.to_le_bytes());
+        shdr.extend_from_slice(&name20("EOS"));
+        shdr.extend_from_slice(&[0u8; 26]);
+
+        let info = list(*b"INFO", &[]);
+        let sdta = list(*b"sdta", &[chunk(*b"smpl", &wave)]);
+        let pdta = list(
+            *b"pdta",
+            &[
+                chunk(*b"phdr", &phdr),
+                chunk(*b"pbag", &pbag),
+                chunk(*b"pmod", &[]),
+                chunk(*b"pgen", &pgen),
+                chunk(*b"inst", &inst),
+                chunk(*b"ibag", &ibag),
+                chunk(*b"imod", &[]),
+                chunk(*b"igen", &igen),
+                chunk(*b"shdr", &shdr),
+            ],
+        );
+
+        let mut riff_payload = Vec::new();
+        riff_payload.extend_from_slice(b"sfbk");
+        riff_payload.extend_from_slice(&info);
+        riff_payload.extend_from_slice(&sdta);
+        riff_payload.extend_from_slice(&pdta);
+
+        chunk(*b"RIFF", &riff_payload)
     }
 }

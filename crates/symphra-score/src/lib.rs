@@ -211,6 +211,10 @@ pub enum InstrumentKind {
     DrumMachine {
         bank: String,
     },
+    SoundFont {
+        source: String,
+        preset: String,
+    },
 }
 
 impl Score {
@@ -224,7 +228,8 @@ impl Score {
                 | InstrumentKind::Triangle { .. }
                 | InstrumentKind::Supersaw { .. }
                 | InstrumentKind::Sampler { .. }
-                | InstrumentKind::DrumMachine { .. } => None,
+                | InstrumentKind::DrumMachine { .. }
+                | InstrumentKind::SoundFont { .. } => None,
             })
     }
 
@@ -239,11 +244,34 @@ impl Score {
                     InstrumentKind::Sine { .. }
                     | InstrumentKind::Triangle { .. }
                     | InstrumentKind::Supersaw { .. }
-                    | InstrumentKind::Sampled { .. } => None,
+                    | InstrumentKind::Sampled { .. }
+                    | InstrumentKind::SoundFont { .. } => None,
                 };
                 track.samples.iter().filter_map(move |sample| {
                     container.map(|container| (container, &sample.selector))
                 })
+            })
+    }
+
+    /// `(source, preset)` pairs for every declared `soundfont` instrument,
+    /// mirroring `sampled_sources`/`packed_samples`'s "asset locations the
+    /// caller must preload" contract. Unlike `sampled_sources`, `source`
+    /// alone is not enough to know what to load — a `.sf2` file can back
+    /// many different presets, so the preset name travels alongside it.
+    pub fn soundfont_sources(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.songs
+            .iter()
+            .flat_map(|song| &song.tracks)
+            .filter_map(|track| match &track.instrument {
+                InstrumentKind::SoundFont { source, preset } => {
+                    Some((source.as_str(), preset.as_str()))
+                }
+                InstrumentKind::Sine { .. }
+                | InstrumentKind::Triangle { .. }
+                | InstrumentKind::Supersaw { .. }
+                | InstrumentKind::Sampled { .. }
+                | InstrumentKind::Sampler { .. }
+                | InstrumentKind::DrumMachine { .. } => None,
             })
     }
 }

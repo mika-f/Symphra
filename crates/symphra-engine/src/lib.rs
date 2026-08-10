@@ -1,7 +1,7 @@
 //! Source-to-audio orchestration for Symphra.
 
 use symphra_compiler::{CompileDiagnostic, ScheduleError, compile, schedule};
-use symphra_render::{RenderError, render_song_with_samples};
+use symphra_render::{RenderError, render_song_with_assets, render_song_with_samples};
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
 pub use symphra_render::AudioBuffer;
@@ -9,6 +9,9 @@ pub use symphra_sampler::{
     DecodeError, Sample, SampleLibrary, decode_wav, named_sample_source, packed_sample_source,
 };
 pub use symphra_score::{SampleSelector, Score};
+pub use symphra_soundfont::{
+    DecodeError as SoundFontDecodeError, SoundFontLibrary, decode_soundfont,
+};
 pub use symphra_syntax::{SourceId, SourceSpan, SourceText};
 
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
@@ -60,6 +63,21 @@ pub fn render_score(
     samples: &SampleLibrary,
 ) -> Result<AudioBuffer, EngineError> {
     render_song_with_samples(score, song_index, samples).map_err(EngineError::Render)
+}
+
+/// Renders a compiled score using preloaded sample and `SoundFont` assets.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Render`] when the score, sample library, or
+/// soundfont library cannot be rendered.
+pub fn render_score_with_assets(
+    score: &Score,
+    song_index: usize,
+    samples: &SampleLibrary,
+    soundfonts: &SoundFontLibrary,
+) -> Result<AudioBuffer, EngineError> {
+    render_song_with_assets(score, song_index, samples, soundfonts).map_err(EngineError::Render)
 }
 
 #[cfg(test)]

@@ -7,9 +7,10 @@ completion, documents language keywords on hover, and shows the compiled MIDI
 note number for valid written pitches. Definition navigation resolves
 arrangement pattern and instrument references, `arrangement { play <section> }`
 to section declarations, `play track <name>` inside sections to track
-declarations, track-body instrument names, and `play <pattern>` (including
-inside layered `use` blocks) to pattern declarations. Its JSON-RPC lifecycle is
-covered by an end-to-end stdio test.
+declarations, track-body instrument names, `play <pattern>` (including inside
+layered `use` blocks) to pattern declarations, and `trigger_with <rhythm>` to
+rhythm declarations. Its JSON-RPC lifecycle is covered by an end-to-end stdio
+test.
 A Visual Studio Code extension lives at [`editors/vscode`](../../editors/vscode)
 and provides syntax highlighting plus a language client for manual testing;
 see that directory's README for setup.
@@ -107,6 +108,10 @@ Exercise these cases by replacing the buffer contents without saving:
     `play melody` (or `use lead { play melody }` inside `layer`), put the
     cursor on `melody` and run `:lua vim.lsp.buf.definition()`. The cursor
     should move to the matching `pattern melody` declaration in the same song.
+14. With a `rhythm stabs ...` declaration and
+    `play melody |> trigger_with stabs`, put the cursor on `stabs` and run
+    `:lua vim.lsp.buf.definition()`. The cursor should move to the matching
+    `rhythm stabs` declaration in the same song.
 
 Diagnostics should refresh after every edit because the server requests
 full-text synchronization. Closing the buffer sends `textDocument/didClose`,

@@ -879,7 +879,10 @@ fn definition_in_song(song: &SongDeclaration, offset: u32) -> Option<SourceSpan>
     if let Some(span) = definition_from_track_instrument(song, offset) {
         return Some(span);
     }
-    definition_from_track_play_pattern(song, offset)
+    if let Some(span) = definition_from_track_play_pattern(song, offset) {
+        return Some(span);
+    }
+    definition_from_track_trigger_with(song, offset)
 }
 
 /// `arrangement { play <section> }` → section name span.
@@ -988,22 +991,38 @@ fn definition_from_track_instrument(song: &SongDeclaration, offset: u32) -> Opti
 
 /// `track { play <pattern> }` / `use <instrument> { play <pattern> }` → pattern name span.
 fn definition_from_track_play_pattern(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
-    let pattern_name = song.statements.iter().find_map(|statement| {
-        let SongStatement::Track(track) = statement else {
-            return None;
-        };
-        match &track.body {
-            TrackBody::Single { play, .. } => play_pattern_at(play, offset),
-            TrackBody::Layers { uses, .. } => uses
-                .iter()
-                .find_map(|layer| play_pattern_at(&layer.play, offset)),
-        }
-    })?;
+    let pattern_name = find_in_track_plays(song, |play| play_pattern_at(play, offset))?;
     song.statements.iter().find_map(|statement| {
         let SongStatement::Pattern(pattern) = statement else {
             return None;
         };
         (pattern.name.text == pattern_name.text).then_some(pattern.name.span)
+    })
+}
+
+/// `play <pattern> |> trigger_with <rhythm>` → rhythm name span.
+fn definition_from_track_trigger_with(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    let rhythm_name = find_in_track_plays(song, |play| play_trigger_with_at(play, offset))?;
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Rhythm(rhythm) = statement else {
+            return None;
+        };
+        (rhythm.name.text == rhythm_name.text).then_some(rhythm.name.span)
+    })
+}
+
+fn find_in_track_plays<'a>(
+    song: &'a SongDeclaration,
+    mut visit: impl FnMut(&'a PlayStatement) -> Option<&'a Identifier>,
+) -> Option<&'a Identifier> {
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Track(track) = statement else {
+            return None;
+        };
+        match &track.body {
+            TrackBody::Single { play, .. } => visit(play),
+            TrackBody::Layers { uses, .. } => uses.iter().find_map(|layer| visit(&layer.play)),
+        }
     })
 }
 
@@ -1014,6 +1033,12 @@ fn play_pattern_at(play: &PlayStatement, offset: u32) -> Option<&Identifier> {
         }
         _ => None,
     }
+}
+
+fn play_trigger_with_at(play: &PlayStatement, offset: u32) -> Option<&Identifier> {
+    play.trigger_with
+        .as_ref()
+        .filter(|name| name.span.start <= offset && offset < name.span.end)
 }
 
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
@@ -1811,6 +1836,74 @@ mod tests {
             location.range,
             Range::new(Position::new(1, 13), Position::new(1, 17))
         );
+    }
+
+    #[test]
+    fn finds_rhythm_definitions_from_trigger_with() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  rhythm stabs resolution 1/8 { hit rest }\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  rhythm stabs resolution 1/8 { hit rest }\n",
+                "  rhythm pulse resolution 1/8 { hit hit }\n",
+                "  pattern melody = sequence {}\n",
+                "  instrument lead = triangle\n",
+                "  track chords role harmony {\n",
+                "    instrument lead\n",
+                "    play melody |> trigger_with stabs\n",
+                "  }\n",
+                "  track bass role low {\n",
+                "    layer {\n",
+                "      use lead { play melody |> trigger_with pulse }\n",
+                "    }\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        // `trigger_with stabs` inside a single-body track.
+        // `    play melody |> trigger_with stabs` → stabs starts at column 32
+        let single = definition(&source, &uri, Position::new(10, 32))
+            .expect("trigger_with rhythm should resolve");
+        assert_eq!(single.uri, uri);
+        assert_eq!(
+            single.range,
+            Range::new(Position::new(4, 9), Position::new(4, 14))
+        );
+
+        // `trigger_with pulse` inside a layered track.
+        // `      use lead { play melody |> trigger_with pulse }` → pulse at column 45
+        let layered = definition(&source, &uri, Position::new(14, 45))
+            .expect("layer trigger_with rhythm should resolve");
+        assert_eq!(
+            layered.range,
+            Range::new(Position::new(5, 9), Position::new(5, 14))
+        );
+
+        // Same rhythm name in another song must not be chosen from a declaration site.
+        assert!(definition(&source, &uri, Position::new(1, 9)).is_none());
+
+        // Unresolved rhythm names return no location.
+        let missing = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  instrument lead = triangle\n",
+                "  track chords role harmony {\n",
+                "    instrument lead\n",
+                "    play melody |> trigger_with missing\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        assert!(definition(&missing, &uri, Position::new(5, 32)).is_none());
     }
 
     #[test]

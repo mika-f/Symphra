@@ -470,15 +470,16 @@ impl Parser {
         })
     }
 
-    /// `effect delay { mix M time T feedback F }` or `effect filter { cutoff
-    /// C resonance R }`, applied to the whole track (every layer) after its
-    /// events are rendered to audio. `delay` and `filter` are the only
-    /// effect kinds accepted today.
+    /// `effect delay { mix M time T feedback F }`, `effect filter { cutoff C
+    /// resonance R }`, or `effect reverb { mix M size S }`, applied to the
+    /// whole track (every layer) after its events are rendered to audio.
+    /// `delay`, `filter`, and `reverb` are the only effect kinds accepted
+    /// today.
     fn effect(&mut self) -> Option<EffectDeclaration> {
         let start = self.bump().span;
         let kind_token = self.required_any(
-            &[TokenKind::Delay, TokenKind::Filter],
-            "expected `delay` or `filter` after `effect`",
+            &[TokenKind::Delay, TokenKind::Filter, TokenKind::Reverb],
+            "expected `delay`, `filter`, or `reverb` after `effect`",
         )?;
         if kind_token.kind == TokenKind::Delay {
             self.required(TokenKind::LeftBrace, "expected `{` after `effect delay`")?;
@@ -498,7 +499,7 @@ impl Parser {
                 },
                 span: start.cover(end),
             })
-        } else {
+        } else if kind_token.kind == TokenKind::Filter {
             self.required(TokenKind::LeftBrace, "expected `{` after `effect filter`")?;
             self.required(TokenKind::Cutoff, "expected `cutoff` in effect")?;
             let cutoff = self.rate()?;
@@ -509,6 +510,17 @@ impl Parser {
                 .span;
             Some(EffectDeclaration {
                 kind: EffectKind::Filter { cutoff, resonance },
+                span: start.cover(end),
+            })
+        } else {
+            self.required(TokenKind::LeftBrace, "expected `{` after `effect reverb`")?;
+            let mix = self.effect_factor(TokenKind::Mix, "expected `mix` in effect")?;
+            let size = self.effect_factor(TokenKind::Size, "expected `size` after `mix`")?;
+            let end = self
+                .required(TokenKind::RightBrace, "expected `}` to close effect")?
+                .span;
+            Some(EffectDeclaration {
+                kind: EffectKind::Reverb { mix, size },
                 span: start.cover(end),
             })
         }

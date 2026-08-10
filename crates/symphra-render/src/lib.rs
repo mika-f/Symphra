@@ -2,11 +2,14 @@
 
 use std::num::NonZeroU32;
 
-use symphra_dsp::{Oscillator, Waveform, apply_delay, apply_filter, apply_limiter, fade_gain};
+use symphra_dsp::{
+    Oscillator, Waveform, apply_delay, apply_filter, apply_limiter, apply_reverb, fade_gain,
+    reverb_tail_frames,
+};
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
     Channels, DelayEffect, Effect, FilterEffect, InstrumentKind, MasterLimiter, MusicalTime,
-    SampleSelector, Score, Song, TimeError, Track,
+    ReverbEffect, SampleSelector, Score, Song, TimeError, Track,
 };
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -42,7 +45,7 @@ pub enum RenderError {
     #[error("sample speed must be finite and greater than zero")]
     InvalidSampleSpeed,
     #[error(
-        "effect parameters must be in range (delay: mix 0.0 to 1.0, feedback 0.0 to less than 1.0; filter: cutoff greater than 0hz, resonance 0.0 to 1.0)"
+        "effect parameters must be in range (delay: mix 0.0 to 1.0, feedback 0.0 to less than 1.0; filter: cutoff greater than 0hz, resonance 0.0 to 1.0; reverb: mix 0.0 to 1.0, size 0.0 to 1.0)"
     )]
     InvalidEffectParameters,
     #[error("master ceiling must be finite and from 0.0 to 1.0")]
@@ -208,6 +211,15 @@ fn apply_track_effect(
                 filter.resonance,
             );
         }
+        Effect::Reverb(reverb) => {
+            apply_reverb(
+                track_samples,
+                channels,
+                sample_rate_hz,
+                reverb.mix,
+                reverb.size,
+            );
+        }
     }
     Ok(())
 }
@@ -216,6 +228,7 @@ fn effect_is_valid(effect: &Effect) -> bool {
     match effect {
         Effect::Delay(delay) => delay_effect_is_valid(delay),
         Effect::Filter(filter) => filter_effect_is_valid(*filter),
+        Effect::Reverb(reverb) => reverb_effect_is_valid(*reverb),
     }
 }
 
@@ -231,6 +244,13 @@ fn filter_effect_is_valid(effect: FilterEffect) -> bool {
         && effect.cutoff_hz > 0.0
         && effect.resonance.is_finite()
         && (0.0..=1.0).contains(&effect.resonance)
+}
+
+fn reverb_effect_is_valid(effect: ReverbEffect) -> bool {
+    effect.mix.is_finite()
+        && (0.0..=1.0).contains(&effect.mix)
+        && effect.size.is_finite()
+        && (0.0..=1.0).contains(&effect.size)
 }
 
 /// The extra frames a track's delay tail needs beyond its natural end, so
@@ -280,8 +300,15 @@ fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
                 sample_rate_hz,
             )?);
         }
-        if let Some(Effect::Delay(delay)) = track.effect {
-            end = end.saturating_add(delay_tail_frames(&delay, song.tempo_bpm, sample_rate_hz)?);
+        match track.effect {
+            Some(Effect::Delay(delay)) => {
+                end =
+                    end.saturating_add(delay_tail_frames(&delay, song.tempo_bpm, sample_rate_hz)?);
+            }
+            Some(Effect::Reverb(reverb)) => {
+                end = end.saturating_add(reverb_tail_frames(sample_rate_hz, reverb.size));
+            }
+            Some(Effect::Filter(_)) | None => {}
         }
         Ok(latest.max(end))
     })
@@ -639,6 +666,45 @@ mod tests {
             }));
 
         let error = render_song(&invalid, 0).expect_err("zero cutoff should be rejected");
+
+        assert_eq!(error, RenderError::InvalidEffectParameters);
+    }
+
+    #[test]
+    fn render_song_should_apply_track_reverb_effect() {
+        let mut with_effect = score(InstrumentKind::Sine);
+        with_effect.sample_rate_hz = 8_000;
+        let dry = render_song(&with_effect, 0).expect("dry score should render");
+
+        with_effect.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Reverb(symphra_score::ReverbEffect {
+                mix: 1.0,
+                size: 0.9,
+            }));
+        let wet = render_song(&with_effect, 0).expect("wet score should render");
+
+        assert!(
+            wet.samples.len() > dry.samples.len(),
+            "the reverb's decaying tail should extend the render length"
+        );
+        assert!(
+            wet.samples[dry.samples.len()..]
+                .iter()
+                .any(|sample| sample.abs() > f32::EPSILON),
+            "reverberated energy should appear in the extended tail"
+        );
+    }
+
+    #[test]
+    fn render_song_should_reject_out_of_range_effect_reverb_parameters() {
+        let mut invalid = score(InstrumentKind::Sine);
+        invalid.songs[0].tracks[0].effect =
+            Some(symphra_score::Effect::Reverb(symphra_score::ReverbEffect {
+                mix: 1.5,
+                size: 0.5,
+            }));
+
+        let error = render_song(&invalid, 0).expect_err("mix above 1.0 should be rejected");
 
         assert_eq!(error, RenderError::InvalidEffectParameters);
     }

@@ -252,6 +252,12 @@ fn schedule_declared_track(
                     resonance: filter.resonance,
                 })
             }
+            hir::Effect::Reverb(reverb) => {
+                symphra_score::Effect::Reverb(symphra_score::ReverbEffect {
+                    mix: reverb.mix,
+                    size: reverb.size,
+                })
+            }
         });
     }
     Ok(scheduled)

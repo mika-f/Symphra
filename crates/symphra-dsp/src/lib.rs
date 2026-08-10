@@ -189,6 +189,147 @@ pub fn apply_filter(
     }
 }
 
+/// Comb filter delay times, expressed in milliseconds so they scale to any
+/// sample rate rather than being fixed sample counts. A reduced (4 comb, 2
+/// allpass) version of the classic Schroeder reverberator topology Freeverb
+/// later popularized; these four are the millisecond-equivalent of
+/// Freeverb's first four comb delays (in samples, at its reference 44.1kHz:
+/// 1116, 1188, 1277, 1356).
+const REVERB_COMB_DELAYS_MS: [f64; 4] = [25.31, 26.94, 28.96, 30.75];
+/// Allpass delay times, the millisecond-equivalent of Freeverb's first two
+/// allpass delays (in samples, at 44.1kHz: 556, 441).
+const REVERB_ALLPASS_DELAYS_MS: [f64; 2] = [12.61, 10.00];
+/// Schroeder's original fixed allpass feedback coefficient.
+const REVERB_ALLPASS_FEEDBACK: f64 = 0.5;
+/// Amplitude below which a reverb's decaying tail is considered inaudible;
+/// used by [`reverb_tail_frames`] the same way delay bounds its own tail.
+const REVERB_TAIL_EPSILON: f64 = 0.001;
+
+/// Maps `size` (`0.0` to `1.0`) to comb filter feedback (`0.7` to `0.98`),
+/// mirroring Freeverb's roomsize-to-feedback mapping. Kept below `1.0` so
+/// every comb filter is unconditionally stable.
+fn reverb_comb_feedback(size: f32) -> f64 {
+    0.7 + f64::from(size.clamp(0.0, 1.0)) * 0.28
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a positive, finite frame count is range-checked before conversion"
+)]
+fn ms_to_frames(ms: f64, sample_rate_hz: u32) -> usize {
+    let frames = (ms / 1000.0 * f64::from(sample_rate_hz)).round();
+    if frames.is_finite() && frames >= 1.0 {
+        frames as usize
+    } else {
+        1
+    }
+}
+
+/// The longest comb filter's decaying tail at `sample_rate_hz` and `size`,
+/// in frames — used by the renderer to size its output buffer to fit a
+/// reverb's ring-out, the same way delay's tail is bounded. Lives here
+/// (not duplicated in `symphra-render`) since the comb delay times
+/// themselves are an [`apply_reverb`] implementation detail, not something
+/// `mix`/`size` expose to the caller.
+#[must_use]
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "the repeat count is derived from a finite, non-negative logarithm"
+)]
+pub fn reverb_tail_frames(sample_rate_hz: u32, size: f32) -> u64 {
+    if sample_rate_hz == 0 {
+        return 0;
+    }
+    let feedback = reverb_comb_feedback(size);
+    let longest_delay = REVERB_COMB_DELAYS_MS
+        .iter()
+        .map(|ms| ms_to_frames(*ms, sample_rate_hz))
+        .max()
+        .unwrap_or(1) as u64;
+    let repeats = if feedback <= 0.0 {
+        1
+    } else {
+        let repeats = (REVERB_TAIL_EPSILON.ln() / feedback.ln()).ceil();
+        if repeats.is_finite() {
+            (repeats as u64).max(1)
+        } else {
+            1
+        }
+    };
+    longest_delay.saturating_mul(repeats)
+}
+
+/// Applies an in-place Schroeder reverberator to an interleaved audio
+/// buffer, independently per channel: four parallel feedback comb filters
+/// (`comb[n] = dry[n] + feedback * comb[n - delay]`) are summed and
+/// averaged, then run through two series allpass filters
+/// (`allpass[n] = -g * input[n] + input[n - delay] + g * allpass[n -
+/// delay]`) for diffusion. This is offline rendering, so — like
+/// [`apply_delay`] and [`apply_filter`] — there is no real-time streaming
+/// constraint; each stage is computed as a full-buffer pass.
+///
+/// `mix` blends `0.0` (fully dry) to `1.0` (fully wet/reverberated). `size`
+/// (`0.0` to `1.0`) controls how long the reverb tail rings out, via
+/// [`reverb_comb_feedback`].
+pub fn apply_reverb(buffer: &mut [f32], channels: u16, sample_rate_hz: u32, mix: f32, size: f32) {
+    let channel_count = usize::from(channels);
+    if channel_count == 0 || buffer.is_empty() || sample_rate_hz == 0 {
+        return;
+    }
+    let frames = buffer.len() / channel_count;
+    let comb_feedback = reverb_comb_feedback(size);
+    let comb_delays: Vec<usize> = REVERB_COMB_DELAYS_MS
+        .iter()
+        .map(|ms| ms_to_frames(*ms, sample_rate_hz))
+        .collect();
+    let allpass_delays: Vec<usize> = REVERB_ALLPASS_DELAYS_MS
+        .iter()
+        .map(|ms| ms_to_frames(*ms, sample_rate_hz))
+        .collect();
+    #[expect(clippy::cast_precision_loss, reason = "comb_delays.len() is always 4")]
+    let comb_count = comb_delays.len() as f64;
+
+    for channel in 0..channel_count {
+        let dry: Vec<f64> = (0..frames)
+            .map(|frame| f64::from(buffer[frame * channel_count + channel]))
+            .collect();
+
+        let mut wet = vec![0.0f64; frames];
+        for &delay in &comb_delays {
+            let mut comb = vec![0.0f64; frames];
+            for frame in 0..frames {
+                let fed_back = frame.checked_sub(delay).map_or(0.0, |source| comb[source]);
+                comb[frame] = comb_feedback.mul_add(fed_back, dry[frame]);
+            }
+            for (mixed, comb_sample) in wet.iter_mut().zip(&comb) {
+                *mixed += comb_sample / comb_count;
+            }
+        }
+        for &delay in &allpass_delays {
+            let input = wet.clone();
+            for frame in 0..frames {
+                let delayed_input = frame.checked_sub(delay).map_or(0.0, |source| input[source]);
+                let fed_back = frame.checked_sub(delay).map_or(0.0, |source| wet[source]);
+                wet[frame] = (-REVERB_ALLPASS_FEEDBACK).mul_add(input[frame], delayed_input)
+                    + REVERB_ALLPASS_FEEDBACK * fed_back;
+            }
+        }
+
+        for frame in 0..frames {
+            let out = f64::from(mix).mul_add(wet[frame] - dry[frame], dry[frame]);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a reverb's output is clamped downstream by the renderer's final safety clamp"
+            )]
+            {
+                buffer[frame * channel_count + channel] = out as f32;
+            }
+        }
+    }
+}
+
 /// Scans `buffer` for its peak absolute sample value and, if it exceeds
 /// `ceiling`, uniformly scales every sample by `ceiling / peak` so the
 /// loudest sample lands exactly at `ceiling`. Unlike clipping, this
@@ -213,7 +354,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use super::{
-        Oscillator, SineOscillator, Waveform, apply_delay, apply_filter, apply_limiter, fade_gain,
+        Oscillator, SineOscillator, Waveform, apply_delay, apply_filter, apply_limiter,
+        apply_reverb, fade_gain, reverb_tail_frames,
     };
 
     #[test]
@@ -395,6 +537,89 @@ mod tests {
 
         apply_filter(&mut buffer, 1, 0, 1_000.0, 0.0);
         assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn apply_reverb_at_zero_mix_should_leave_dry_signal_unchanged() {
+        let original = vec![1.0f32, -0.5, 0.25, 0.0, -0.75];
+        let mut buffer = original.clone();
+
+        apply_reverb(&mut buffer, 1, 48_000, 0.0, 0.5);
+
+        assert_eq!(buffer, original);
+    }
+
+    #[test]
+    fn apply_reverb_at_full_mix_should_differ_from_the_dry_impulse() {
+        let mut buffer = vec![0.0f32; 4_000];
+        buffer[0] = 1.0;
+
+        apply_reverb(&mut buffer, 1, 48_000, 1.0, 0.5);
+
+        assert!(buffer.iter().any(|sample| sample.abs() > f32::EPSILON));
+        assert!((buffer[0] - 1.0).abs() > f32::EPSILON);
+    }
+
+    #[test]
+    fn apply_reverb_should_leave_a_silent_channel_untouched() {
+        let frames = 4_000;
+        let mut buffer: Vec<f32> = (0..frames)
+            .flat_map(|frame| [if frame == 0 { 1.0 } else { 0.0 }, 0.0])
+            .collect();
+
+        apply_reverb(&mut buffer, 2, 48_000, 1.0, 0.9);
+
+        let silent_channel: Vec<f32> = buffer.iter().skip(1).step_by(2).copied().collect();
+        assert!(silent_channel.iter().all(|&sample| sample == 0.0));
+    }
+
+    #[test]
+    fn apply_reverb_larger_size_should_retain_more_tail_energy() {
+        let frames = 20_000;
+        let impulse = || {
+            let mut buffer = vec![0.0f32; frames];
+            buffer[0] = 1.0;
+            buffer
+        };
+
+        let mut short = impulse();
+        apply_reverb(&mut short, 1, 48_000, 1.0, 0.0);
+        let mut long = impulse();
+        apply_reverb(&mut long, 1, 48_000, 1.0, 1.0);
+
+        let tail_energy = |buffer: &[f32]| {
+            buffer[10_000..]
+                .iter()
+                .map(|sample| sample.abs())
+                .sum::<f32>()
+        };
+        assert!(
+            tail_energy(&long) > tail_energy(&short),
+            "size 1.0 tail energy {} should exceed size 0.0 tail energy {}",
+            tail_energy(&long),
+            tail_energy(&short)
+        );
+    }
+
+    #[test]
+    fn apply_reverb_should_be_a_no_op_for_zero_channels_or_sample_rate() {
+        let mut buffer = vec![1.0, 2.0, 3.0];
+
+        apply_reverb(&mut buffer, 0, 48_000, 1.0, 0.5);
+        assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
+
+        apply_reverb(&mut buffer, 1, 0, 1.0, 0.5);
+        assert_eq!(buffer, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn reverb_tail_frames_should_grow_with_size() {
+        assert!(reverb_tail_frames(48_000, 1.0) > reverb_tail_frames(48_000, 0.0));
+    }
+
+    #[test]
+    fn reverb_tail_frames_should_be_zero_for_zero_sample_rate() {
+        assert_eq!(reverb_tail_frames(0, 0.5), 0);
     }
 
     #[test]

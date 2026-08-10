@@ -28,11 +28,11 @@ pub struct TrackDeclaration {
     pub span: SourceSpan,
 }
 
-/// `effect delay { ... }` or `effect filter { ... }`, applied to the track's
-/// rendered audio (after every layer's events have been synthesized) before
-/// it is summed into the master mix. `delay` and `filter` are the only
-/// effect kinds implemented so far; `reverb` and general `automate` blocks
-/// are not part of this slice.
+/// `effect delay { ... }`, `effect filter { ... }`, or `effect reverb {
+/// ... }`, applied to the track's rendered audio (after every layer's
+/// events have been synthesized) before it is summed into the master mix.
+/// `delay`, `filter`, and `reverb` are the only effect kinds implemented so
+/// far; general `automate` blocks are not part of this slice.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EffectDeclaration {
     pub kind: EffectKind,
@@ -54,6 +54,12 @@ pub enum EffectKind {
     Filter {
         cutoff: FrequencyLiteral,
         resonance: EffectFactor,
+    },
+    /// A Schroeder reverberator. `size` controls how long the reverb
+    /// tail rings out (mapped to comb filter feedback in `symphra-dsp`).
+    Reverb {
+        mix: EffectFactor,
+        size: EffectFactor,
     },
 }
 

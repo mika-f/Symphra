@@ -743,6 +743,34 @@ fn parses_track_effect_filter() {
     assert!((resonance.value - 0.40).abs() < f32::EPSILON);
 }
 
+#[test]
+fn parses_track_effect_reverb() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Track\" { ",
+            "track drums role beat { ",
+            "instrument tr909 play kit ",
+            "effect reverb { mix 0.40 size 0.80 } ",
+            "} }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let effect = track.effect.as_ref().expect("effect should be present");
+    let EffectKind::Reverb { mix, size } = &effect.kind else {
+        panic!("effect should be a reverb");
+    };
+
+    assert!((mix.value - 0.40).abs() < f32::EPSILON);
+    assert!((size.value - 0.80).abs() < f32::EPSILON);
+}
+
 /// Unwraps a track's single-instrument body, panicking if it is a `layer`.
 fn single_layer(
     body: &symphra_syntax::ast::TrackBody,

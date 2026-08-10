@@ -80,13 +80,14 @@ pub struct Track {
     pub effect: Option<Effect>,
 }
 
-/// A track's single post-render effect: either a feedback delay or a
-/// resonant lowpass filter, applied to the track's rendered audio before it
-/// is summed into the master mix.
+/// A track's single post-render effect: a feedback delay, a resonant
+/// lowpass filter, or a reverb, applied to the track's rendered audio
+/// before it is summed into the master mix.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Effect {
     Delay(DelayEffect),
     Filter(FilterEffect),
+    Reverb(ReverbEffect),
 }
 
 /// A feedback delay line applied to a track's rendered audio before it is
@@ -106,6 +107,15 @@ pub struct DelayEffect {
 pub struct FilterEffect {
     pub cutoff_hz: f32,
     pub resonance: f32,
+}
+
+/// A Schroeder reverberator applied to a track's rendered audio before it
+/// is summed into the master mix. `size` is the raw `0.0..=1.0` factor;
+/// mapping it to comb filter feedback happens in `symphra-dsp`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReverbEffect {
+    pub mix: f32,
+    pub size: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

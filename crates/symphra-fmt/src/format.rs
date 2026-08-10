@@ -598,13 +598,15 @@ enum EffectField<'a> {
     Feedback(EffectFactor),
     Cutoff(&'a RateLiteral),
     Resonance(EffectFactor),
+    Size(EffectFactor),
 }
 
 fn effect_field_span(field: EffectField<'_>) -> SourceSpan {
     match field {
         EffectField::Mix(factor)
         | EffectField::Feedback(factor)
-        | EffectField::Resonance(factor) => factor.span,
+        | EffectField::Resonance(factor)
+        | EffectField::Size(factor) => factor.span,
         EffectField::Time(duration) => duration.span(),
         EffectField::Cutoff(cutoff) => cutoff.span,
     }
@@ -631,6 +633,10 @@ fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
                 EffectField::Resonance(*resonance),
             ],
         ),
+        EffectKind::Reverb { mix, size } => (
+            "effect reverb",
+            vec![EffectField::Mix(*mix), EffectField::Size(*size)],
+        ),
     };
     print_block(
         ctx,
@@ -655,6 +661,9 @@ fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
             }
             EffectField::Resonance(factor) => {
                 ctx.printer.line(format!("resonance {}", factor.value));
+            }
+            EffectField::Size(factor) => {
+                ctx.printer.line(format!("size {}", factor.value));
             }
         },
     );

@@ -57,6 +57,12 @@ playback speed`). Since then, two further slices landed:
   | Filter` enum (mirroring the `ChanceTransform` precedent) rather than a
   grammar rework, exactly as §7 had anticipated. See §7 below for the
   cutoff/resonance design decisions and implementation details.
+- An eighth slice, in a follow-up continuation of the same session, adds a
+  third `effect` kind: `effect reverb { mix M size S }`, a reduced (4 comb, 2
+  allpass) Schroeder reverberator applied to a track's rendered audio the
+  same way `delay`/`filter` already are. `EffectKind` gained a `Reverb { mix,
+  size }` variant — another token-and-arm addition, no grammar rework. See §7
+  below for the topology/tuning decisions and implementation details.
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -108,6 +114,10 @@ the adjusted syntax described later:
 - `effect filter { cutoff C resonance R }` on a track: a resonant lowpass
   biquad filter applied to that track's rendered audio the same way `effect
   delay` is, mutually exclusive with it (a track has at most one effect);
+- `effect reverb { mix M size S }` on a track: a reduced (4 comb filter, 2
+  allpass filter) Schroeder reverberator applied to that track's rendered
+  audio, mutually exclusive with `delay`/`filter` (still at most one effect
+  per track);
 - `section <name> bars <N> { parallel [exact] { play track <name> ... } }`
   declaring a named, fixed-length, reusable group of declared tracks, and
   `arrangement { play <name> }` sequencing section references back-to-back by
@@ -355,7 +365,7 @@ scope; the original's inline `pattern phrase`/`pattern hats` declarations
 inside tracks remain unsupported (out of scope for this slice — layers only
 addressed multi-instrument mixing, not inline pattern declarations).
 
-### 7. Effects and automation — `delay` and `filter` done; `reverb`/`automate` still gaps
+### 7. Effects and automation — `delay`, `filter`, and `reverb` done; `automate` still a gap
 
 The original declares effects and LFO-driven automation as blocks of their
 own, outside any track:
@@ -484,14 +494,68 @@ the buffer for a `Delay` effect, never for `Filter`.
 
 **Render integration.** The delay-only branch in `render_song_with_samples`
 became `apply_track_effect`, a small helper matching on `Effect::Delay |
-Filter` and dispatching to `apply_delay`/`apply_filter` respectively, called
-once per effected track from the same loop. The no-effect fast path is
-unchanged.
+Filter` (later `| Reverb`, see below) and dispatching to
+`apply_delay`/`apply_filter`/`apply_reverb` respectively, called once per
+effected track from the same loop. The no-effect fast path is unchanged.
 
-**Still missing:** `reverb` as an effect kind, the general `automate { lfo
-... }` parameter-timeline block (which would also let `filter`'s `cutoff`
-sweep over time as the original example does), and any effect declared
-outside a track (there is no bus/master effect chain — see §10).
+**`effect reverb { mix M size S }` (added in a later session).** The
+original's `effect reverb { mix 0.40 size 0.80 }` is implemented verbatim —
+no design gap to fill the way `filter` needed a static `cutoff` in place of
+LFO automation, since `mix`/`size` are exactly what the original shows.
+
+**Topology.** A classic Schroeder reverberator: parallel feedback comb
+filters summed and averaged, then run through series allpass filters for
+diffusion. Freeverb later popularized this same topology with 8 comb + 4
+allpass filters tuned for a specific studio-quality sound; this uses a
+reduced 4-comb/2-allpass version (Schroeder's original 1962 design also used
+4 comb + 2 allpass) — enough to sound like a genuine reverb without the
+extra tuning surface area an 8-comb design would need to justify, in
+keeping with how every other effect in this codebase implements one
+representative variant rather than a configurable family (`delay` is one
+fixed feedback-delay topology, not a pluggable multi-tap/ping-pong choice;
+`filter` is a lowpass biquad, not a selectable filter type). Comb/allpass
+delay times are the millisecond-equivalent of four of Freeverb's own comb
+delays and two of its allpass delays (so tone stays consistent as sample
+rate changes), scaled from Freeverb's 44.1kHz reference rather than
+invented from scratch.
+
+**Validation.** `mix` reuses the identical `0.0..=1.0` check `delay`'s `mix`
+already uses. `size` must be finite and in `0.0..=1.0` — a plain factor, not
+a frequency or duration, so (unlike `filter`'s `cutoff`) it needs no
+cross-namespace Nyquist-style check against the project's sample rate.
+
+**DSP.** `symphra_dsp::apply_reverb` computes, per channel: four parallel
+feedback comb filters (`comb[n] = dry[n] + feedback * comb[n - delay]`,
+mirroring `apply_delay`'s recursion but without delay's separate dry/wet mix
+stage) summed and averaged, then two series Schroeder allpass filters
+(`allpass[n] = -g * input[n] + input[n - delay] + g * allpass[n - delay]`,
+fixed `g = 0.5`) for diffusion, then a final `mix` blend against the dry
+signal exactly like `apply_delay`'s blend stage. `size` (`0.0` to `1.0`)
+maps to comb filter feedback (`0.7` to `0.98`, Freeverb's own
+roomsize-to-feedback formula), kept below `1.0` so every comb filter is
+unconditionally stable regardless of `size`. Like `apply_filter`, the
+recursive math runs in `f64` internally (cast to `f32` only at the final
+output) to keep rounding error from compounding across the comb/allpass
+chain. `symphra_dsp::reverb_tail_frames(sample_rate_hz, size)` is a second
+new public primitive — the comb delay times are an `apply_reverb`
+implementation detail, not something `mix`/`size` expose to callers, so the
+render-side tail-length estimate (mirroring `delay_tail_frames`'s own
+epsilon-bounded formula) lives in `symphra-dsp` too rather than being
+duplicated in `symphra-render` against magic numbers it doesn't otherwise
+know about.
+
+**Render integration.** `song_frames` grows the render buffer for a
+`Reverb` effect's decaying tail the same way it already does for `Delay`
+(via `reverb_tail_frames`); `Filter` still needs no tail, since its
+response — like `apply_reverb`'s — is left to the renderer's final safety
+clamp for any final decaying resonance below the epsilon threshold, but only
+`delay`/`reverb` extend the buffer up front since only their known-tail
+length can be bounded ahead of render time.
+
+**Still missing:** the general `automate { lfo ... }` parameter-timeline
+block (which would also let `filter`'s `cutoff` sweep over time as the
+original example does), and any effect declared outside a track (there is
+no bus/master effect chain — see §10).
 
 ### 8. Bar durations and bracketed chords — bar durations done, brackets intentionally not restored
 
@@ -731,13 +795,20 @@ original intent before expanding degree-based harmony.
     `EffectDeclaration` generalized into `EffectKind::Delay | Filter` exactly
     as §7 had anticipated. `cutoff` is a static `hz`/`khz` value rather than
     LFO-automated, since general `automate` is not implemented yet; see §7.
-15. The next milestone, if wanted, is §7's remaining `reverb` effect kind and
-    `automate`/LFO (each needs its own DSP/ownership decisions, as `delay`,
-    `filter`, and `limiter` did — `automate` would also be what finally lets
-    `filter`'s `cutoff` sweep over time, matching the original example);
-    then §4 synth envelopes/supersaw (needs a configurable ADSR envelope
-    designed first); then §5 SoundFont/VST3 (largest, most
-    external-dependency-heavy, last).
+15. ~~Add a third `effect` kind (`reverb`).~~ Done, in a follow-up
+    continuation of the same 2026-08-10 session — `effect reverb { mix M
+    size S }` is a reduced (4 comb, 2 allpass) Schroeder reverberator
+    (`symphra_dsp::apply_reverb`), mutually exclusive with `delay`/`filter`
+    per track (a track still has at most one effect). `EffectKind` gained a
+    `Reverb { mix, size }` variant, another token-and-arm addition. Unlike
+    `filter`, no design gap needed filling — the original's `mix`/`size`
+    parameters are exactly what this implements.
+16. The next milestone, if wanted, is §7's remaining `automate`/LFO block
+    (needs its own ownership decisions, as `delay`, `filter`, `reverb`, and
+    `limiter` all did — it would also be what finally lets `filter`'s
+    `cutoff` sweep over time, matching the original example); then §4 synth
+    envelopes/supersaw (needs a configurable ADSR envelope designed first);
+    then §5 SoundFont/VST3 (largest, most external-dependency-heavy, last).
 
 ## Verification notes
 
@@ -801,6 +872,27 @@ were added. `render_song_with_samples` in `crates/symphra-render/src/lib.rs`
 was refactored to extract an `apply_track_effect` helper partway through this
 slice, to stay under clippy's `too_many_lines` threshold after adding the
 `Effect::Filter` branch — a mechanical extraction, not a behavior change.
+`cargo fmt --all -- --check` is clean except for the same two pre-existing,
+unrelated differences.
+
+The same also holds for the `effect reverb` slice added in a follow-up
+continuation of the same 2026-08-10 session: `cargo build --workspace
+--all-targets`, `cargo test --workspace` (with `symphra-lsp` run separately
+via `cargo test -p symphra-lsp --target-dir <alternate-dir>`), and `cargo
+clippy --workspace --all-targets -- -D warnings` all pass — 7 new DSP unit
+tests (`crates/symphra-dsp/src/lib.rs`), 1 new parser test
+(`crates/symphra-syntax/tests/syntax.rs`), 3 new compiler tests
+(`crates/symphra-compiler/tests/compile.rs`), 2 new render tests
+(`crates/symphra-render/src/lib.rs`), and 1 new formatter round-trip test
+plus one idempotency source addition (`crates/symphra-fmt/tests/formatting.rs`)
+were added. Two mechanical test-only refactors were needed to stay under
+clippy's `too_many_lines` threshold after the new assertions were added:
+`is_idempotent_across_every_grammar_construct` in
+`crates/symphra-fmt/tests/formatting.rs` had its `sources` array extracted
+into a standalone `idempotency_sources()` helper, and
+`completes_track_and_trigger_keywords` in `apps/symphra-lsp/src/main.rs` had
+its `effect`-body completion assertions split into a new
+`completes_effect_body_keywords` test — neither changes what is asserted.
 `cargo fmt --all -- --check` is clean except for the same two pre-existing,
 unrelated differences.
 

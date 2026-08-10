@@ -15,8 +15,8 @@ use symphra_syntax::ast::{
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
     Duration, Effect, FilterEffect, InstrumentKind, Key, MasterLimiter, Meter, Mode, NodeId, Note,
-    Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Rhythm,
-    RhythmItem, SampleChoice, SampleRange, SampleSelector, SampleTrigger, Section,
+    Pan, Pattern, PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, ReverbEffect,
+    Rhythm, RhythmItem, SampleChoice, SampleRange, SampleSelector, SampleTrigger, Section,
     SectionOccurrence, Song, Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
@@ -1048,16 +1048,18 @@ impl Compiler {
         Ok(Some(chance))
     }
 
-    /// Resolves a track's `effect delay { ... }` or `effect filter { ... }`.
-    /// Delay `feedback` is capped at `0.95` (not the theoretical stability
-    /// limit of `1.0`) so a delay's echo tail — which the renderer must
-    /// extend the song's audio buffer to fit — always decays to silence
-    /// within a bounded number of repeats. Filter `cutoff` is only checked
-    /// for being a positive, finite frequency here; checking it against the
-    /// Nyquist limit needs the project's sample rate, which is not in scope
-    /// during song/track compilation, so the renderer clamps it defensively
-    /// at render time instead (mirroring the existing defensive-revalidation
-    /// precedent for a hand-constructed [`MasterLimiter`]).
+    /// Resolves a track's `effect delay { ... }`, `effect filter { ... }`, or
+    /// `effect reverb { ... }`. Delay `feedback` is capped at `0.95` (not the
+    /// theoretical stability limit of `1.0`) so a delay's echo tail — which
+    /// the renderer must extend the song's audio buffer to fit — always
+    /// decays to silence within a bounded number of repeats. Filter `cutoff`
+    /// is only checked for being a positive, finite frequency here; checking
+    /// it against the Nyquist limit needs the project's sample rate, which is
+    /// not in scope during song/track compilation, so the renderer clamps it
+    /// defensively at render time instead (mirroring the existing
+    /// defensive-revalidation precedent for a hand-constructed
+    /// [`MasterLimiter`]). Reverb `size` needs no such cross-namespace check —
+    /// it is a plain `0.0..=1.0` factor, not a frequency or duration.
     fn effect(
         &mut self,
         declaration: Option<&EffectDeclaration>,
@@ -1121,6 +1123,20 @@ impl Compiler {
                 Ok(Some(Effect::Filter(FilterEffect {
                     cutoff_hz,
                     resonance: resonance.value,
+                })))
+            }
+            EffectKind::Reverb { mix, size } => {
+                if !mix.value.is_finite() || !(0.0..=1.0).contains(&mix.value) {
+                    self.error("effect mix must be from 0.0 to 1.0", mix.span);
+                    return Err(());
+                }
+                if !size.value.is_finite() || !(0.0..=1.0).contains(&size.value) {
+                    self.error("effect reverb size must be from 0.0 to 1.0", size.span);
+                    return Err(());
+                }
+                Ok(Some(Effect::Reverb(ReverbEffect {
+                    mix: mix.value,
+                    size: size.value,
                 })))
             }
         }

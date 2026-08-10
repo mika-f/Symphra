@@ -239,6 +239,32 @@ fn formats_track_effect_filter() {
 }
 
 #[test]
+fn formats_track_effect_reverb() {
+    let input = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect reverb { mix 0.40 size 0.80 }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect reverb {
+      mix 0.4
+      size 0.8
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_track_with_layer_uses() {
     let input = r#"song "S" {
   track bass role low {
@@ -618,9 +644,11 @@ fn refuses_to_format_source_with_syntax_diagnostics() {
     assert!(!error.diagnostics().is_empty());
 }
 
-#[test]
-fn is_idempotent_across_every_grammar_construct() {
-    let sources = [
+/// Split out of `is_idempotent_across_every_grammar_construct` so that test
+/// stays under clippy's `too_many_lines` threshold as new grammar constructs
+/// get their own idempotency source appended.
+fn idempotency_sources() -> [&'static str; 6] {
+    [
         r#"project { seed 1 sample_rate 48khz output stereo }
 song "First Song" {
   tempo 150bpm
@@ -706,9 +734,24 @@ song "FilterEffect" {
   }
 }
 "#,
-    ];
+        r#"project { seed 1 sample_rate 8khz output mono }
+song "ReverbEffect" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect reverb { mix 0.4 size 0.8 }
+  }
+}
+"#,
+    ]
+}
 
-    for source in sources {
+#[test]
+fn is_idempotent_across_every_grammar_construct() {
+    for source in idempotency_sources() {
         let once = format(source);
         let twice = format(&once);
         assert_eq!(

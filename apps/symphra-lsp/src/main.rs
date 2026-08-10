@@ -369,6 +369,7 @@ enum CompletionBlock {
     Use,
     Effect,
     Filter,
+    Reverb,
     Section,
     Parallel,
     Master,
@@ -435,7 +436,7 @@ fn completion_labels(
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
         &["alternate"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
-        &["delay", "filter"]
+        &["delay", "filter", "reverb"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Master) {
         &["limiter"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Parallel) {
@@ -553,6 +554,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Use) => &["play", "at"],
         Some(CompletionBlock::Effect) => &["mix", "time", "feedback"],
         Some(CompletionBlock::Filter) => &["cutoff", "resonance"],
+        Some(CompletionBlock::Reverb) => &["mix", "size"],
         Some(CompletionBlock::Section) => &["parallel"],
         Some(CompletionBlock::Parallel) => &["play"],
         Some(CompletionBlock::Master) => &["limiter"],
@@ -643,6 +645,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Use => pending = Some(CompletionBlock::Use),
             TokenKind::Delay => pending = Some(CompletionBlock::Effect),
             TokenKind::Filter => pending = Some(CompletionBlock::Filter),
+            TokenKind::Reverb => pending = Some(CompletionBlock::Reverb),
             TokenKind::Section => pending = Some(CompletionBlock::Section),
             TokenKind::Parallel => pending = Some(CompletionBlock::Parallel),
             TokenKind::Master => pending = Some(CompletionBlock::Master),
@@ -702,6 +705,8 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Filter
                     | TokenKind::Cutoff
                     | TokenKind::Resonance
+                    | TokenKind::Reverb
+                    | TokenKind::Size
                     | TokenKind::Play
                     | TokenKind::TriggerWith
                     | TokenKind::Gate
@@ -943,6 +948,10 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Cutoff => "sets a filter effect's lowpass cutoff frequency, such as `2000hz`.",
         TokenKind::Resonance => {
             "sets a filter effect's resonance/Q, `0.0` (gentle) to `1.0` (sharp peak)."
+        }
+        TokenKind::Reverb => "a Schroeder reverberator (comb and allpass filters).",
+        TokenKind::Size => {
+            "sets a reverb effect's room size, `0.0` (short tail) to `1.0` (long tail)."
         }
         TokenKind::Play => {
             "selects the pattern played by a track, or references a track/section elsewhere."
@@ -1297,30 +1306,6 @@ mod tests {
             ["play", "at"]
         );
         assert_eq!(
-            labels(
-                "song \"Test\" {\ntrack lead role harmony {\n  effect ",
-                2,
-                9
-            ),
-            ["delay", "filter"]
-        );
-        assert_eq!(
-            labels(
-                "song \"Test\" {\ntrack lead role harmony {\n  effect delay {\n    ",
-                3,
-                4
-            ),
-            ["mix", "time", "feedback"]
-        );
-        assert_eq!(
-            labels(
-                "song \"Test\" {\ntrack lead role harmony {\n  effect filter {\n    ",
-                3,
-                4
-            ),
-            ["cutoff", "resonance"]
-        );
-        assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  play ", 2, 7),
             ["drum"]
         );
@@ -1359,6 +1344,52 @@ mod tests {
                 30
             ),
             ["transpose", "retrigger", "speed"]
+        );
+    }
+
+    #[test]
+    fn completes_effect_body_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect ",
+                2,
+                9
+            ),
+            ["delay", "filter", "reverb"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect delay {\n    ",
+                3,
+                4
+            ),
+            ["mix", "time", "feedback"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect filter {\n    ",
+                3,
+                4
+            ),
+            ["cutoff", "resonance"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect reverb {\n    ",
+                3,
+                4
+            ),
+            ["mix", "size"]
         );
     }
 

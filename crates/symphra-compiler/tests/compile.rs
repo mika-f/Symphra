@@ -1315,6 +1315,38 @@ song "Filter" {
 }
 
 #[test]
+fn schedule_should_apply_track_effect_reverb() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Reverb" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect reverb { mix 0.40 size 0.80 }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("track effect should compile");
+
+    let score = schedule(&program).expect("track effect should schedule");
+    let effect = score.songs[0].tracks[0]
+        .effect
+        .expect("effect should be scheduled");
+    let Effect::Reverb(effect) = effect else {
+        panic!("effect should be a reverb");
+    };
+
+    assert!((effect.mix - 0.40).abs() < 1e-6);
+    assert!((effect.size - 0.80).abs() < 1e-6);
+}
+
+#[test]
 fn compile_should_reject_out_of_range_effect_mix() {
     let parsed = parse(
         SourceId(0),
@@ -1483,6 +1515,64 @@ song "BadUnit" {
     assert!(
         diagnostics.iter().any(|diagnostic| {
             diagnostic.message == "effect filter cutoff unit must be `hz` or `khz`"
+        }),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_out_of_range_effect_reverb_mix() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "InvalidReverbMix" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect reverb { mix 1.50 size 0.80 }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range mix should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "effect mix must be from 0.0 to 1.0"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_out_of_range_effect_reverb_size() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "InvalidReverbSize" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect reverb { mix 0.40 size 1.50 }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range size should fail");
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "effect reverb size must be from 0.0 to 1.0"
         }),
         "{diagnostics:#?}"
     );

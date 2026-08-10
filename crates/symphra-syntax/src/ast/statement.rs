@@ -276,6 +276,17 @@ pub struct SectionDeclaration {
     pub span: SourceSpan,
 }
 
+/// `master { limiter { ceiling C } }`. `limiter` is the only accepted
+/// master-processor kind so far (mirroring how `delay` is the only accepted
+/// `effect` kind) — flattened directly onto `MasterDeclaration` rather than
+/// a separate `LimiterDeclaration` layer. `ceiling` reuses `VolumeExpression`
+/// verbatim: identical signed-decibel-with-unit grammar to `volume -6db`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MasterDeclaration {
+    pub ceiling: VolumeExpression,
+    pub span: SourceSpan,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProjectStatement {
     Seed {
@@ -312,6 +323,7 @@ pub enum SongStatement {
     Rhythm(RhythmDeclaration),
     Track(Box<TrackDeclaration>),
     Section(SectionDeclaration),
+    Master(MasterDeclaration),
     Arrangement {
         entries: Vec<ArrangementEntry>,
         span: SourceSpan,

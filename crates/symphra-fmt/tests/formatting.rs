@@ -559,6 +559,25 @@ fn formats_arrangement_play_section_entries() {
 }
 
 #[test]
+fn formats_master_limiter() {
+    let input = r#"song "S" {
+  master { limiter { ceiling -0.3db } }
+}
+"#;
+
+    let expected = r#"song "S" {
+  master {
+    limiter {
+      ceiling -0.3 db
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn collapses_empty_bodies_to_a_single_line() {
     let input = "project {}\nsong \"S\" {\n  tempo 120bpm meter 4/4 key C major\n  pattern p = sequence {}\n}\n";
 
@@ -641,6 +660,11 @@ song "Sections" {
   arrangement {
     play phrase
     play phrase
+  }
+  master {
+    limiter {
+      ceiling -0.3db
+    }
   }
 }
 "#,

@@ -82,11 +82,11 @@
       "patterns": [
         {
           "name": "keyword.control.declaration.symphra",
-          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|choose|rhythm|track|section)\\b"
+          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|choose|rhythm|track|section|master|limiter)\\b"
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|sample|weight|source|root|pack|with|resolution|hit|role|play|trigger_with|gate|transpose|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|bars|parallel|exact)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|sample|weight|source|root|pack|with|resolution|hit|role|play|trigger_with|gate|transpose|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|bars|parallel|exact|ceiling)\\b"
         }
       ]
     },

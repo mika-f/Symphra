@@ -13,8 +13,8 @@ pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, Rat
 pub use statement::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, EffectDeclaration, EffectFactor,
-    GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration, LayerUse, PanExpression,
-    PlaySource, PlayStatement, ProjectStatement, RepeatExpression, RhythmDeclaration, RhythmItem,
-    SectionDeclaration, SongStatement, SpeedExpression, TrackBody, TrackDeclaration,
-    TransposeExpression, VolumeExpression,
+    GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration, LayerUse,
+    MasterDeclaration, PanExpression, PlaySource, PlayStatement, ProjectStatement,
+    RepeatExpression, RhythmDeclaration, RhythmItem, SectionDeclaration, SongStatement,
+    SpeedExpression, TrackBody, TrackDeclaration, TransposeExpression, VolumeExpression,
 };

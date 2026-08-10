@@ -1117,3 +1117,22 @@ fn parses_arrangement_legacy_pattern_entries_unchanged() {
         ("melody", Some("lead"))
     );
 }
+
+#[test]
+fn parses_master_limiter_ceiling() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"S\" { master { limiter { ceiling -0.3db } } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Master(master) = &song.statements[0] else {
+        panic!("statement should be a master block");
+    };
+    assert_eq!(
+        (master.ceiling.decibels, master.ceiling.unit.text.as_str()),
+        (-0.3, "db")
+    );
+}

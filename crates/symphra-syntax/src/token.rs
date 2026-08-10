@@ -70,6 +70,9 @@ pub enum TokenKind {
     Bars,
     Parallel,
     Exact,
+    Master,
+    Limiter,
+    Ceiling,
     LeftBrace,
     RightBrace,
     Equal,
@@ -153,6 +156,9 @@ impl TokenKind {
             "bars" => Self::Bars,
             "parallel" => Self::Parallel,
             "exact" => Self::Exact,
+            "master" => Self::Master,
+            "limiter" => Self::Limiter,
+            "ceiling" => Self::Ceiling,
             _ => return None,
         })
     }

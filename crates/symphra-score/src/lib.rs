@@ -22,6 +22,17 @@ pub struct Song {
     pub meter: Meter,
     pub key: Key,
     pub tracks: Vec<Track>,
+    pub master: Option<MasterLimiter>,
+}
+
+/// A peak-detect-and-scale limiter applied to the whole summed master
+/// buffer before it is clamped and converted to output PCM. `ceiling` is a
+/// linear amplitude — the loudest sample allowed through; if the buffer's
+/// peak exceeds it, every sample is uniformly scaled down so the peak lands
+/// exactly at `ceiling`, preserving relative dynamics (unlike clipping).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MasterLimiter {
+    pub ceiling: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

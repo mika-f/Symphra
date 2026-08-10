@@ -2,11 +2,11 @@
 
 use std::num::NonZeroU32;
 
-use symphra_dsp::{Oscillator, Waveform, apply_delay, fade_gain};
+use symphra_dsp::{Oscillator, Waveform, apply_delay, apply_limiter, fade_gain};
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
-    Channels, DelayEffect, InstrumentKind, MusicalTime, SampleSelector, Score, Song, TimeError,
-    Track,
+    Channels, DelayEffect, InstrumentKind, MasterLimiter, MusicalTime, SampleSelector, Score, Song,
+    TimeError, Track,
 };
 
 const MAX_NOTE_GAIN: f32 = 0.2;
@@ -43,6 +43,8 @@ pub enum RenderError {
     InvalidSampleSpeed,
     #[error("effect mix must be from 0.0 to 1.0 and feedback from 0.0 to less than 1.0")]
     InvalidEffectParameters,
+    #[error("master ceiling must be finite and from 0.0 to 1.0")]
+    InvalidMasterCeiling,
     #[error("sample rate must be greater than zero")]
     InvalidSampleRate,
     #[error("rendered audio is too large")]
@@ -113,6 +115,9 @@ pub fn render_song_with_samples(
     {
         return Err(RenderError::InvalidEffectParameters);
     }
+    if song.master.is_some_and(|master| !master_is_valid(master)) {
+        return Err(RenderError::InvalidMasterCeiling);
+    }
     let channels = match score.channels {
         Channels::Mono => 1,
         Channels::Stereo => 2,
@@ -156,6 +161,9 @@ pub fn render_song_with_samples(
             )?;
         }
     }
+    if let Some(master) = &song.master {
+        apply_limiter(&mut samples, master.ceiling);
+    }
     for sample in &mut samples {
         *sample = sample.clamp(-1.0, 1.0);
     }
@@ -164,6 +172,10 @@ pub fn render_song_with_samples(
         channels,
         samples,
     })
+}
+
+fn master_is_valid(master: MasterLimiter) -> bool {
+    master.ceiling.is_finite() && (0.0..=1.0).contains(&master.ceiling)
 }
 
 fn effect_is_valid(effect: &DelayEffect) -> bool {
@@ -453,8 +465,8 @@ fn time_to_frame(
 #[cfg(test)]
 mod tests {
     use symphra_score::{
-        Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, Pan,
-        PitchClass, SampleEvent, SampleSelector, Score, Song, Track,
+        Channels, EntityId, InstrumentKind, Key, MasterLimiter, Meter, Mode, MusicalTime,
+        NoteEvent, Pan, PitchClass, SampleEvent, SampleSelector, Score, Song, Track,
     };
 
     use super::{RenderError, render_song};
@@ -541,6 +553,47 @@ mod tests {
         let error = render_song(&invalid, 0).expect_err("feedback of 1.0 should be rejected");
 
         assert_eq!(error, RenderError::InvalidEffectParameters);
+    }
+
+    #[test]
+    fn render_song_should_apply_master_limiter_when_peak_exceeds_ceiling() {
+        let mut loud = score(InstrumentKind::Sine);
+        loud.songs[0].tracks[0].gain = 10.0;
+        let ceiling = 0.5;
+        loud.songs[0].master = Some(MasterLimiter { ceiling });
+
+        let limited = render_song(&loud, 0).expect("loud score with limiter should render");
+
+        let peak = limited
+            .samples
+            .iter()
+            .fold(0.0f32, |peak, &sample| peak.max(sample.abs()));
+        assert!(
+            peak <= ceiling + 1e-4,
+            "peak {peak} should not exceed ceiling {ceiling}"
+        );
+    }
+
+    #[test]
+    fn render_song_should_leave_audio_unchanged_when_peak_is_within_ceiling() {
+        let quiet = score(InstrumentKind::Sine);
+        let mut with_master = quiet.clone();
+        with_master.songs[0].master = Some(MasterLimiter { ceiling: 0.9 });
+
+        let without = render_song(&quiet, 0).expect("quiet score should render");
+        let with = render_song(&with_master, 0).expect("quiet score with limiter should render");
+
+        assert_eq!(without.samples, with.samples);
+    }
+
+    #[test]
+    fn render_song_should_reject_out_of_range_master_ceiling() {
+        let mut invalid = score(InstrumentKind::Sine);
+        invalid.songs[0].master = Some(MasterLimiter { ceiling: 1.5 });
+
+        let error = render_song(&invalid, 0).expect_err("ceiling above 1.0 should be rejected");
+
+        assert_eq!(error, RenderError::InvalidMasterCeiling);
     }
 
     #[test]
@@ -668,6 +721,7 @@ mod tests {
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
                     effect: None,
                 }],
+                master: None,
             }],
         }
     }

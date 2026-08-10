@@ -35,6 +35,15 @@ pub struct Song {
     pub tracks: Vec<TrackDefinition>,
     pub sections: Vec<Section>,
     pub arrangement: Option<Arrangement>,
+    pub master: Option<MasterLimiter>,
+}
+
+/// `master { limiter { ceiling C } }`. `ceiling` is a linear amplitude
+/// (already converted from dB), the loudest sample the renderer's
+/// peak-detect-and-scale limiter allows through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MasterLimiter {
+    pub ceiling: f32,
 }
 
 /// `section <name> bars <N> { parallel [exact] { play track <name> ... } }`.

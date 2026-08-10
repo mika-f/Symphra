@@ -45,6 +45,11 @@ playback speed`). Since then, two further slices landed:
   `arrangement { play <name> }` form, alongside the existing bare-pattern
   arrangement form. See §9 below for the design decisions (section reuse,
   `exact` semantics, and backward compatibility) and implementation details.
+- A sixth slice, in a follow-up continuation of the same 2026-08-10 session,
+  adds `master { limiter { ceiling C } }`: a song-level, peak-detect-and-scale
+  limiter applied to the whole summed master buffer before the renderer's
+  final `[-1, 1]` safety clamp and PCM output conversion. See §10 below for
+  the ordering/algorithm decisions and implementation details.
 
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
@@ -97,7 +102,11 @@ the adjusted syntax described later:
   declaring a named, fixed-length, reusable group of declared tracks, and
   `arrangement { play <name> }` sequencing section references back-to-back by
   cumulative `bars` offset (coexisting with the original bare-pattern
-  `arrangement { pattern_name }` form for track-less songs).
+  `arrangement { pattern_name }` form for track-less songs);
+- `master { limiter { ceiling C } }`: a song-level peak-detect-and-scale
+  limiter, applied to the whole summed master buffer after every track
+  (and its effects) is mixed, before the renderer's final safety clamp and
+  PCM output conversion.
 
 ## Remaining language and runtime gaps
 
@@ -525,9 +534,7 @@ N:M` already established). No new Score or render-level concept was needed —
 once scheduled, a sectioned track is indistinguishable from any other
 `Track` with an absolute offset baked into its events, exactly like `at`.
 
-### 10. Master processing
-
-The original master limiter is not represented:
+### 10. Master processing — one processor (`limiter`) done
 
 ```symphra
 master {
@@ -535,9 +542,48 @@ master {
 }
 ```
 
-The renderer currently sums tracks and clamps samples to `[-1, 1]`. Clamping is
-not limiter behavior. A master processing chain should be added only after its
-ordering relative to track effects and output conversion is explicit.
+is implemented exactly as written above. `limiter` is the only accepted
+master-processor kind so far (mirroring how `delay` is the only accepted
+`effect` kind) — a future `filter`/`reverb`-style expansion at song scope
+would be a token-and-arm addition, not a grammar rework.
+
+**Ordering** (resolved, was previously an open question): the limiter runs
+after every track (and its own per-track `effect`) is rendered and summed
+into the master buffer, and before the renderer's final `[-1, 1]` safety
+clamp / PCM output conversion — the same point in `render_song_with_samples`
+where the doc's own pre-existing clamp already lived.
+
+**Algorithm** (resolved via user confirmation, since a plain `.clamp(-1.0,
+1.0)` is explicitly not limiter behavior): peak-detect and whole-buffer gain
+reduction. Because rendering is offline (not streaming), the whole master
+buffer can be scanned up front for its peak absolute sample; if that peak
+exceeds `ceiling`, every sample is uniformly scaled by `ceiling / peak` so
+the loudest sample lands exactly at `ceiling`. This preserves the buffer's
+relative dynamics/waveform shape — unlike clipping, no sample is
+independently distorted — which is what actually distinguishes a limiter
+from a clamp. A no-op when the peak is already at or below `ceiling`. The
+renderer's original `.clamp(-1.0, 1.0)` still runs unconditionally
+afterward as a final safety net (a no-op once the limiter has run, since its
+output peak is bounded by `ceiling <= 1.0`; unchanged behavior when no
+`master` block is declared).
+
+**Implementation shape.** `ceiling` reuses the existing signed-decibel
+`VolumeExpression` grammar verbatim (identical to track `volume -6db`) via a
+new `fn ceiling` parser mirroring `fn volume`. HIR lowering
+(`fn master`) converts dB to linear amplitude with the same
+`10^(db / 20)` formula `track_gain`'s `volume` handling already uses, and
+additionally rejects `ceiling > 0db` — a limiter that permits amplification
+above 0 dBFS would defeat its purpose, unlike track `volume` which
+legitimately allows positive dB boosts. `hir::Song.master` /
+`symphra_score::Song.master: Option<MasterLimiter>` are new, orthogonal,
+optional fields — no interaction with tracks, sections, layers, or
+arrangement. The DSP primitive is `symphra_dsp::apply_limiter(buffer: &mut
+[f32], ceiling: f32)`, channel-agnostic (peak detection and gain reduction
+are per-sample scalar operations, unlike `apply_delay` which needs
+per-channel echo history). `symphra-render` re-validates a hand-constructed
+`MasterLimiter`'s ceiling defensively at render time
+(`RenderError::InvalidMasterCeiling`), mirroring the existing `effect`
+validation precedent, on top of the compile-time `> 0db` rejection.
 
 ## Intentional or current syntax differences
 
@@ -608,14 +654,18 @@ original intent before expanding degree-based harmony.
     section's own offset is added), and the original bare-pattern
     `arrangement { pattern_name }` form coexists unchanged alongside the new
     section-referencing `arrangement { play <name> }` form.
-13. The next milestone, if wanted, is §10 master processing (`master {
-    limiter { ceiling -0.3db } }`) — the smallest remaining self-contained
-    vertical slice (one new song-level block, one new render-time gain-stage
-    pass after track summation). After that: §7's remaining `filter`/`reverb`
+13. ~~Decide master processing's ordering (relative to track effects and
+    output conversion) and algorithm, then implement `master { limiter {
+    ceiling C } }`.~~ Done — the limiter runs after track summation and
+    before the renderer's final safety clamp / PCM output conversion, using
+    peak-detect-and-scale gain reduction (not clipping), confirmed via user
+    Q&A since the doc had explicitly called out plain clamping as not being
+    limiter behavior.
+14. The next milestone, if wanted, is §7's remaining `filter`/`reverb`
     effect kinds and `automate`/LFO (each needs its own DSP/ownership
-    decisions, as `delay` did); then §4 synth envelopes/supersaw (needs a
-    configurable ADSR envelope designed first); then §5 SoundFont/VST3
-    (largest, most external-dependency-heavy, last).
+    decisions, as `delay` and now `limiter` did); then §4 synth
+    envelopes/supersaw (needs a configurable ADSR envelope designed first);
+    then §5 SoundFont/VST3 (largest, most external-dependency-heavy, last).
 
 ## Verification notes
 
@@ -646,4 +696,22 @@ tests plus one new idempotency source
 --check` is clean except for the same two pre-existing, unrelated
 differences noted above (`apps/symphra-formatter/tests/stdin.rs` and the
 empty `crates/symphra-syntax/src/parser/literal.rs` stub).
+
+The same also holds for the master-limiter slice added in a follow-up
+continuation of the 2026-08-10 session: `cargo build --workspace
+--all-targets`, `cargo test --workspace` (with `symphra-lsp` run separately
+via `cargo test -p symphra-lsp --target-dir <alternate-dir>`), and `cargo
+clippy --workspace --all-targets -- -D warnings` all pass — 4 new DSP unit
+tests (`crates/symphra-dsp/src/lib.rs`), 1 new parser test
+(`crates/symphra-syntax/tests/syntax.rs`), 3 new compiler tests
+(`crates/symphra-compiler/tests/compile.rs`), 3 new render tests
+(`crates/symphra-render/src/lib.rs`), and 1 new formatter round-trip test
+plus one idempotency source addition
+(`crates/symphra-fmt/tests/formatting.rs`) were added. `fn song` in
+`crates/symphra-compiler/src/lib.rs` was refactored to extract a
+`collect_song_statements`/`SongStatements` helper partway through this
+slice, to stay under clippy's `too_many_lines` threshold after adding
+`master` handling — a mechanical extraction, not a behavior change. `cargo
+fmt --all -- --check` is clean except for the same two pre-existing,
+unrelated differences.
 

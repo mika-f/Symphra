@@ -44,7 +44,8 @@ object SymphraTokenTypes {
         "pack", "rhythm", "resolution", "hit", "track", "role", "play", "trigger_with", "gate",
         "transpose", "pattern", "arrangement", "with", "sequence", "steps", "degree", "octave",
         "note", "chord", "rest", "for", "velocity", "bar", "layer", "use", "effect", "delay",
-        "mix", "time", "feedback", "section", "bars", "parallel", "exact"
+        "mix", "time", "feedback", "section", "bars", "parallel", "exact",
+        "master", "limiter", "ceiling"
     )
 
     // Natural (C4), sharp (C#4), flat (Cb4), and negative-octave (C-1, C#-1, Cb-1) pitches.

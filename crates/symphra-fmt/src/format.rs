@@ -4,8 +4,8 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ArrangementOccurrence, ChanceTransformExpression, ChordExpression,
     Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor,
-    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression, PanExpression,
-    PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
+    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, MasterDeclaration, NoteExpression,
+    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
     ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
     SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
     SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
@@ -265,6 +265,7 @@ fn song_statement_rank(statement: &SongStatement) -> u8 {
         SongStatement::Track(_) => 6,
         SongStatement::Section(_) => 7,
         SongStatement::Arrangement { .. } => 8,
+        SongStatement::Master(_) => 9,
     }
 }
 
@@ -278,6 +279,7 @@ fn song_statement_span(statement: &SongStatement) -> SourceSpan {
         SongStatement::Rhythm(decl) => decl.span,
         SongStatement::Track(decl) => decl.span,
         SongStatement::Section(decl) => decl.span,
+        SongStatement::Master(decl) => decl.span,
         SongStatement::Pattern(decl) => decl.span,
     }
 }
@@ -301,6 +303,7 @@ fn print_song_statement(ctx: &mut Ctx<'_>, statement: &SongStatement) {
         SongStatement::Rhythm(decl) => print_rhythm(ctx, decl),
         SongStatement::Track(decl) => print_track(ctx, decl),
         SongStatement::Section(decl) => print_section(ctx, decl),
+        SongStatement::Master(decl) => print_master(ctx, decl),
         SongStatement::Arrangement { entries, span } => {
             let items: Vec<&ArrangementEntry> = entries.iter().collect();
             print_block(
@@ -371,6 +374,42 @@ fn print_section_parallel(ctx: &mut Ctx<'_>, decl: &SectionDeclaration) {
         |ctx, track| {
             ctx.printer
                 .line(format!("play track {}", ctx.text(track.span)));
+        },
+    );
+}
+
+// --- master ----------------------------------------------------------------
+
+fn print_master(ctx: &mut Ctx<'_>, decl: &MasterDeclaration) {
+    let items: Vec<&MasterDeclaration> = vec![decl];
+    print_block(
+        ctx,
+        "master",
+        decl.span,
+        &items,
+        |decl: &MasterDeclaration| decl.span,
+        |_| 0,
+        Reorder::No,
+        print_master_limiter,
+    );
+}
+
+fn print_master_limiter(ctx: &mut Ctx<'_>, decl: &MasterDeclaration) {
+    let items: Vec<&VolumeExpression> = vec![&decl.ceiling];
+    print_block(
+        ctx,
+        "limiter",
+        decl.span,
+        &items,
+        |ceiling: &VolumeExpression| ceiling.span,
+        |_| 0,
+        Reorder::No,
+        |ctx, ceiling| {
+            ctx.printer.line(format!(
+                "ceiling {} {}",
+                ceiling.decibels,
+                ctx.text(ceiling.unit.span)
+            ));
         },
     );
 }

@@ -1,6 +1,6 @@
 use symphra_score::{
-    Channels, EntityId, InstrumentKind, Key, Meter, Mode, MusicalTime, NoteEvent, PitchClass,
-    SampleEvent, SampleSelector, Score, Song, TimeError, Track,
+    Channels, EntityId, InstrumentKind, Key, MasterLimiter, Meter, Mode, MusicalTime, NoteEvent,
+    PitchClass, SampleEvent, SampleSelector, Score, Song, TimeError, Track,
 };
 
 use crate::hir;
@@ -52,6 +52,9 @@ fn schedule_song(song: &hir::Song, seed: u64) -> Result<Song, ScheduleError> {
             },
         },
         tracks: schedule_tracks(song, seed)?,
+        master: song.master.map(|master| MasterLimiter {
+            ceiling: master.ceiling,
+        }),
     })
 }
 

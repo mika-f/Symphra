@@ -5,19 +5,19 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    DurationExpression, EffectDeclaration, Identifier, InstrumentBody, PanExpression, PatternBody,
-    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression,
-    SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
-    StepItem, TrackBody, TrackDeclaration,
+    DurationExpression, EffectDeclaration, Identifier, InstrumentBody, MasterDeclaration,
+    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RhythmDeclaration, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
-    Duration, InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence,
-    PatternStep, PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleRange,
-    SampleSelector, SampleTrigger, Section, SectionOccurrence, Song, Speed, TrackDefinition,
-    WeightedNote, WeightedSampleSequence,
+    Duration, InstrumentKind, Key, MasterLimiter, Meter, Mode, NodeId, Note, Pan, Pattern,
+    PatternOccurrence, PatternStep, PitchClass, Program, Project, Rest, Rhythm, RhythmItem,
+    SampleChoice, SampleRange, SampleSelector, SampleTrigger, Section, SectionOccurrence, Song,
+    Speed, TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -76,6 +76,22 @@ struct SongSettings {
     tempo_seen: bool,
     meter_seen: bool,
     key_seen: bool,
+}
+
+/// The result of classifying a song's statements into their declaration
+/// kinds (one bucket per `SongStatement` variant), with duplicate names
+/// already rejected via `declare_name`. Kept as its own struct so `fn song`
+/// stays under clippy's line-count lint instead of inlining the whole
+/// classification loop.
+struct SongStatements<'a> {
+    settings: SongSettings,
+    pattern_declarations: Vec<&'a PatternDeclaration>,
+    rhythm_defs: Vec<&'a RhythmDeclaration>,
+    track_defs: Vec<&'a TrackDeclaration>,
+    section_defs: Vec<&'a SectionDeclaration>,
+    instruments: Vec<(&'a str, Option<InstrumentKind>)>,
+    arrangement: Option<(&'a Vec<ArrangementEntry>, SourceSpan)>,
+    master: Option<&'a MasterDeclaration>,
 }
 
 impl Compiler {
@@ -181,8 +197,10 @@ impl Compiler {
         }
     }
 
-    fn song(&mut self, declaration: &SongDeclaration) -> Option<Song> {
-        let id = self.id();
+    fn collect_song_statements<'a>(
+        &mut self,
+        statements: &'a [SongStatement],
+    ) -> SongStatements<'a> {
         let mut settings = SongSettings::default();
         let mut pattern_declarations = Vec::new();
         let mut pattern_names = HashSet::new();
@@ -195,8 +213,9 @@ impl Compiler {
         let mut instruments = Vec::new();
         let mut instrument_names = HashSet::new();
         let mut arrangement = None;
+        let mut master = None;
 
-        for statement in &declaration.statements {
+        for statement in statements {
             match statement {
                 SongStatement::Tempo { .. }
                 | SongStatement::Meter { .. }
@@ -229,6 +248,11 @@ impl Compiler {
                         self.error("arrangement is declared more than once", *span);
                     }
                 }
+                SongStatement::Master(declaration) => {
+                    if master.replace(declaration).is_some() {
+                        self.error("master is declared more than once", declaration.span);
+                    }
+                }
                 SongStatement::Pattern(pattern) => {
                     if self.declare_name(&mut pattern_names, &pattern.name, "pattern") {
                         pattern_declarations.push(pattern);
@@ -236,6 +260,31 @@ impl Compiler {
                 }
             }
         }
+
+        SongStatements {
+            settings,
+            pattern_declarations,
+            rhythm_defs,
+            track_defs,
+            section_defs,
+            instruments,
+            arrangement,
+            master,
+        }
+    }
+
+    fn song(&mut self, declaration: &SongDeclaration) -> Option<Song> {
+        let id = self.id();
+        let SongStatements {
+            settings,
+            pattern_declarations,
+            rhythm_defs,
+            track_defs,
+            section_defs,
+            instruments,
+            arrangement,
+            master: master_decl,
+        } = self.collect_song_statements(&declaration.statements);
 
         self.require_song_settings(&settings, declaration.span);
         let rhythms = rhythm_defs
@@ -265,6 +314,7 @@ impl Compiler {
         let arrangement = arrangement.and_then(|(entries, span)| {
             self.arrangement(entries, span, &patterns, &instruments, &sections)
         });
+        let master = master_decl.and_then(|declaration| self.master(declaration));
         match (settings.tempo_bpm, settings.meter, settings.key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
                 id,
@@ -277,9 +327,35 @@ impl Compiler {
                 tracks,
                 sections,
                 arrangement,
+                master,
             }),
             _ => None,
         }
+    }
+
+    /// Lowers `master { limiter { ceiling C } }`: `ceiling` must carry a
+    /// `db` unit (mirroring `fn track_gain`'s `volume` check), be finite,
+    /// and be at most `0.0` dB — a limiter that permits amplification above
+    /// 0 dBFS defeats its purpose, unlike track `volume` which legitimately
+    /// allows positive dB boosts. Converts to linear amplitude via the same
+    /// `10^(db / 20)` formula `track_gain` already uses.
+    fn master(&mut self, declaration: &MasterDeclaration) -> Option<MasterLimiter> {
+        let ceiling = &declaration.ceiling;
+        if ceiling.unit.text != "db" {
+            self.error("ceiling unit must be `db`", ceiling.unit.span);
+            return None;
+        }
+        if !ceiling.decibels.is_finite() {
+            self.error("ceiling must be finite", ceiling.span);
+            return None;
+        }
+        if ceiling.decibels > 0.0 {
+            self.error("ceiling must be at most 0db", ceiling.span);
+            return None;
+        }
+        Some(MasterLimiter {
+            ceiling: 10.0_f32.powf(ceiling.decibels / 20.0),
+        })
     }
 
     fn require_song_settings(&mut self, settings: &SongSettings, span: SourceSpan) {

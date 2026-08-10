@@ -370,6 +370,8 @@ enum CompletionBlock {
     Effect,
     Section,
     Parallel,
+    Master,
+    Limiter,
     Arrangement,
     Sequence,
     Steps,
@@ -433,6 +435,8 @@ fn completion_labels(
         &["alternate"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
         &["delay"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Master) {
+        &["limiter"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Parallel) {
         &["exact"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Play) {
@@ -532,6 +536,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
             "section",
             "pattern",
             "arrangement",
+            "master",
         ],
         Some(CompletionBlock::Sequence) => &["note", "chord", "rest"],
         Some(CompletionBlock::Steps) => &["degree", "sample", "drum", "rest", "choose"],
@@ -548,6 +553,8 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Effect) => &["mix", "time", "feedback"],
         Some(CompletionBlock::Section) => &["parallel"],
         Some(CompletionBlock::Parallel) => &["play"],
+        Some(CompletionBlock::Master) => &["limiter"],
+        Some(CompletionBlock::Limiter) => &["ceiling"],
         Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
     }
 }
@@ -635,6 +642,8 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Delay => pending = Some(CompletionBlock::Effect),
             TokenKind::Section => pending = Some(CompletionBlock::Section),
             TokenKind::Parallel => pending = Some(CompletionBlock::Parallel),
+            TokenKind::Master => pending = Some(CompletionBlock::Master),
+            TokenKind::Limiter => pending = Some(CompletionBlock::Limiter),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => {
                 pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
@@ -727,7 +736,10 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Section
                     | TokenKind::Bars
                     | TokenKind::Parallel
-                    | TokenKind::Exact,
+                    | TokenKind::Exact
+                    | TokenKind::Master
+                    | TokenKind::Limiter
+                    | TokenKind::Ceiling,
                 ..
             }]
         )
@@ -952,6 +964,11 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Exact => {
             "requires every track in a `parallel` block to last exactly the section's `bars`."
         }
+        TokenKind::Master => "starts the song's master processing chain, applied after mixing.",
+        TokenKind::Limiter => {
+            "scales the master buffer down so its peak does not exceed `ceiling`."
+        }
+        TokenKind::Ceiling => "sets a limiter's maximum output level, such as `-0.3db`.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Steps => "plays fixed-resolution steps in source order.",
         TokenKind::Degree => "adds a pitch offset from the song key tonic.",
@@ -1092,7 +1109,8 @@ mod tests {
                 "track",
                 "section",
                 "pattern",
-                "arrangement"
+                "arrangement",
+                "master"
             ]
         );
         assert_eq!(

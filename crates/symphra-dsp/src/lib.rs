@@ -128,11 +128,30 @@ pub fn apply_delay(buffer: &mut [f32], channels: u16, delay_frames: u64, mix: f3
     }
 }
 
+/// Scans `buffer` for its peak absolute sample value and, if it exceeds
+/// `ceiling`, uniformly scales every sample by `ceiling / peak` so the
+/// loudest sample lands exactly at `ceiling`. Unlike clipping, this
+/// preserves the buffer's relative dynamics/waveform shape — every sample
+/// is scaled by the same factor, not independently clamped. A no-op when
+/// the peak is already at or below `ceiling` (including a silent buffer).
+pub fn apply_limiter(buffer: &mut [f32], ceiling: f32) {
+    let peak = buffer
+        .iter()
+        .fold(0.0f32, |peak, &sample| peak.max(sample.abs()));
+    if peak <= ceiling {
+        return;
+    }
+    let gain = ceiling / peak;
+    for sample in buffer {
+        *sample *= gain;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
 
-    use super::{Oscillator, SineOscillator, Waveform, apply_delay, fade_gain};
+    use super::{Oscillator, SineOscillator, Waveform, apply_delay, apply_limiter, fade_gain};
 
     #[test]
     fn sine_oscillator_should_complete_one_cycle_in_four_samples() {
@@ -243,5 +262,48 @@ mod tests {
                 .zip([0.0, 1.0])
                 .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < f32::EPSILON)
         );
+    }
+
+    #[test]
+    fn apply_limiter_should_leave_audio_under_ceiling_untouched() {
+        let mut buffer = vec![0.2, -0.3, 0.4];
+
+        apply_limiter(&mut buffer, 0.9);
+
+        assert_eq!(buffer, vec![0.2, -0.3, 0.4]);
+    }
+
+    #[test]
+    fn apply_limiter_should_scale_the_peak_down_to_exactly_the_ceiling() {
+        let mut buffer = vec![0.5, -1.0, 0.25];
+
+        apply_limiter(&mut buffer, 0.5);
+
+        let peak = buffer
+            .iter()
+            .fold(0.0f32, |peak, &sample| peak.max(sample.abs()));
+        assert!((peak - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn apply_limiter_should_preserve_relative_dynamics_between_samples() {
+        let mut buffer = vec![0.5, -2.0];
+
+        apply_limiter(&mut buffer, 1.0);
+
+        // Both samples are scaled by the same 0.5 gain (1.0 / 2.0), so the
+        // 4x ratio between them is preserved rather than one being clipped
+        // flat while the other is untouched.
+        assert!((buffer[0] - 0.25).abs() < f32::EPSILON);
+        assert!((buffer[1] - -1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn apply_limiter_should_be_a_no_op_on_silence() {
+        let mut buffer = vec![0.0, 0.0, 0.0];
+
+        apply_limiter(&mut buffer, 0.5);
+
+        assert_eq!(buffer, vec![0.0, 0.0, 0.0]);
     }
 }

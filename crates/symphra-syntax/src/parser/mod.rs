@@ -4,10 +4,10 @@ use crate::ast::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, GainExpression,
-    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, MasterDeclaration,
+    NoteExpression, NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource,
+    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
     SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
     SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
     VelocityExpression, VolumeExpression,
@@ -30,6 +30,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Rhythm,
     TokenKind::Track,
     TokenKind::Section,
+    TokenKind::Master,
     TokenKind::Pattern,
     TokenKind::Arrangement,
     TokenKind::RightBrace,
@@ -179,6 +180,7 @@ impl Parser {
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
                 TokenKind::Track => self.track().map(Box::new).map(SongStatement::Track),
                 TokenKind::Section => self.section(),
+                TokenKind::Master => self.master().map(SongStatement::Master),
                 TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
@@ -575,6 +577,54 @@ impl Parser {
             return None;
         };
         let unit = self.identifier("expected `db` after volume")?;
+        Some(VolumeExpression {
+            decibels: sign * decibels,
+            span: start.cover(unit.span),
+            unit,
+        })
+    }
+
+    /// `master { limiter { ceiling C } }`. `limiter` is the only accepted
+    /// master-processor kind so far.
+    fn master(&mut self) -> Option<MasterDeclaration> {
+        let start = self.bump().span;
+        self.required(TokenKind::LeftBrace, "expected `{` after `master`")?;
+        self.required(TokenKind::Limiter, "expected `limiter` in master")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after `limiter`")?;
+        let ceiling = self.ceiling()?;
+        self.required(TokenKind::RightBrace, "expected `}` to close limiter")?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close master")?
+            .span;
+        Some(MasterDeclaration {
+            ceiling,
+            span: start.cover(end),
+        })
+    }
+
+    fn ceiling(&mut self) -> Option<VolumeExpression> {
+        let start = self
+            .required(TokenKind::Ceiling, "expected `ceiling` in limiter")?
+            .span;
+        let sign = if self.at(TokenKind::Minus) {
+            self.bump();
+            -1.0
+        } else {
+            if self.at(TokenKind::Plus) {
+                self.bump();
+            }
+            1.0
+        };
+        let value = self.required_any(
+            &[TokenKind::Integer, TokenKind::Decimal],
+            "expected a number after `ceiling`",
+        )?;
+        let Ok(decibels) = value.text.parse::<f32>() else {
+            self.diagnostics
+                .push(Diagnostic::syntax("ceiling is out of range", value.span));
+            return None;
+        };
+        let unit = self.identifier("expected `db` after ceiling")?;
         Some(VolumeExpression {
             decibels: sign * decibels,
             span: start.cover(unit.span),

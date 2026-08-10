@@ -96,6 +96,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                 tracks: Vec::new(),
                 sections: Vec::new(),
                 arrangement: None,
+                master: None,
             }],
         }
     );
@@ -2771,5 +2772,80 @@ song "Sections" {
     assert!(
         diagnostics.iter().any(|diagnostic| diagnostic.message
             == "an arrangement of sections requires declared tracks")
+    );
+}
+
+#[test]
+fn compile_should_lower_master_limiter_ceiling_to_linear_amplitude() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Master" {
+  tempo 120bpm meter 4/4 key C major
+  pattern melody = sequence { note C4 for 1/4 }
+  arrangement { melody }
+  master {
+    limiter { ceiling -0.3db }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("master limiter should compile");
+
+    let score = schedule(&program).expect("master limiter should schedule");
+
+    let ceiling = score.songs[0]
+        .master
+        .expect("master should be scheduled")
+        .ceiling;
+    assert!((ceiling - 10.0_f32.powf(-0.3 / 20.0)).abs() < 1e-6);
+}
+
+#[test]
+fn compile_should_reject_master_ceiling_with_non_decibel_unit() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Master" {
+  tempo 120bpm meter 4/4 key C major
+  master {
+    limiter { ceiling -0.3percent }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("non-db ceiling unit should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "ceiling unit must be `db`")
+    );
+}
+
+#[test]
+fn compile_should_reject_positive_master_ceiling() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Master" {
+  tempo 120bpm meter 4/4 key C major
+  master {
+    limiter { ceiling 0.5db }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("positive ceiling should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "ceiling must be at most 0db")
     );
 }

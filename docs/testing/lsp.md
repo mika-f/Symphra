@@ -9,9 +9,9 @@ arrangement pattern and instrument references, `arrangement { play <section> }`
 to section declarations, `play track <name>` inside sections to track
 declarations, track-body instrument names, `play <pattern>` (including inside
 layered `use` blocks) to pattern declarations, and `trigger_with <rhythm>` to
-rhythm declarations. Find-all-references and declaration CodeLens (`N
-references`) cover the same song-local named symbols. Its JSON-RPC lifecycle is
-covered by an end-to-end stdio test.
+rhythm declarations. Find-all-references, declaration CodeLens (`N references`),
+and rename / prepareRename cover the same song-local named symbols. Its JSON-RPC
+lifecycle is covered by an end-to-end stdio test.
 A Visual Studio Code extension lives at [`editors/vscode`](../../editors/vscode)
 and provides syntax highlighting plus a language client for manual testing;
 see that directory's README for setup.
@@ -29,9 +29,9 @@ The LSP unit tests cover syntax and compiler diagnostic selection. The stdio
 integration test launches the built binary and covers initialize, open,
 full-text change, close, published diagnostics, hierarchical document symbols,
 keyword completion, keyword hover, definition navigation, references, code
-lens, shutdown, and exit. The syntax tests cover conversion in both directions
-between UTF-8 byte offsets and UTF-16 line and column positions, including an
-emoji and invalid code-unit boundaries.
+lens, prepareRename, rename, shutdown, and exit. The syntax tests cover
+conversion in both directions between UTF-8 byte offsets and UTF-16 line and
+column positions, including an emoji and invalid code-unit boundaries.
 
 Before committing an LSP change, run the complete acceptance checks:
 
@@ -119,6 +119,11 @@ Exercise these cases by replacing the buffer contents without saving:
 16. With CodeLens enabled (`vim.lsp.codelens.refresh()` after open), each of
     those declarations should show `N references` / `1 reference` above the
     name. Zero-use declarations show `0 references`.
+17. On a pattern name (declaration or use), run
+    `:lua vim.lsp.buf.rename("theme")`. Every same-song occurrence of that
+    pattern should update; an identically named pattern in another song must
+    stay put. An invalid identifier or a same-kind name collision should be
+    rejected.
 
 Diagnostics should refresh after every edit because the server requests
 full-text synchronization. Closing the buffer sends `textDocument/didClose`,

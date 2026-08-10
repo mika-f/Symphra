@@ -157,6 +157,10 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         initialized["result"]["capabilities"]["codeLensProvider"],
         json!({ "resolveProvider": false })
     );
+    assert_eq!(
+        initialized["result"]["capabilities"]["renameProvider"],
+        json!({ "prepareProvider": true })
+    );
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -323,6 +327,56 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
+        "id": 8,
+        "method": "textDocument/prepareRename",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 2, "character": 10 }
+        }
+    }));
+    let prepared = server.receive();
+    assert_eq!(
+        prepared["result"],
+        json!({
+            "range": {
+                "start": { "line": 2, "character": 10 },
+                "end": { "line": 2, "character": 16 }
+            },
+            "placeholder": "melody"
+        })
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "textDocument/rename",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": 2, "character": 10 },
+            "newName": "theme"
+        }
+    }));
+    let renamed = server.receive();
+    let edits = &renamed["result"]["changes"]["file:///test.sym"];
+    assert_eq!(edits.as_array().map(Vec::len), Some(2));
+    assert_eq!(edits[0]["newText"], "theme");
+    assert_eq!(
+        edits[0]["range"],
+        json!({
+            "start": { "line": 3, "character": 16 },
+            "end": { "line": 3, "character": 22 }
+        })
+    );
+    assert_eq!(
+        edits[1]["range"],
+        json!({
+            "start": { "line": 2, "character": 10 },
+            "end": { "line": 2, "character": 16 }
+        })
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
         "method": "textDocument/didChange",
         "params": {
             "textDocument": {
@@ -346,11 +400,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 8,
+        "id": 10,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 8);
+    assert_eq!(server.receive()["id"], 10);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

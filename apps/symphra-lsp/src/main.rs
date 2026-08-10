@@ -10,7 +10,7 @@ use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
 };
 use tokio::sync::RwLock;
-use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::jsonrpc::{Error, Result};
 use tower_lsp_server::ls_types::{
     CodeLens, CodeLensOptions, CodeLensParams, Command, CompletionItem, CompletionItemKind,
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
@@ -18,9 +18,10 @@ use tower_lsp_server::ls_types::{
     DocumentFormattingParams, DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
     HoverProviderCapability, InitializeParams, InitializeResult, Location, MarkupContent,
-    MarkupKind, OneOf, Position, PositionEncodingKind, Range, ReferenceParams, ServerCapabilities,
-    ServerInfo, SymbolInformation, SymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind,
-    TextEdit, Uri,
+    MarkupKind, OneOf, Position, PositionEncodingKind, PrepareRenameResponse, Range,
+    ReferenceParams, RenameOptions, RenameParams, ServerCapabilities, ServerInfo,
+    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -67,6 +68,10 @@ impl LanguageServer for Backend {
                 code_lens_provider: Some(CodeLensOptions {
                     resolve_provider: Some(false),
                 }),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
@@ -174,6 +179,28 @@ impl LanguageServer for Backend {
         let documents = self.documents.read().await;
         let uri = params.text_document.uri;
         Ok(documents.get(&uri).map(|source| code_lenses(source, &uri)))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let documents = self.documents.read().await;
+        let uri = params.text_document.uri;
+        let position = params.position;
+        Ok(documents
+            .get(&uri)
+            .and_then(|source| prepare_rename(source, position)))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let documents = self.documents.read().await;
+        let uri = params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(source) = documents.get(&uri) else {
+            return Ok(None);
+        };
+        rename(source, &uri, position, &params.new_name)
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -977,6 +1004,160 @@ fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
     lenses
 }
 
+fn prepare_rename(source: &SourceText, position: Position) -> Option<PrepareRenameResponse> {
+    let (range, placeholder) = rename_target(source, position)?;
+    Some(PrepareRenameResponse::RangeWithPlaceholder { range, placeholder })
+}
+
+fn rename(
+    source: &SourceText,
+    uri: &Uri,
+    position: Position,
+    new_name: &str,
+) -> Result<Option<WorkspaceEdit>> {
+    if !is_valid_identifier_name(new_name) {
+        return Err(Error::invalid_params(format!(
+            "`{new_name}` is not a valid Symphra identifier"
+        )));
+    }
+
+    let Some(offset) = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    }) else {
+        return Ok(None);
+    };
+    let parsed = parse(source.id, &source.text);
+    // Rename is song-scoped, matching definition/references.
+    let Some((kind, old_name, declaration, song)) =
+        parsed.file.declarations.iter().find_map(|declaration| {
+            let Declaration::Song(song) = declaration else {
+                return None;
+            };
+            let (kind, name, _occurrence) = rename_target_in_song(song, offset)?;
+            let declaration = declaration_span(song, kind, name)?;
+            Some((kind, name, declaration, song))
+        })
+    else {
+        return Ok(None);
+    };
+
+    if old_name == new_name {
+        return Ok(Some(WorkspaceEdit::new(HashMap::new())));
+    }
+
+    if declaration_span(song, kind, new_name).is_some() {
+        return Err(Error::invalid_params(format!(
+            "a {} named `{new_name}` already exists in this song",
+            kind.label()
+        )));
+    }
+
+    let mut spans = vec![declaration];
+    spans.extend(reference_spans(song, kind, old_name));
+
+    let mut edits = Vec::with_capacity(spans.len());
+    for span in spans {
+        let Some(range) = lsp_range(source, span) else {
+            continue;
+        };
+        edits.push(TextEdit {
+            range,
+            new_text: new_name.to_owned(),
+        });
+    }
+    // Clients apply edits best when ordered from later offsets to earlier ones.
+    edits.sort_by(|left, right| {
+        right
+            .range
+            .start
+            .line
+            .cmp(&left.range.start.line)
+            .then(right.range.start.character.cmp(&left.range.start.character))
+    });
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), edits);
+    Ok(Some(WorkspaceEdit::new(changes)))
+}
+
+/// Identifier range under the cursor plus the current name (for prepareRename UI).
+fn rename_target(source: &SourceText, position: Position) -> Option<(Range, String)> {
+    let offset = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    })?;
+    let parsed = parse(source.id, &source.text);
+    let (occurrence, name) = parsed.file.declarations.iter().find_map(|declaration| {
+        let Declaration::Song(song) = declaration else {
+            return None;
+        };
+        let (_kind, name, occurrence) = rename_target_in_song(song, offset)?;
+        Some((occurrence, name.to_owned()))
+    })?;
+    Some((lsp_range(source, occurrence)?, name))
+}
+
+/// Declaration or resolved reference under `offset` → `(kind, name, occurrence span)`.
+fn rename_target_in_song(
+    song: &SongDeclaration,
+    offset: u32,
+) -> Option<(NamedKind, &str, SourceSpan)> {
+    for (kind, name) in named_declarations(song) {
+        if span_contains(name.span, offset) {
+            return Some((kind, name.text.as_str(), name.span));
+        }
+    }
+    let mut matched: Option<(NamedKind, String, SourceSpan)> = None;
+    visit_name_references(song, |kind, identifier| {
+        if matched.is_none()
+            && span_contains(identifier.span, offset)
+            && declaration_span(song, kind, &identifier.text).is_some()
+        {
+            matched = Some((kind, identifier.text.clone(), identifier.span));
+        }
+    });
+    let (kind, name, occurrence) = matched?;
+    named_declarations(song).find_map(|(declaration_kind, identifier)| {
+        (declaration_kind == kind && identifier.text == name)
+            .then_some((kind, identifier.text.as_str(), occurrence))
+    })
+}
+
+/// A rename target must lex as a single non-keyword identifier covering the whole string.
+fn is_valid_identifier_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let tokens = lex(SourceId(0), name).tokens;
+    matches!(
+        tokens.as_slice(),
+        [
+            Token {
+                kind: TokenKind::Identifier,
+                text,
+                ..
+            },
+            Token {
+                kind: TokenKind::Eof,
+                ..
+            }
+        ] if text == name
+    )
+}
+
+impl NamedKind {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Pattern => "pattern",
+            Self::Instrument => "instrument",
+            Self::Rhythm => "rhythm",
+            Self::Track => "track",
+            Self::Section => "section",
+        }
+    }
+}
+
 /// Declaration or resolved reference under `offset` → `(kind, name, declaration span)`.
 fn named_symbol_at(
     song: &SongDeclaration,
@@ -1300,9 +1481,11 @@ async fn main() {
 mod tests {
     use super::{
         SourceId, SourceText, code_lenses, completions, definition, diagnostics, document_symbols,
-        flatten_document_symbols, formatting_edits, hover, references,
+        flatten_document_symbols, formatting_edits, hover, prepare_rename, references, rename,
     };
-    use tower_lsp_server::ls_types::{DiagnosticSeverity, Position, Range, SymbolKind, Uri};
+    use tower_lsp_server::ls_types::{
+        DiagnosticSeverity, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
+    };
 
     #[test]
     fn reports_syntax_diagnostics_with_utf16_ranges() {
@@ -2236,6 +2419,119 @@ mod tests {
                 .map(|command| command.command.as_str()),
             Some("symphra.showReferences")
         );
+    }
+
+    #[test]
+    fn prepares_and_renames_pattern_names_in_one_song() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  pattern melody = sequence {}\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  arrangement { melody }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        // prepareRename on the Second.melody declaration.
+        let prepared = prepare_rename(&source, Position::new(4, 10))
+            .expect("pattern declaration should be renameable");
+        let PrepareRenameResponse::RangeWithPlaceholder {
+            range,
+            placeholder,
+        } = prepared
+        else {
+            panic!("prepareRename should return a range with placeholder");
+        };
+        assert_eq!(
+            range,
+            Range::new(Position::new(4, 10), Position::new(4, 16))
+        );
+        assert_eq!(placeholder, "melody");
+
+        // prepareRename on the arrangement use site.
+        let prepared_use = prepare_rename(&source, Position::new(5, 17))
+            .expect("pattern reference should be renameable");
+        let PrepareRenameResponse::RangeWithPlaceholder {
+            range: use_range, ..
+        } = prepared_use
+        else {
+            panic!("prepareRename should return a range with placeholder");
+        };
+        assert_eq!(
+            use_range,
+            Range::new(Position::new(5, 16), Position::new(5, 22))
+        );
+
+        // Keywords and the other song's identical name are not mixed in.
+        assert!(prepare_rename(&source, Position::new(3, 1)).is_none());
+
+        let edit = rename(&source, &uri, Position::new(4, 10), "theme")
+            .expect("rename should succeed")
+            .expect("rename should produce an edit");
+        let changes = edit.changes.expect("workspace edit should use changes");
+        let edits = changes.get(&uri).expect("edits for the open document");
+        // Later occurrence first (arrangement), then declaration.
+        assert_eq!(edits.len(), 2);
+        assert_eq!(edits[0].new_text, "theme");
+        assert_eq!(
+            edits[0].range,
+            Range::new(Position::new(5, 16), Position::new(5, 22))
+        );
+        assert_eq!(
+            edits[1].range,
+            Range::new(Position::new(4, 10), Position::new(4, 16))
+        );
+
+        // First.melody must stay untouched: only one declaration + one use in Second.
+        let first = rename(&source, &uri, Position::new(1, 10), "theme")
+            .expect("rename should succeed")
+            .expect("rename should produce an edit");
+        assert_eq!(
+            first.changes.as_ref().map(|changes| changes[&uri].len()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_conflicting_rename_names() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  pattern melody = sequence {}\n",
+                "  pattern bass = sequence {}\n",
+                "  arrangement { melody }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let invalid = rename(&source, &uri, Position::new(1, 10), "1bad")
+            .expect_err("invalid identifiers should error");
+        assert!(
+            invalid
+                .message
+                .contains("not a valid Symphra identifier")
+        );
+
+        let keyword = rename(&source, &uri, Position::new(1, 10), "pattern")
+            .expect_err("keywords should error");
+        assert!(
+            keyword
+                .message
+                .contains("not a valid Symphra identifier")
+        );
+
+        let conflict = rename(&source, &uri, Position::new(1, 10), "bass")
+            .expect_err("same-kind name collisions should error");
+        assert!(conflict.message.contains("already exists"));
     }
 
     #[test]

@@ -25,12 +25,15 @@ song "Arranged" {
   tempo 120bpm
   meter 4/4
   key C major
+
   pattern intro = sequence {
     note C4 for 1/4
   }
+
   pattern outro = sequence {
     note G4 for 1/2
   }
+
   arrangement {
     outro
     intro
@@ -63,9 +66,11 @@ song "S" {
   tempo 120bpm
   meter 4/4
   key C major
+
   pattern p = sequence {
     note C4 for 1/4
   }
+
   arrangement {
     p
   }
@@ -157,23 +162,29 @@ song "S" {
   tempo 120bpm
   meter 4/4
   key C major
+
   instrument lead = sine
+
   instrument piano = sampled {
     source "piano.wav"
     root C4
   }
+
   instrument voice = sampler {
     pack "numbers"
   }
+
   rhythm stabs resolution 1/4 {
     hit
     rest
     hit
     rest
   }
+
   pattern harmony = sequence {
     chord C4 E4 G4 for 1/1
   }
+
   track chords role harmony {
     instrument lead
     volume -6 db
@@ -314,6 +325,7 @@ fn formats_oscillator_envelope_and_supersaw_instrument() {
       release 150ms
     }
   }
+
   instrument chord_saw = synth supersaw {
     voices 5
     detune 0.35
@@ -497,6 +509,7 @@ fn formats_drum_machine_instrument_and_drum_steps() {
   instrument tr909 = drum_machine {
     bank "RolandTR909"
   }
+
   pattern kit = steps 1/8 {
     drum "bd"
     rest
@@ -598,6 +611,7 @@ song "S" {
   tempo 120bpm
   meter 4/4
   key C major
+
   pattern degrees = steps 1/8 {
     degree 0 octave 4
     rest
@@ -606,6 +620,7 @@ song "S" {
       degree 11 octave 4 weight 1
     }
   }
+
   pattern samples = steps 1/8 {
     sample 1
     choose {

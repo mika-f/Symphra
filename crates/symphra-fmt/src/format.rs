@@ -13,7 +13,7 @@ use symphra_syntax::ast::{
     TrackDeclaration, VolumeExpression,
 };
 
-use crate::printer::Printer;
+use crate::printer::{BlankSeparator, Printer};
 use crate::trivia::{CommentCursor, LeadingTrivia};
 
 pub struct Ctx<'a> {
@@ -29,14 +29,20 @@ impl Ctx<'_> {
 }
 
 /// Whether (and how) a sibling list is stably re-sorted into canonical
-/// rank order after printing. `GroupedWithSeparator` additionally forces a
-/// blank line at every rank boundary; see [`Printer::reorder_since`].
+/// rank order after printing. Variants that carry a [`BlankSeparator`]
+/// additionally force blank lines between items; see
+/// [`Printer::reorder_since`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Reorder {
     No,
     Yes,
-    YesWithSeparator,
+    YesWithSeparator(BlankSeparator),
 }
+
+/// Lowest [`song_statement_rank`] value that is a declaration rather than a
+/// packed setting (`tempo` / `meter` / `key`). Used to force a blank line
+/// before each song-level declaration.
+const SONG_DECLARATION_RANK: u8 = 3;
 
 pub fn format_source_file(ctx: &mut Ctx<'_>, file: &SourceFile) {
     let items: Vec<&Declaration> = file.declarations.iter().collect();
@@ -47,7 +53,7 @@ pub fn format_source_file(ctx: &mut Ctx<'_>, file: &SourceFile) {
         declaration_span,
         file.span.end,
         declaration_rank,
-        Reorder::YesWithSeparator,
+        Reorder::YesWithSeparator(BlankSeparator::OnRankChange),
         print_declaration,
     );
     print_dangling(ctx, &dangling);
@@ -173,8 +179,12 @@ fn print_items<T: Copy>(
     }
     match reorder {
         Reorder::No => {}
-        Reorder::Yes => ctx.printer.reorder_since(block_start, ranges, false),
-        Reorder::YesWithSeparator => ctx.printer.reorder_since(block_start, ranges, true),
+        Reorder::Yes => ctx
+            .printer
+            .reorder_since(block_start, ranges, BlankSeparator::None),
+        Reorder::YesWithSeparator(separator) => {
+            ctx.printer.reorder_since(block_start, ranges, separator);
+        }
     }
     ctx.cursor.take_leading(close_end, prev_end)
 }
@@ -250,7 +260,7 @@ fn print_song(ctx: &mut Ctx<'_>, decl: &SongDeclaration) {
         &items,
         song_statement_span,
         song_statement_rank,
-        Reorder::Yes,
+        Reorder::YesWithSeparator(BlankSeparator::BeforeRankAtLeast(SONG_DECLARATION_RANK)),
         print_song_statement,
     );
 }

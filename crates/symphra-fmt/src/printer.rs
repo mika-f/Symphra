@@ -1,5 +1,21 @@
 const INDENT_UNIT: &str = "  ";
 
+/// How [`Printer::reorder_since`] inserts forced blank lines between
+/// reordered sibling items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlankSeparator {
+    /// Do not force blank lines; only author-authored ones travel with items.
+    None,
+    /// Insert a blank line whenever consecutive items have different ranks
+    /// (for example, top-level `project` versus `song`).
+    OnRankChange,
+    /// Insert a blank line before every item whose rank is at least this
+    /// value (and that is not the first item overall). Used for song
+    /// bodies: settings (tempo/meter/key) stay packed, while each
+    /// declaration gets a leading blank.
+    BeforeRankAtLeast(u8),
+}
+
 /// A line-oriented output buffer with indentation tracking.
 ///
 /// Every emitted construct is a whole line; callers never build partial
@@ -63,25 +79,24 @@ impl Printer {
     /// alongside it) must happen in strict source order; see
     /// [`crate::trivia::CommentCursor`].
     ///
-    /// When `force_separator` is set, a blank line is inserted at every
-    /// point where the rank changes. Callers use this for a coarse
-    /// grouping (for example, `project` versus `song` at the top level)
-    /// where a separator is always wanted; it is off for the finer-grained
-    /// statement lists inside a `project`/`song` body, where forcing a
-    /// blank between every differently named setting would fight the
-    /// "preserve the author's own blank lines" rule instead of serving it.
+    /// `separator` controls forced blank lines between the reordered items
+    /// (author-authored blanks already inside a range always travel with
+    /// that item). See [`BlankSeparator`].
     pub fn reorder_since(
         &mut self,
         start: usize,
         mut ranges: Vec<(u8, std::ops::Range<usize>)>,
-        force_separator: bool,
+        separator: BlankSeparator,
     ) {
         ranges.sort_by_key(|(rank, _)| *rank);
         let mut reordered = Vec::with_capacity(self.lines.len().saturating_sub(start));
         let mut prev_rank = None;
         for (rank, range) in ranges {
-            let needs_separator =
-                force_separator && prev_rank.is_some_and(|previous| previous != rank);
+            let needs_separator = match separator {
+                BlankSeparator::None => false,
+                BlankSeparator::OnRankChange => prev_rank.is_some_and(|previous| previous != rank),
+                BlankSeparator::BeforeRankAtLeast(min) => prev_rank.is_some() && rank >= min,
+            };
             let already_blank = reordered.last().is_some_and(String::is_empty)
                 || self.lines[range.clone()]
                     .first()

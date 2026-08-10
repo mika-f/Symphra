@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
 use symphra_syntax::ast::{
-    ArrangementEntry, Declaration, PatternBody, SequenceItem, SongStatement,
+    ArrangementEntry, Declaration, PatternBody, SequenceItem, SongDeclaration, SongStatement,
 };
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
@@ -852,82 +852,101 @@ fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Loca
         utf16_column: position.character,
     })?;
     let parsed = parse(source.id, &source.text);
-
-    for declaration in &parsed.file.declarations {
+    let span = parsed.file.declarations.iter().find_map(|declaration| {
         let Declaration::Song(song) = declaration else {
-            continue;
+            return None;
         };
-        let play_entry = song.statements.iter().find_map(|statement| {
-            let SongStatement::Arrangement { entries, .. } = statement else {
-                return None;
-            };
-            entries.iter().find_map(|entry| match entry {
-                ArrangementEntry::Play { name, .. }
-                    if name.span.start <= offset && offset < name.span.end =>
-                {
-                    Some(name)
-                }
-                _ => None,
-            })
-        });
-        if let Some(name) = play_entry {
-            let section = song.statements.iter().find_map(|statement| {
-                let SongStatement::Section(section) = statement else {
-                    return None;
-                };
-                (section.name.text == name.text).then_some(section)
-            })?;
-            return Some(Location::new(
-                uri.clone(),
-                lsp_range(source, section.name.span)?,
-            ));
-        }
-        let occurrence = song.statements.iter().find_map(|statement| {
-            let SongStatement::Arrangement { entries, .. } = statement else {
-                return None;
-            };
-            entries.iter().find_map(|entry| match entry {
-                ArrangementEntry::Pattern(occurrence)
-                    if occurrence.span.start <= offset && offset < occurrence.span.end =>
-                {
-                    Some(occurrence)
-                }
-                _ => None,
-            })
-        });
-        let Some(occurrence) = occurrence else {
-            continue;
-        };
-        if occurrence.pattern.span.start <= offset && offset < occurrence.pattern.span.end {
-            let pattern = song.statements.iter().find_map(|statement| {
-                let SongStatement::Pattern(pattern) = statement else {
-                    return None;
-                };
-                (pattern.name.text == occurrence.pattern.text).then_some(pattern)
-            })?;
-            return Some(Location::new(
-                uri.clone(),
-                lsp_range(source, pattern.name.span)?,
-            ));
-        }
-        if let Some(reference) = occurrence
-            .instrument
-            .as_ref()
-            .filter(|instrument| instrument.span.start <= offset && offset < instrument.span.end)
-        {
-            let instrument = song.statements.iter().find_map(|statement| {
-                let SongStatement::Instrument(instrument) = statement else {
-                    return None;
-                };
-                (instrument.name.text == reference.text).then_some(instrument)
-            })?;
-            return Some(Location::new(
-                uri.clone(),
-                lsp_range(source, instrument.name.span)?,
-            ));
-        }
+        definition_in_song(song, offset)
+    })?;
+    Some(Location::new(uri.clone(), lsp_range(source, span)?))
+}
+
+/// Resolves a name under `offset` within one song to the span of its declaration.
+fn definition_in_song(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    if let Some(span) = definition_from_play_section(song, offset) {
+        return Some(span);
     }
-    None
+    if let Some(span) = definition_from_play_track(song, offset) {
+        return Some(span);
+    }
+    definition_from_arrangement_pattern(song, offset)
+}
+
+/// `arrangement { play <section> }` → section name span.
+fn definition_from_play_section(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    let name = song.statements.iter().find_map(|statement| {
+        let SongStatement::Arrangement { entries, .. } = statement else {
+            return None;
+        };
+        entries.iter().find_map(|entry| match entry {
+            ArrangementEntry::Play { name, .. }
+                if name.span.start <= offset && offset < name.span.end =>
+            {
+                Some(name)
+            }
+            _ => None,
+        })
+    })?;
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Section(section) = statement else {
+            return None;
+        };
+        (section.name.text == name.text).then_some(section.name.span)
+    })
+}
+
+/// `section { parallel { play track <name> } }` → track name span.
+fn definition_from_play_track(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    let track_name = song.statements.iter().find_map(|statement| {
+        let SongStatement::Section(section) = statement else {
+            return None;
+        };
+        section
+            .tracks
+            .iter()
+            .find(|track| track.span.start <= offset && offset < track.span.end)
+    })?;
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Track(track) = statement else {
+            return None;
+        };
+        (track.name.text == track_name.text).then_some(track.name.span)
+    })
+}
+
+/// `arrangement { <pattern> [with <instrument>] }` → pattern/instrument name span.
+fn definition_from_arrangement_pattern(song: &SongDeclaration, offset: u32) -> Option<SourceSpan> {
+    let occurrence = song.statements.iter().find_map(|statement| {
+        let SongStatement::Arrangement { entries, .. } = statement else {
+            return None;
+        };
+        entries.iter().find_map(|entry| match entry {
+            ArrangementEntry::Pattern(occurrence)
+                if occurrence.span.start <= offset && offset < occurrence.span.end =>
+            {
+                Some(occurrence)
+            }
+            _ => None,
+        })
+    })?;
+    if occurrence.pattern.span.start <= offset && offset < occurrence.pattern.span.end {
+        return song.statements.iter().find_map(|statement| {
+            let SongStatement::Pattern(pattern) = statement else {
+                return None;
+            };
+            (pattern.name.text == occurrence.pattern.text).then_some(pattern.name.span)
+        });
+    }
+    let reference = occurrence
+        .instrument
+        .as_ref()
+        .filter(|instrument| instrument.span.start <= offset && offset < instrument.span.end)?;
+    song.statements.iter().find_map(|statement| {
+        let SongStatement::Instrument(instrument) = statement else {
+            return None;
+        };
+        (instrument.name.text == reference.text).then_some(instrument.name.span)
+    })
 }
 
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
@@ -1719,6 +1738,61 @@ mod tests {
             location.range,
             Range::new(Position::new(1, 13), Position::new(1, 17))
         );
+    }
+
+    #[test]
+    fn finds_track_definitions_from_section_play_track() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"First\" {\n",
+                "  track pad role harmony { instrument lead play melody }\n",
+                "}\n",
+                "song \"Second\" {\n",
+                "  track pad role harmony { instrument lead play melody }\n",
+                "  track bass role low { instrument sub play bassline }\n",
+                "  section intro bars 2 {\n",
+                "    parallel {\n",
+                "      play track pad\n",
+                "      play track bass\n",
+                "    }\n",
+                "  }\n",
+                "}",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let pad = definition(&source, &uri, Position::new(8, 17))
+            .expect("play track pad should resolve");
+        assert_eq!(pad.uri, uri);
+        assert_eq!(
+            pad.range,
+            Range::new(Position::new(4, 8), Position::new(4, 11))
+        );
+
+        let bass = definition(&source, &uri, Position::new(9, 17))
+            .expect("play track bass should resolve");
+        assert_eq!(
+            bass.range,
+            Range::new(Position::new(5, 8), Position::new(5, 12))
+        );
+
+        // Same name in another song must not be used as the declaration target.
+        assert!(definition(&source, &uri, Position::new(1, 8)).is_none());
+        // Unresolved track names return no location.
+        let missing = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  section intro bars 2 {\n",
+                "    parallel { play track missing }\n",
+                "  }\n",
+                "}",
+            ),
+        );
+        assert!(definition(&missing, &uri, Position::new(2, 26)).is_none());
     }
 
     #[test]

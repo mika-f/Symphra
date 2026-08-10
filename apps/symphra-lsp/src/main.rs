@@ -20,9 +20,11 @@ use tower_lsp_server::ls_types::{
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, Location, MarkupContent, MarkupKind, OneOf, Position,
     PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, RenameOptions,
-    RenameParams, ServerCapabilities, ServerInfo, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
-    WorkDoneProgressOptions, WorkspaceEdit,
+    RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -74,6 +76,14 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(true),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
+                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
+                    SemanticTokensOptions {
+                        legend: semantic_tokens_legend(),
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        range: Some(false),
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                    },
+                )),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
@@ -187,6 +197,17 @@ impl LanguageServer for Backend {
         Ok(documents
             .get(&uri)
             .map(|source| document_highlights(source, position)))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let documents = self.documents.read().await;
+        let uri = params.text_document.uri;
+        Ok(documents
+            .get(&uri)
+            .map(|source| SemanticTokensResult::Tokens(semantic_tokens(source))))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -1483,6 +1504,198 @@ const fn span_contains(span: SourceSpan, offset: u32) -> bool {
     span.start <= offset && offset < span.end
 }
 
+/// Legend indices used by [`semantic_tokens`]. Keep in sync with
+/// [`semantic_tokens_legend`].
+const SEMANTIC_TOKEN_KEYWORD: u32 = 0;
+const SEMANTIC_TOKEN_FUNCTION: u32 = 1;
+const SEMANTIC_TOKEN_VARIABLE: u32 = 2;
+const SEMANTIC_TOKEN_NAMESPACE: u32 = 3;
+const SEMANTIC_TOKEN_STRING: u32 = 4;
+const SEMANTIC_TOKEN_NUMBER: u32 = 5;
+const SEMANTIC_TOKEN_COMMENT: u32 = 6;
+const SEMANTIC_TOKEN_TYPE: u32 = 7;
+/// Bit 0 of the modifier bitset: declaration site of a named symbol.
+const SEMANTIC_MOD_DECLARATION: u32 = 1;
+
+fn semantic_tokens_legend() -> SemanticTokensLegend {
+    SemanticTokensLegend {
+        token_types: vec![
+            SemanticTokenType::KEYWORD,
+            SemanticTokenType::FUNCTION,
+            SemanticTokenType::VARIABLE,
+            SemanticTokenType::NAMESPACE,
+            SemanticTokenType::STRING,
+            SemanticTokenType::NUMBER,
+            SemanticTokenType::COMMENT,
+            SemanticTokenType::TYPE,
+        ],
+        token_modifiers: vec![SemanticTokenModifier::DECLARATION],
+    }
+}
+
+fn semantic_tokens(source: &SourceText) -> SemanticTokens {
+    let lexed = lex(source.id, &source.text);
+    let name_tokens = named_semantic_classifications(source);
+    let mut absolute = Vec::new();
+
+    for comment in &lexed.comments {
+        if let Some(token) = absolute_semantic_token(
+            source,
+            comment.span,
+            SEMANTIC_TOKEN_COMMENT,
+            0,
+        ) {
+            absolute.push(token);
+        }
+    }
+
+    for token in &lexed.tokens {
+        if token.kind == TokenKind::Eof {
+            continue;
+        }
+        let (token_type, modifiers) = if let Some(classification) = name_tokens.get(&token.span) {
+            *classification
+        } else if let Some(classification) = lex_token_classification(token) {
+            classification
+        } else {
+            continue;
+        };
+        if let Some(encoded) =
+            absolute_semantic_token(source, token.span, token_type, modifiers)
+        {
+            absolute.push(encoded);
+        }
+    }
+
+    absolute.sort_by(|left, right| {
+        left.line
+            .cmp(&right.line)
+            .then(left.start.cmp(&right.start))
+    });
+    SemanticTokens {
+        result_id: None,
+        data: encode_semantic_tokens(&absolute),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AbsoluteSemanticToken {
+    line: u32,
+    start: u32,
+    length: u32,
+    token_type: u32,
+    modifiers: u32,
+}
+
+fn absolute_semantic_token(
+    source: &SourceText,
+    span: SourceSpan,
+    token_type: u32,
+    modifiers: u32,
+) -> Option<AbsoluteSemanticToken> {
+    let range = source.utf16_range(span)?;
+    // Symphra tokens and comments are single-line; skip anything that wraps.
+    if range.start.line != range.end.line {
+        return None;
+    }
+    let length = range.end.utf16_column.saturating_sub(range.start.utf16_column);
+    (length > 0).then_some(AbsoluteSemanticToken {
+        line: range.start.line,
+        start: range.start.utf16_column,
+        length,
+        token_type,
+        modifiers,
+    })
+}
+
+fn encode_semantic_tokens(tokens: &[AbsoluteSemanticToken]) -> Vec<SemanticToken> {
+    let mut previous_line = 0;
+    let mut previous_start = 0;
+    tokens
+        .iter()
+        .map(|token| {
+            let delta_line = token.line - previous_line;
+            let delta_start = if delta_line == 0 {
+                token.start - previous_start
+            } else {
+                token.start
+            };
+            previous_line = token.line;
+            previous_start = token.start;
+            SemanticToken {
+                delta_line,
+                delta_start,
+                length: token.length,
+                token_type: token.token_type,
+                token_modifiers_bitset: token.modifiers,
+            }
+        })
+        .collect()
+}
+
+fn lex_token_classification(token: &Token) -> Option<(u32, u32)> {
+    if keyword_description(token.kind).is_some() {
+        return Some((SEMANTIC_TOKEN_KEYWORD, 0));
+    }
+    match token.kind {
+        TokenKind::String => Some((SEMANTIC_TOKEN_STRING, 0)),
+        TokenKind::Integer | TokenKind::Decimal => Some((SEMANTIC_TOKEN_NUMBER, 0)),
+        TokenKind::Identifier if looks_like_pitch(&token.text) => {
+            Some((SEMANTIC_TOKEN_TYPE, 0))
+        }
+        _ => None,
+    }
+}
+
+/// Heuristic pitch form used by the lexer for note names (`C4`, `F#3`, `Bb-1`).
+fn looks_like_pitch(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(letter) = chars.next() else {
+        return false;
+    };
+    if !matches!(letter, 'A'..='G') {
+        return false;
+    }
+    let rest = chars.as_str();
+    let rest = rest
+        .strip_prefix('#')
+        .or_else(|| rest.strip_prefix('b'))
+        .unwrap_or(rest);
+    let rest = rest.strip_prefix('-').unwrap_or(rest);
+    !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+}
+
+fn named_semantic_classifications(source: &SourceText) -> HashMap<SourceSpan, (u32, u32)> {
+    let parsed = parse(source.id, &source.text);
+    let mut map = HashMap::new();
+    for declaration in &parsed.file.declarations {
+        let Declaration::Song(song) = declaration else {
+            continue;
+        };
+        for (kind, name) in named_declarations(song) {
+            map.insert(
+                name.span,
+                (named_kind_token_type(kind), SEMANTIC_MOD_DECLARATION),
+            );
+        }
+        visit_name_references(song, |kind, identifier| {
+            if declaration_span(song, kind, &identifier.text).is_some() {
+                map.entry(identifier.span)
+                    .or_insert((named_kind_token_type(kind), 0));
+            }
+        });
+    }
+    map
+}
+
+const fn named_kind_token_type(kind: NamedKind) -> u32 {
+    match kind {
+        NamedKind::Pattern | NamedKind::Rhythm => SEMANTIC_TOKEN_FUNCTION,
+        NamedKind::Instrument | NamedKind::Track => SEMANTIC_TOKEN_VARIABLE,
+        NamedKind::Section => SEMANTIC_TOKEN_NAMESPACE,
+    }
+}
+
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
     let parsed = parse(source.id, &source.text);
     let program = parsed
@@ -1688,13 +1901,15 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        SourceId, SourceText, code_lenses, completions, definition, diagnostics,
-        document_highlights, document_symbols, flatten_document_symbols, formatting_edits, hover,
-        prepare_rename, references, rename,
+        SEMANTIC_MOD_DECLARATION, SEMANTIC_TOKEN_COMMENT, SEMANTIC_TOKEN_FUNCTION,
+        SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER, SEMANTIC_TOKEN_STRING,
+        SEMANTIC_TOKEN_TYPE, SourceId, SourceText, code_lenses, completions, definition,
+        diagnostics, document_highlights, document_symbols, flatten_document_symbols,
+        formatting_edits, hover, prepare_rename, references, rename, semantic_tokens,
     };
     use tower_lsp_server::ls_types::{
         CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, Position,
-        PrepareRenameResponse, Range, SymbolKind, Uri,
+        PrepareRenameResponse, Range, SemanticToken, SymbolKind, Uri,
     };
 
     #[test]
@@ -2822,6 +3037,96 @@ mod tests {
         // First.melody is a different symbol with zero uses in its song.
         let other_song = references(&source, &uri, Position::new(1, 10), false);
         assert!(other_song.is_empty());
+    }
+
+    fn decode_semantic_tokens(data: &[SemanticToken]) -> Vec<(u32, u32, u32, u32, u32)> {
+        let mut line = 0;
+        let mut start = 0;
+        data.iter()
+            .map(|token| {
+                line += token.delta_line;
+                start = if token.delta_line == 0 {
+                    start + token.delta_start
+                } else {
+                    token.delta_start
+                };
+                (
+                    line,
+                    start,
+                    token.length,
+                    token.token_type,
+                    token.token_modifiers_bitset,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn builds_semantic_tokens_for_keywords_names_literals_and_pitches() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "# header\n",
+                "song \"Test\" {\n",
+                "  pattern melody = sequence { note C4 for 1/4 }\n",
+                "  arrangement { melody }\n",
+                "}\n",
+            ),
+        );
+
+        let decoded = decode_semantic_tokens(&semantic_tokens(&source).data);
+
+        assert!(
+            decoded
+                .iter()
+                .any(|token| token.3 == SEMANTIC_TOKEN_COMMENT && token.0 == 0),
+            "comment on line 0: {decoded:?}"
+        );
+        assert!(
+            decoded.iter().any(|token| {
+                token.3 == SEMANTIC_TOKEN_KEYWORD && token.0 == 1 && token.1 == 0 && token.2 == 4
+            }),
+            "song keyword: {decoded:?}"
+        );
+        assert!(
+            decoded
+                .iter()
+                .any(|token| token.3 == SEMANTIC_TOKEN_STRING && token.0 == 1),
+            "song title string: {decoded:?}"
+        );
+        // `melody` declaration: function + declaration modifier.
+        assert!(
+            decoded.iter().any(|token| {
+                token.0 == 2
+                    && token.3 == SEMANTIC_TOKEN_FUNCTION
+                    && token.4 == SEMANTIC_MOD_DECLARATION
+                    && token.2 == 6
+            }),
+            "melody declaration: {decoded:?}"
+        );
+        // arrangement use of `melody`: function without declaration.
+        assert!(
+            decoded.iter().any(|token| {
+                token.0 == 3
+                    && token.3 == SEMANTIC_TOKEN_FUNCTION
+                    && token.4 == 0
+                    && token.2 == 6
+            }),
+            "melody reference: {decoded:?}"
+        );
+        assert!(
+            decoded
+                .iter()
+                .any(|token| token.3 == SEMANTIC_TOKEN_TYPE && token.2 == 2),
+            "pitch C4 as type: {decoded:?}"
+        );
+        assert!(
+            decoded
+                .iter()
+                .any(|token| token.3 == SEMANTIC_TOKEN_NUMBER && token.2 == 1),
+            "duration numerator: {decoded:?}"
+        );
     }
 
     #[test]

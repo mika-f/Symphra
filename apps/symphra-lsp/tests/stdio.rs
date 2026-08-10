@@ -165,6 +165,23 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         initialized["result"]["capabilities"]["renameProvider"],
         json!({ "prepareProvider": true })
     );
+    assert_eq!(
+        initialized["result"]["capabilities"]["semanticTokensProvider"]["full"],
+        true
+    );
+    assert_eq!(
+        initialized["result"]["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"],
+        json!([
+            "keyword",
+            "function",
+            "variable",
+            "namespace",
+            "string",
+            "number",
+            "comment",
+            "type"
+        ])
+    );
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -362,6 +379,34 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     server.send(&json!({
         "jsonrpc": "2.0",
         "id": 9,
+        "method": "textDocument/semanticTokens/full",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" }
+        }
+    }));
+    let semantic = server.receive();
+    let data = semantic["result"]["data"]
+        .as_array()
+        .expect("semantic token data");
+    assert!(
+        data.len() >= 5 && data.len().is_multiple_of(5),
+        "semantic tokens are groups of 5 integers, got {data:?}"
+    );
+    // First token should be the `project` keyword at 0:0 length 7 type keyword(0).
+    assert_eq!(
+        &data[..5],
+        &[
+            json!(0),
+            json!(0),
+            json!(7),
+            json!(0),
+            json!(0)
+        ]
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 10,
         "method": "textDocument/prepareRename",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
@@ -382,7 +427,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 10,
+        "id": 11,
         "method": "textDocument/rename",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
@@ -434,11 +479,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 11,
+        "id": 12,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 11);
+    assert_eq!(server.receive()["id"], 12);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

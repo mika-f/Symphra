@@ -66,6 +66,16 @@ pub struct Track {
     pub gain: f32,
     pub pan: Pan,
     pub end: MusicalTime,
+    pub effect: Option<DelayEffect>,
+}
+
+/// A feedback delay line applied to a track's rendered audio before it is
+/// summed into the master mix.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DelayEffect {
+    pub mix: f32,
+    pub time: MusicalTime,
+    pub feedback: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

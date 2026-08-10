@@ -2,13 +2,18 @@
 
 use std::num::NonZeroU32;
 
-use symphra_dsp::{Oscillator, Waveform, fade_gain};
+use symphra_dsp::{Oscillator, Waveform, apply_delay, fade_gain};
 use symphra_sampler::{SampleLibrary, SamplePlayer, named_sample_source, packed_sample_source};
 use symphra_score::{
-    Channels, InstrumentKind, MusicalTime, SampleSelector, Score, Song, TimeError,
+    Channels, DelayEffect, InstrumentKind, MusicalTime, SampleSelector, Score, Song, TimeError,
+    Track,
 };
 
 const MAX_NOTE_GAIN: f32 = 0.2;
+/// Amplitude below which a delay's decaying echo repeats are considered
+/// inaudible; used to bound how far the rendered buffer must extend to fit
+/// a delay's tail.
+const DELAY_TAIL_EPSILON: f32 = 0.001;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioBuffer {
@@ -36,6 +41,8 @@ pub enum RenderError {
     InvalidTrackPan,
     #[error("sample speed must be finite and greater than zero")]
     InvalidSampleSpeed,
+    #[error("effect mix must be from 0.0 to 1.0 and feedback from 0.0 to less than 1.0")]
+    InvalidEffectParameters,
     #[error("sample rate must be greater than zero")]
     InvalidSampleRate,
     #[error("rendered audio is too large")]
@@ -98,6 +105,14 @@ pub fn render_song_with_samples(
     {
         return Err(RenderError::InvalidSampleSpeed);
     }
+    if song
+        .tracks
+        .iter()
+        .filter_map(|track| track.effect)
+        .any(|effect| !effect_is_valid(&effect))
+    {
+        return Err(RenderError::InvalidEffectParameters);
+    }
     let channels = match score.channels {
         Channels::Mono => 1,
         Channels::Stereo => 2,
@@ -108,20 +123,39 @@ pub fn render_song_with_samples(
         .and_then(|count| usize::try_from(count).ok())
         .ok_or(RenderError::AudioTooLarge)?;
     let mut samples = vec![0.0; sample_count];
-    render_notes(
-        song,
-        score.sample_rate_hz,
-        channels,
-        sample_library,
-        &mut samples,
-    )?;
-    render_samples(
-        song,
-        score.sample_rate_hz,
-        channels,
-        sample_library,
-        &mut samples,
-    )?;
+    for track in &song.tracks {
+        if let Some(effect) = track.effect {
+            let mut track_samples = vec![0.0; sample_count];
+            render_track(
+                track,
+                song.tempo_bpm,
+                score.sample_rate_hz,
+                channels,
+                sample_library,
+                &mut track_samples,
+            )?;
+            let delay_frames = time_to_frame(effect.time, song.tempo_bpm, score.sample_rate_hz)?;
+            apply_delay(
+                &mut track_samples,
+                channels,
+                delay_frames,
+                effect.mix,
+                effect.feedback,
+            );
+            for (mixed, dry) in samples.iter_mut().zip(&track_samples) {
+                *mixed += dry;
+            }
+        } else {
+            render_track(
+                track,
+                song.tempo_bpm,
+                score.sample_rate_hz,
+                channels,
+                sample_library,
+                &mut samples,
+            )?;
+        }
+    }
     for sample in &mut samples {
         *sample = sample.clamp(-1.0, 1.0);
     }
@@ -132,26 +166,96 @@ pub fn render_song_with_samples(
     })
 }
 
+fn effect_is_valid(effect: &DelayEffect) -> bool {
+    effect.mix.is_finite()
+        && (0.0..=1.0).contains(&effect.mix)
+        && effect.feedback.is_finite()
+        && (0.0..1.0).contains(&effect.feedback)
+}
+
+/// The extra frames a track's delay tail needs beyond its natural end, so
+/// decaying echo repeats are not truncated. Bounded by [`DELAY_TAIL_EPSILON`]
+/// rather than the effect's theoretical (infinite, for `feedback -> 1`)
+/// ring-out time.
+#[expect(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "the repeat count is derived from a finite, non-negative logarithm"
+)]
+fn delay_tail_frames(
+    effect: &DelayEffect,
+    tempo_bpm: f64,
+    sample_rate_hz: u32,
+) -> Result<u64, RenderError> {
+    let delay_frames = time_to_frame(effect.time, tempo_bpm, sample_rate_hz)?.max(1);
+    let repeats = if effect.feedback <= 0.0 {
+        1
+    } else {
+        let repeats = (DELAY_TAIL_EPSILON.ln() / effect.feedback.ln()).ceil();
+        if repeats.is_finite() {
+            (repeats as u64).max(1)
+        } else {
+            1
+        }
+    };
+    delay_frames
+        .checked_mul(repeats)
+        .ok_or(RenderError::AudioTooLarge)
+}
+
 fn song_frames(song: &Song, sample_rate_hz: u32) -> Result<u64, RenderError> {
-    let note_ends = song
-        .tracks
-        .iter()
-        .flat_map(|track| &track.notes)
-        .map(|note| {
-            time_to_frame(
+    song.tracks.iter().try_fold(0, |latest, track| {
+        let mut end = time_to_frame(track.end, song.tempo_bpm, sample_rate_hz)?;
+        for note in &track.notes {
+            end = end.max(time_to_frame(
                 note.start.checked_add(note.duration)?,
                 song.tempo_bpm,
                 sample_rate_hz,
-            )
-        })
-        .try_fold(0, |latest, end| end.map(|end| latest.max(end)))?;
-    song.tracks.iter().try_fold(note_ends, |latest, track| {
-        time_to_frame(track.end, song.tempo_bpm, sample_rate_hz).map(|end| latest.max(end))
+            )?);
+        }
+        for sample in &track.samples {
+            end = end.max(time_to_frame(
+                sample.start.checked_add(sample.duration)?,
+                song.tempo_bpm,
+                sample_rate_hz,
+            )?);
+        }
+        if let Some(effect) = track.effect {
+            end = end.saturating_add(delay_tail_frames(&effect, song.tempo_bpm, sample_rate_hz)?);
+        }
+        Ok(latest.max(end))
     })
 }
 
-fn render_notes(
-    song: &Song,
+fn render_track(
+    track: &Track,
+    tempo_bpm: f64,
+    sample_rate_hz: u32,
+    channels: u16,
+    sample_library: &SampleLibrary,
+    samples: &mut [f32],
+) -> Result<(), RenderError> {
+    render_track_notes(
+        track,
+        tempo_bpm,
+        sample_rate_hz,
+        channels,
+        sample_library,
+        samples,
+    )?;
+    render_track_samples(
+        track,
+        tempo_bpm,
+        sample_rate_hz,
+        channels,
+        sample_library,
+        samples,
+    )
+}
+
+fn render_track_notes(
+    track: &Track,
+    tempo_bpm: f64,
     sample_rate_hz: u32,
     channels: u16,
     sample_library: &SampleLibrary,
@@ -161,137 +265,134 @@ fn render_notes(
         return Err(RenderError::InvalidSampleRate);
     };
     let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
-    for track in &song.tracks {
-        for (event_index, note) in track.notes.iter().enumerate() {
-            let start = time_to_frame(note.start, song.tempo_bpm, sample_rate_hz)?;
-            let end = time_to_frame(
-                note.start.checked_add(note.duration)?,
-                song.tempo_bpm,
-                sample_rate_hz,
-            )?;
-            let note_frames = end.saturating_sub(start);
-            let (mut voice, instrument_gain) = match &track.instrument {
-                InstrumentKind::Sine => (
-                    Voice::Oscillator(Oscillator::from_midi(
-                        note.midi_pitch,
-                        sample_rate,
-                        Waveform::Sine,
-                    )),
-                    MAX_NOTE_GAIN,
-                ),
-                InstrumentKind::Triangle => (
-                    Voice::Oscillator(Oscillator::from_midi(
-                        note.midi_pitch,
-                        sample_rate,
-                        Waveform::Triangle,
-                    )),
-                    MAX_NOTE_GAIN,
-                ),
-                InstrumentKind::Sampled { source, root_midi } => (
-                    Voice::Sample(SamplePlayer::new(
-                        sample_library
-                            .get(source)
-                            .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
-                        sample_rate,
-                        *root_midi,
-                        note.midi_pitch,
-                    )),
-                    1.0,
-                ),
-                InstrumentKind::Sampler { pack } => {
-                    return Err(RenderError::SamplerRequiresSampleEvents(pack.clone()));
-                }
-                InstrumentKind::DrumMachine { bank } => {
-                    return Err(RenderError::DrumMachineRequiresSampleEvents(bank.clone()));
-                }
-            };
-            for frame in start..end {
-                let Some(sample) = voice.next_sample() else {
-                    break;
-                };
-                let value = sample
-                    * fade_gain(frame - start, note_frames, fade_samples)
-                    * instrument_gain
-                    * track.gain
-                    * (f32::from(note.velocity) / 127.0);
-                let first_sample = frame
-                    .checked_mul(u64::from(channels))
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .ok_or(RenderError::AudioTooLarge)?;
-                mix_sample(
-                    samples,
-                    first_sample,
-                    channels,
-                    value,
-                    track.pan.percent(event_index),
-                );
+    for (event_index, note) in track.notes.iter().enumerate() {
+        let start = time_to_frame(note.start, tempo_bpm, sample_rate_hz)?;
+        let end = time_to_frame(
+            note.start.checked_add(note.duration)?,
+            tempo_bpm,
+            sample_rate_hz,
+        )?;
+        let note_frames = end.saturating_sub(start);
+        let (mut voice, instrument_gain) = match &track.instrument {
+            InstrumentKind::Sine => (
+                Voice::Oscillator(Oscillator::from_midi(
+                    note.midi_pitch,
+                    sample_rate,
+                    Waveform::Sine,
+                )),
+                MAX_NOTE_GAIN,
+            ),
+            InstrumentKind::Triangle => (
+                Voice::Oscillator(Oscillator::from_midi(
+                    note.midi_pitch,
+                    sample_rate,
+                    Waveform::Triangle,
+                )),
+                MAX_NOTE_GAIN,
+            ),
+            InstrumentKind::Sampled { source, root_midi } => (
+                Voice::Sample(SamplePlayer::new(
+                    sample_library
+                        .get(source)
+                        .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
+                    sample_rate,
+                    *root_midi,
+                    note.midi_pitch,
+                )),
+                1.0,
+            ),
+            InstrumentKind::Sampler { pack } => {
+                return Err(RenderError::SamplerRequiresSampleEvents(pack.clone()));
             }
+            InstrumentKind::DrumMachine { bank } => {
+                return Err(RenderError::DrumMachineRequiresSampleEvents(bank.clone()));
+            }
+        };
+        for frame in start..end {
+            let Some(sample) = voice.next_sample() else {
+                break;
+            };
+            let value = sample
+                * fade_gain(frame - start, note_frames, fade_samples)
+                * instrument_gain
+                * track.gain
+                * (f32::from(note.velocity) / 127.0);
+            let first_sample = frame
+                .checked_mul(u64::from(channels))
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or(RenderError::AudioTooLarge)?;
+            mix_sample(
+                samples,
+                first_sample,
+                channels,
+                value,
+                track.pan.percent(event_index),
+            );
         }
     }
     Ok(())
 }
 
-fn render_samples(
-    song: &Song,
+fn render_track_samples(
+    track: &Track,
+    tempo_bpm: f64,
     sample_rate_hz: u32,
     channels: u16,
     sample_library: &SampleLibrary,
     samples: &mut [f32],
 ) -> Result<(), RenderError> {
+    if track.samples.is_empty() {
+        return Ok(());
+    }
     let sample_rate = NonZeroU32::new(sample_rate_hz).ok_or(RenderError::InvalidSampleRate)?;
     let fade_samples = u64::from(sample_rate_hz).div_ceil(200);
-    for track in &song.tracks {
-        if track.samples.is_empty() {
-            continue;
+    let container = match &track.instrument {
+        InstrumentKind::Sampler { pack } => pack,
+        InstrumentKind::DrumMachine { bank } => bank,
+        InstrumentKind::Sine | InstrumentKind::Triangle | InstrumentKind::Sampled { .. } => {
+            return Err(RenderError::SampleEventsRequireSampler);
         }
-        let container = match &track.instrument {
-            InstrumentKind::Sampler { pack } => pack,
-            InstrumentKind::DrumMachine { bank } => bank,
-            InstrumentKind::Sine | InstrumentKind::Triangle | InstrumentKind::Sampled { .. } => {
-                return Err(RenderError::SampleEventsRequireSampler);
-            }
+    };
+    for (event_index, event) in track.samples.iter().enumerate() {
+        let source = match &event.selector {
+            SampleSelector::Index(index) => packed_sample_source(container, *index),
+            SampleSelector::Named(name) => named_sample_source(container, name),
         };
-        for (event_index, event) in track.samples.iter().enumerate() {
-            let source = match &event.selector {
-                SampleSelector::Index(index) => packed_sample_source(container, *index),
-                SampleSelector::Named(name) => named_sample_source(container, name),
+        let mut player = SamplePlayer::new(
+            sample_library
+                .get(&source)
+                .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
+            sample_rate,
+            60,
+            60,
+        )
+        .with_speed(f64::from(event.speed));
+        let start = time_to_frame(event.start, tempo_bpm, sample_rate_hz)?;
+        let end = time_to_frame(
+            event.start.checked_add(event.duration)?,
+            tempo_bpm,
+            sample_rate_hz,
+        )?;
+        let event_frames = end.saturating_sub(start);
+        for frame in start..end {
+            let Some(sample) = player.next_sample() else {
+                break;
             };
-            let mut player = SamplePlayer::new(
-                sample_library
-                    .get(&source)
-                    .ok_or_else(|| RenderError::MissingSample(source.clone()))?,
-                sample_rate,
-                60,
-                60,
-            )
-            .with_speed(f64::from(event.speed));
-            let start = time_to_frame(event.start, song.tempo_bpm, sample_rate_hz)?;
-            let end = time_to_frame(
-                event.start.checked_add(event.duration)?,
-                song.tempo_bpm,
-                sample_rate_hz,
-            )?;
-            let event_frames = end.saturating_sub(start);
-            for frame in start..end {
-                let Some(sample) = player.next_sample() else {
-                    break;
-                };
-                let value = sample
-                    * fade_gain(frame - start, event_frames, fade_samples)
-                    * track.gain
-                    * (f32::from(event.velocity) / 127.0);
-                let first_sample = frame
-                    .checked_mul(u64::from(channels))
-                    .and_then(|offset| usize::try_from(offset).ok())
-                    .ok_or(RenderError::AudioTooLarge)?;
-                mix_sample(
-                    samples,
-                    first_sample,
-                    channels,
-                    value,
-                    track.pan.percent(event_index),
-                );
-            }
+            let value = sample
+                * fade_gain(frame - start, event_frames, fade_samples)
+                * track.gain
+                * (f32::from(event.velocity) / 127.0);
+            let first_sample = frame
+                .checked_mul(u64::from(channels))
+                .and_then(|offset| usize::try_from(offset).ok())
+                .ok_or(RenderError::AudioTooLarge)?;
+            mix_sample(
+                samples,
+                first_sample,
+                channels,
+                value,
+                track.pan.percent(event_index),
+            );
         }
     }
     Ok(())
@@ -401,6 +502,45 @@ mod tests {
             error,
             RenderError::DrumMachineRequiresSampleEvents("RolandTR909".to_owned())
         );
+    }
+
+    #[test]
+    fn render_song_should_apply_track_delay_effect() {
+        let mut with_effect = score(InstrumentKind::Sine);
+        with_effect.sample_rate_hz = 1_000;
+        let dry = render_song(&with_effect, 0).expect("dry score should render");
+
+        with_effect.songs[0].tracks[0].effect = Some(symphra_score::DelayEffect {
+            mix: 1.0,
+            time: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            feedback: 0.0,
+        });
+        let wet = render_song(&with_effect, 0).expect("wet score should render");
+
+        assert!(
+            wet.samples.len() > dry.samples.len(),
+            "the delay's echo tail should extend the render length"
+        );
+        assert!(
+            wet.samples[dry.samples.len()..]
+                .iter()
+                .any(|sample| sample.abs() > f32::EPSILON),
+            "the delayed echo should appear in the extended tail"
+        );
+    }
+
+    #[test]
+    fn render_song_should_reject_out_of_range_effect_parameters() {
+        let mut invalid = score(InstrumentKind::Sine);
+        invalid.songs[0].tracks[0].effect = Some(symphra_score::DelayEffect {
+            mix: 1.0,
+            time: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+            feedback: 1.0,
+        });
+
+        let error = render_song(&invalid, 0).expect_err("feedback of 1.0 should be rejected");
+
+        assert_eq!(error, RenderError::InvalidEffectParameters);
     }
 
     #[test]
@@ -526,6 +666,7 @@ mod tests {
                     gain: 1.0,
                     pan: Pan::Fixed(0),
                     end: MusicalTime::new(1, 4).expect("quarter note should be valid"),
+                    effect: None,
                 }],
             }],
         }

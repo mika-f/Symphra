@@ -357,6 +357,7 @@ enum CompletionBlock {
     Track,
     Layer,
     Use,
+    Effect,
     Arrangement,
     Sequence,
     Steps,
@@ -458,6 +459,8 @@ fn completion_labels(
         &["role"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
         &["alternate"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
+        &["delay"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Play) {
         &["drum"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
@@ -511,9 +514,10 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::DrumMachine) => &["bank"],
         Some(CompletionBlock::Chance) => &["transpose", "retrigger", "speed"],
         Some(CompletionBlock::Rhythm) => &["hit", "rest"],
-        Some(CompletionBlock::Track) => &["instrument", "volume", "play", "layer", "at"],
+        Some(CompletionBlock::Track) => &["instrument", "volume", "play", "layer", "effect", "at"],
         Some(CompletionBlock::Layer) => &["use"],
         Some(CompletionBlock::Use) => &["play", "at"],
+        Some(CompletionBlock::Effect) => &["mix", "time", "feedback"],
         Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
     }
 }
@@ -598,6 +602,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Track => pending = Some(CompletionBlock::Track),
             TokenKind::Layer => pending = Some(CompletionBlock::Layer),
             TokenKind::Use => pending = Some(CompletionBlock::Use),
+            TokenKind::Delay => pending = Some(CompletionBlock::Effect),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => {
                 pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
@@ -645,6 +650,11 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Volume
                     | TokenKind::Layer
                     | TokenKind::Use
+                    | TokenKind::Effect
+                    | TokenKind::Delay
+                    | TokenKind::Mix
+                    | TokenKind::Time
+                    | TokenKind::Feedback
                     | TokenKind::Play
                     | TokenKind::TriggerWith
                     | TokenKind::Gate
@@ -838,6 +848,13 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
             "declares several independently scheduled `use` layers, mixed into one track."
         }
         TokenKind::Use => "declares one layer's instrument and play pipeline inside `layer`.",
+        TokenKind::Effect => "applies an audio effect to the track's rendered output.",
+        TokenKind::Delay => "a feedback delay (echo); the only effect kind implemented so far.",
+        TokenKind::Mix => "blends dry (`0.0`) and delayed/wet (`1.0`) signal in an effect.",
+        TokenKind::Time => "sets a delay effect's echo time, such as `1/4` or `1bar`.",
+        TokenKind::Feedback => {
+            "sets how much of a delay's echo feeds back into itself, `0.0` to `0.95`."
+        }
         TokenKind::Play => "selects the pattern played by a track.",
         TokenKind::TriggerWith => "applies a reusable rhythm to a played pattern.",
         TokenKind::Gate => "scales sounding duration without moving later steps.",
@@ -1155,7 +1172,7 @@ mod tests {
         assert_eq!(labels("song \"Test\" {\n  track lead ", 1, 13), ["role"]);
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  ", 2, 2),
-            ["instrument", "volume", "play", "layer", "at"]
+            ["instrument", "volume", "play", "layer", "effect", "at"]
         );
         assert_eq!(
             labels(
@@ -1172,6 +1189,22 @@ mod tests {
                 6
             ),
             ["play", "at"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect ",
+                2,
+                9
+            ),
+            ["delay"]
+        );
+        assert_eq!(
+            labels(
+                "song \"Test\" {\ntrack lead role harmony {\n  effect delay {\n    ",
+                3,
+                4
+            ),
+            ["mix", "time", "feedback"]
         );
         assert_eq!(
             labels("song \"Test\" {\ntrack lead role harmony {\n  play ", 2, 7),

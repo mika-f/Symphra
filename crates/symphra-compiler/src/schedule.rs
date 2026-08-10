@@ -165,6 +165,13 @@ fn schedule_declared_track(
     if let Some(offset) = track.at {
         apply_at(&mut scheduled, musical_time(offset)?)?;
     }
+    if let Some(effect) = track.effect {
+        scheduled.effect = Some(symphra_score::DelayEffect {
+            mix: effect.mix,
+            time: musical_time(effect.time)?,
+            feedback: effect.feedback,
+        });
+    }
     Ok(scheduled)
 }
 
@@ -662,6 +669,7 @@ fn schedule_track(
             gain: 1.0,
             pan: symphra_score::Pan::Fixed(0),
             end: cursor,
+            effect: None,
         },
         cursor,
     ))

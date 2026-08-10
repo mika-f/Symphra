@@ -86,7 +86,7 @@
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|sample|weight|source|root|pack|with|resolution|hit|role|play|trigger_with|gate|transpose|degree|octave|note|rest|chord|for|velocity|bar|layer|use)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|arrangement|key|sample|weight|source|root|pack|with|resolution|hit|role|play|trigger_with|gate|transpose|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback)\\b"
         }
       ]
     },

@@ -95,11 +95,44 @@ pub fn fade_gain(sample_index: u64, total_samples: u64, fade_samples: u64) -> f3
     attack.min(release)
 }
 
+/// Applies an in-place feedback delay (echo) to an interleaved audio buffer,
+/// independently per channel.
+///
+/// `echo[n] = wet[n - delay_frames]`, where `wet[n] = dry[n] + feedback *
+/// echo[n]`, so each repeat is `feedback` times quieter than the last.
+/// `mix` blends `0.0` (fully dry) to `1.0` (fully wet/echo). `delay_frames`
+/// is clamped to at least one frame: a zero delay would make each sample
+/// feed back into itself in the same step.
+pub fn apply_delay(buffer: &mut [f32], channels: u16, delay_frames: u64, mix: f32, feedback: f32) {
+    let channels = usize::from(channels);
+    if channels == 0 || buffer.is_empty() {
+        return;
+    }
+    let frames = buffer.len() / channels;
+    let delay = usize::try_from(delay_frames.max(1))
+        .unwrap_or(usize::MAX)
+        .min(frames.max(1));
+    for channel in 0..channels {
+        let dry: Vec<f32> = (0..frames)
+            .map(|frame| buffer[frame * channels + channel])
+            .collect();
+        let mut wet = vec![0.0f32; frames];
+        for frame in 0..frames {
+            let fed_back = frame.checked_sub(delay).map_or(0.0, |source| wet[source]);
+            wet[frame] = feedback.mul_add(fed_back, dry[frame]);
+        }
+        for frame in 0..frames {
+            let echo = frame.checked_sub(delay).map_or(0.0, |source| wet[source]);
+            buffer[frame * channels + channel] = mix.mul_add(echo - dry[frame], dry[frame]);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
 
-    use super::{Oscillator, SineOscillator, Waveform, fade_gain};
+    use super::{Oscillator, SineOscillator, Waveform, apply_delay, fade_gain};
 
     #[test]
     fn sine_oscillator_should_complete_one_cycle_in_four_samples() {
@@ -139,6 +172,76 @@ mod tests {
                 .iter()
                 .zip([0.0, 0.5, 1.0, 0.5, 0.0])
                 .all(|(actual, expected)| (actual - expected).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn apply_delay_should_place_a_single_echo_at_the_delay_offset() {
+        let mut buffer = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+        apply_delay(&mut buffer, 1, 2, 1.0, 0.0);
+
+        assert!(
+            buffer
+                .iter()
+                .zip([0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn apply_delay_should_decay_repeats_by_the_feedback_factor() {
+        let mut buffer = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+        apply_delay(&mut buffer, 1, 2, 1.0, 0.5);
+
+        assert!(
+            buffer
+                .iter()
+                .zip([0.0, 0.0, 1.0, 0.0, 0.5, 0.0, 0.25, 0.0])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < 1e-6)
+        );
+    }
+
+    #[test]
+    fn apply_delay_should_blend_dry_and_wet_by_mix() {
+        let mut buffer = vec![1.0, 1.0];
+
+        apply_delay(&mut buffer, 1, 1, 0.5, 0.0);
+
+        assert!(
+            buffer
+                .iter()
+                .zip([0.5, 1.0])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn apply_delay_should_process_each_channel_independently() {
+        let mut buffer = vec![1.0, 2.0, 0.0, 0.0, 0.0, 0.0];
+
+        apply_delay(&mut buffer, 2, 1, 1.0, 0.0);
+
+        assert!(
+            buffer
+                .iter()
+                .zip([0.0, 0.0, 1.0, 2.0, 0.0, 0.0])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn apply_delay_should_clamp_a_zero_delay_to_one_frame_without_panicking() {
+        let mut buffer = vec![1.0, 0.0];
+
+        apply_delay(&mut buffer, 1, 0, 1.0, 0.0);
+
+        assert!(
+            buffer
+                .iter()
+                .zip([0.0, 1.0])
+                .all(|(actual, expected): (&f32, f32)| (actual - expected).abs() < f32::EPSILON)
         );
     }
 }

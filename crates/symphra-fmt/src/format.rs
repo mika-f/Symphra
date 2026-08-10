@@ -3,12 +3,12 @@ use std::fmt::Write as _;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, ChordExpression, Declaration,
-    DegreeChoiceAlternative, DurationExpression, Identifier, InstrumentBody, InstrumentDeclaration,
-    LayerUse, NoteExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource,
-    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, VolumeExpression,
+    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, Identifier,
+    InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SampleSelectorExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackBody, TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -437,6 +437,7 @@ enum TrackField<'a> {
     Volume(&'a VolumeExpression),
     Play(&'a PlayStatement),
     Layer(&'a [LayerUse], SourceSpan),
+    Effect(&'a EffectDeclaration),
 }
 
 fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
@@ -445,6 +446,7 @@ fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
         TrackField::Volume(volume) => volume.span,
         TrackField::Play(play) => play.span,
         TrackField::Layer(_, span) => *span,
+        TrackField::Effect(effect) => effect.span,
     }
 }
 
@@ -470,6 +472,9 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
             fields.push(TrackField::Layer(uses, *span));
         }
     }
+    if let Some(effect) = &decl.effect {
+        fields.push(TrackField::Effect(effect));
+    }
     let items: Vec<&TrackField<'_>> = fields.iter().collect();
     print_block(
         ctx,
@@ -490,6 +495,48 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
             )),
             TrackField::Play(play) => print_play(ctx, play),
             TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
+            TrackField::Effect(effect) => print_effect(ctx, effect),
+        },
+    );
+}
+
+#[derive(Clone, Copy)]
+enum EffectField {
+    Mix(EffectFactor),
+    Time(DurationExpression),
+    Feedback(EffectFactor),
+}
+
+fn effect_field_span(field: EffectField) -> SourceSpan {
+    match field {
+        EffectField::Mix(factor) | EffectField::Feedback(factor) => factor.span,
+        EffectField::Time(duration) => duration.span(),
+    }
+}
+
+fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
+    let items = [
+        EffectField::Mix(effect.mix),
+        EffectField::Time(effect.time),
+        EffectField::Feedback(effect.feedback),
+    ];
+    print_block(
+        ctx,
+        "effect delay",
+        effect.span,
+        &items,
+        effect_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            EffectField::Mix(factor) => ctx.printer.line(format!("mix {}", factor.value)),
+            EffectField::Time(duration) => {
+                ctx.printer
+                    .line(format!("time {}", format_duration(&duration)));
+            }
+            EffectField::Feedback(factor) => {
+                ctx.printer.line(format!("feedback {}", factor.value));
+            }
         },
     );
 }

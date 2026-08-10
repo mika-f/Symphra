@@ -1209,6 +1209,126 @@ song "Layers" {
 }
 
 #[test]
+fn schedule_should_apply_track_effect_delay() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "Delay" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect delay { mix 0.40 time 1/4 feedback 0.25 }
+  }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("track effect should compile");
+
+    let score = schedule(&program).expect("track effect should schedule");
+    let effect = score.songs[0].tracks[0]
+        .effect
+        .expect("effect should be scheduled");
+
+    assert!((effect.mix - 0.40).abs() < 1e-6);
+    assert!((effect.feedback - 0.25).abs() < 1e-6);
+    assert_eq!(
+        effect.time,
+        MusicalTime::new(1, 4).expect("quarter note should be valid")
+    );
+}
+
+#[test]
+fn compile_should_reject_out_of_range_effect_mix() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "InvalidMix" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect delay { mix 1.50 time 1/4 feedback 0.25 }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range mix should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "effect mix must be from 0.0 to 1.0"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_out_of_range_effect_feedback() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "InvalidFeedback" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect delay { mix 0.40 time 1/4 feedback 1.0 }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("out-of-range feedback should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "effect feedback must be from 0.0 to 0.95"),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_effect_delay_time() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 48khz output stereo }
+song "ZeroDelay" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note C4 for 1/4 }
+  track lead role melody {
+    instrument lead
+    play melody
+    effect delay { mix 0.40 time 0bar feedback 0.25 }
+  }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero delay time should fail");
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.message == "effect delay duration must be greater than zero"
+        }),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
 fn compile_should_reject_invalid_instruments() {
     let parsed = parse(
         SourceId(0),

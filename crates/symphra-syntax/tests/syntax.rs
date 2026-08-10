@@ -663,6 +663,40 @@ fn parses_track_with_layer_uses() {
     );
 }
 
+#[test]
+fn parses_track_effect_delay() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Track\" { ",
+            "track drums role beat { ",
+            "instrument tr909 play kit ",
+            "effect delay { mix 0.40 time 1/4 feedback 0.25 } ",
+            "} }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("statement should be a track");
+    };
+    let effect = track.effect.expect("effect should be present");
+
+    assert!((effect.mix.value - 0.40).abs() < f32::EPSILON);
+    assert!((effect.feedback.value - 0.25).abs() < f32::EPSILON);
+    let DurationExpression::Fraction {
+        numerator,
+        denominator,
+        ..
+    } = effect.time
+    else {
+        panic!("effect delay time should be a fraction");
+    };
+    assert_eq!((numerator, denominator), (1, 4));
+}
+
 /// Unwraps a track's single-instrument body, panicking if it is a `layer`.
 fn single_layer(
     body: &symphra_syntax::ast::TrackBody,

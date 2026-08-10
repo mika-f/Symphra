@@ -1,4 +1,6 @@
-use super::{FrequencyLiteral, Identifier, PatternDeclaration, QuotedString, RateLiteral};
+use super::{
+    DurationExpression, FrequencyLiteral, Identifier, PatternDeclaration, QuotedString, RateLiteral,
+};
 use crate::SourceSpan;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,6 +24,27 @@ pub struct TrackDeclaration {
     pub role: Identifier,
     pub volume: Option<Box<VolumeExpression>>,
     pub body: TrackBody,
+    pub effect: Option<EffectDeclaration>,
+    pub span: SourceSpan,
+}
+
+/// `effect delay { mix M time T feedback F }`, applied to the track's
+/// rendered audio (after every layer's events have been synthesized) before
+/// it is summed into the master mix. `delay` is the only effect kind
+/// implemented so far; `filter`/`reverb` and general `automate` blocks are
+/// not part of this slice.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectDeclaration {
+    pub mix: EffectFactor,
+    pub time: DurationExpression,
+    pub feedback: EffectFactor,
+    pub span: SourceSpan,
+}
+
+/// A dimensionless 0.0-to-1.0-ish ratio, such as `mix`/`feedback`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EffectFactor {
+    pub value: f32,
     pub span: SourceSpan,
 }
 

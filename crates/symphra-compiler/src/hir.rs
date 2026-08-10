@@ -54,6 +54,17 @@ pub struct TrackDefinition {
     pub speed: Speed,
     pub choose_sample: Option<SampleRange>,
     pub at: Option<Duration>,
+    pub effect: Option<DelayEffect>,
+}
+
+/// A feedback delay line applied to the track's rendered audio. `time` is a
+/// duration (fraction of a whole note), resolved to sample frames using the
+/// song's tempo at render time, the same way note/sample durations are.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DelayEffect {
+    pub mix: f32,
+    pub time: Duration,
+    pub feedback: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

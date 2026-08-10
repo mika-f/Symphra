@@ -61,6 +61,11 @@ pub enum TokenKind {
     For,
     Velocity,
     Bar,
+    Effect,
+    Delay,
+    Mix,
+    Time,
+    Feedback,
     LeftBrace,
     RightBrace,
     Equal,
@@ -135,6 +140,11 @@ impl TokenKind {
             "for" => Self::For,
             "velocity" => Self::Velocity,
             "bar" => Self::Bar,
+            "effect" => Self::Effect,
+            "delay" => Self::Delay,
+            "mix" => Self::Mix,
+            "time" => Self::Time,
+            "feedback" => Self::Feedback,
             _ => return None,
         })
     }

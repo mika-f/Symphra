@@ -3,13 +3,13 @@ mod literal;
 use crate::ast::{
     ArrangementOccurrence, AtExpression, ChanceExpression, ChanceTransformExpression,
     ChooseSampleExpression, ChordExpression, Declaration, DegreeChoiceAlternative,
-    DurationExpression, GainExpression, GateExpression, Identifier, InstrumentBody,
-    InstrumentDeclaration, LayerUse, NoteExpression, NumberLiteral, PanExpression, PatternBody,
-    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RepeatExpression, RestExpression, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SequenceItem, SongDeclaration,
-    SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
-    TransposeExpression, VelocityExpression, VolumeExpression,
+    DurationExpression, EffectDeclaration, EffectFactor, GainExpression, GateExpression,
+    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression, NumberLiteral,
+    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -392,6 +392,11 @@ impl Parser {
             };
             (volume, self.layer_body()?)
         };
+        let effect = if self.at(TokenKind::Effect) {
+            Some(self.effect()?)
+        } else {
+            None
+        };
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close track")?
             .span;
@@ -400,7 +405,48 @@ impl Parser {
             role,
             volume,
             body,
+            effect,
             span: start.cover(end),
+        })
+    }
+
+    /// `effect delay { mix M time T feedback F }`, applied to the whole
+    /// track (every layer) after its events are rendered to audio. `delay`
+    /// is the only effect kind accepted today.
+    fn effect(&mut self) -> Option<EffectDeclaration> {
+        let start = self.bump().span;
+        self.required(TokenKind::Delay, "expected `delay` after `effect`")?;
+        self.required(TokenKind::LeftBrace, "expected `{` after `effect delay`")?;
+        let mix = self.effect_factor(TokenKind::Mix, "expected `mix` in effect")?;
+        self.required(TokenKind::Time, "expected `time` after `mix`")?;
+        let time = self.duration_expr("effect delay")?;
+        let feedback =
+            self.effect_factor(TokenKind::Feedback, "expected `feedback` after `time`")?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close effect")?
+            .span;
+        Some(EffectDeclaration {
+            mix,
+            time,
+            feedback,
+            span: start.cover(end),
+        })
+    }
+
+    fn effect_factor(&mut self, keyword: TokenKind, message: &str) -> Option<EffectFactor> {
+        let start = self.required(keyword, message)?.span;
+        let value = self.required_any(
+            &[TokenKind::Integer, TokenKind::Decimal],
+            "expected a number",
+        )?;
+        let Ok(value_number) = value.text.parse::<f32>() else {
+            self.diagnostics
+                .push(Diagnostic::syntax("value is out of range", value.span));
+            return None;
+        };
+        Some(EffectFactor {
+            value: value_number,
+            span: start.cover(value.span),
         })
     }
 

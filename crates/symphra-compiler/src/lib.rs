@@ -5,17 +5,17 @@ use std::collections::HashSet;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
-    DurationExpression, Identifier, InstrumentBody, PanExpression, PatternBody, PatternDeclaration,
-    PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString,
-    RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    DurationExpression, EffectDeclaration, Identifier, InstrumentBody, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
     TrackDeclaration,
 };
 
 use crate::hir::{
-    Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, Duration,
-    InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
-    PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleRange,
+    Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
+    Duration, InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence,
+    PatternStep, PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleRange,
     SampleSelector, SampleTrigger, Song, Speed, TrackDefinition, WeightedNote,
     WeightedSampleSequence,
 };
@@ -390,6 +390,12 @@ impl Compiler {
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
     ) -> Vec<(TrackDefinition, Option<Pattern>)> {
+        // Resolved once per declaration (not per layer) so an invalid effect
+        // is reported once, not once per `use`.
+        let effect = self
+            .effect(declaration.effect.as_ref(), meter)
+            .ok()
+            .flatten();
         match &declaration.body {
             TrackBody::Single { instrument, play } => self
                 .track_layer(
@@ -400,6 +406,7 @@ impl Compiler {
                     rhythms,
                     instruments,
                     meter,
+                    effect,
                 )
                 .into_iter()
                 .collect(),
@@ -414,6 +421,7 @@ impl Compiler {
                         rhythms,
                         instruments,
                         meter,
+                        effect,
                     )
                 })
                 .collect(),
@@ -430,6 +438,7 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
+        effect: Option<DelayEffect>,
     ) -> Option<(TrackDefinition, Option<Pattern>)> {
         let instrument = instruments
             .iter()
@@ -509,6 +518,7 @@ impl Compiler {
                         speed,
                         choose_sample,
                         at,
+                        effect,
                     };
                     (definition, synthesized)
                 },
@@ -860,6 +870,41 @@ impl Compiler {
             self.validate_transpose(pattern, semitones, expression.span);
         }
         Ok(Some(chance))
+    }
+
+    /// Resolves a track's `effect delay { ... }`. `feedback` is capped at
+    /// `0.95` (not the theoretical stability limit of `1.0`) so a delay's
+    /// echo tail — which the renderer must extend the song's audio buffer to
+    /// fit — always decays to silence within a bounded number of repeats.
+    fn effect(
+        &mut self,
+        declaration: Option<&EffectDeclaration>,
+        meter: Option<&Meter>,
+    ) -> Result<Option<DelayEffect>, ()> {
+        let Some(declaration) = declaration else {
+            return Ok(None);
+        };
+        if !declaration.mix.value.is_finite() || !(0.0..=1.0).contains(&declaration.mix.value) {
+            self.error("effect mix must be from 0.0 to 1.0", declaration.mix.span);
+            return Err(());
+        }
+        if !declaration.feedback.value.is_finite()
+            || !(0.0..=0.95).contains(&declaration.feedback.value)
+        {
+            self.error(
+                "effect feedback must be from 0.0 to 0.95",
+                declaration.feedback.span,
+            );
+            return Err(());
+        }
+        let time = self
+            .item_duration(&declaration.time, meter, declaration.span, "effect delay")
+            .ok_or(())?;
+        Ok(Some(DelayEffect {
+            mix: declaration.mix.value,
+            time,
+            feedback: declaration.feedback.value,
+        }))
     }
 
     fn track_gain(&mut self, declaration: &TrackDeclaration, play: &PlayStatement) -> Option<f32> {

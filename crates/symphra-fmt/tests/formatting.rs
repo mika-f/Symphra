@@ -186,6 +186,33 @@ song "S" {
 }
 
 #[test]
+fn formats_track_effect_delay() {
+    let input = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect delay { mix 0.40 time 1/4 feedback 0.25 }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track drums role beat {
+    instrument tr909
+    play kit
+    effect delay {
+      mix 0.4
+      time 1/4
+      feedback 0.25
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_track_with_layer_uses() {
     let input = r#"song "S" {
   track bass role low {

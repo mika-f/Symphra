@@ -4,20 +4,20 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
+    ArrangementEntry, ChanceTransformExpression, Declaration, DegreeChoiceAlternative,
     DurationExpression, EffectDeclaration, Identifier, InstrumentBody, PanExpression, PatternBody,
     PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
     QuotedString, RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration,
+    SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
+    StepItem, TrackBody, TrackDeclaration,
 };
 
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
     Duration, InstrumentKind, Key, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence,
     PatternStep, PitchClass, Program, Project, Rest, Rhythm, RhythmItem, SampleChoice, SampleRange,
-    SampleSelector, SampleTrigger, Song, Speed, TrackDefinition, WeightedNote,
-    WeightedSampleSequence,
+    SampleSelector, SampleTrigger, Section, SectionOccurrence, Song, Speed, TrackDefinition,
+    WeightedNote, WeightedSampleSequence,
 };
 
 pub mod hir;
@@ -190,6 +190,8 @@ impl Compiler {
         let mut rhythm_names = HashSet::new();
         let mut track_defs = Vec::new();
         let mut track_names = HashSet::new();
+        let mut section_defs = Vec::new();
+        let mut section_names = HashSet::new();
         let mut instruments = Vec::new();
         let mut instrument_names = HashSet::new();
         let mut arrangement = None;
@@ -217,8 +219,13 @@ impl Compiler {
                         track_defs.push(track.as_ref());
                     }
                 }
-                SongStatement::Arrangement { occurrences, span } => {
-                    if arrangement.replace((occurrences, *span)).is_some() {
+                SongStatement::Section(section) => {
+                    if self.declare_name(&mut section_names, &section.name, "section") {
+                        section_defs.push(section);
+                    }
+                }
+                SongStatement::Arrangement { entries, span } => {
+                    if arrangement.replace((entries, *span)).is_some() {
                         self.error("arrangement is declared more than once", *span);
                     }
                 }
@@ -230,15 +237,7 @@ impl Compiler {
             }
         }
 
-        if !settings.tempo_seen {
-            self.error("tempo is required", declaration.span);
-        }
-        if !settings.meter_seen {
-            self.error("meter is required", declaration.span);
-        }
-        if !settings.key_seen {
-            self.error("key is required", declaration.span);
-        }
+        self.require_song_settings(&settings, declaration.span);
         let rhythms = rhythm_defs
             .iter()
             .filter_map(|rhythm| self.rhythm(rhythm))
@@ -254,14 +253,17 @@ impl Compiler {
             &instruments,
             settings.meter.as_ref(),
         );
-        if !tracks.is_empty() && arrangement.is_some() {
-            self.error(
-                "track declarations cannot be combined with a pattern arrangement",
-                declaration.span,
-            );
-        }
-        let arrangement = arrangement.and_then(|(references, span)| {
-            self.arrangement(references, span, &patterns, &instruments)
+        let sections = section_defs
+            .iter()
+            .filter_map(|section| self.section(section, &tracks, settings.meter.as_ref()))
+            .collect::<Vec<_>>();
+        self.check_arrangement_track_combination(
+            arrangement.as_ref(),
+            !tracks.is_empty(),
+            declaration.span,
+        );
+        let arrangement = arrangement.and_then(|(entries, span)| {
+            self.arrangement(entries, span, &patterns, &instruments, &sections)
         });
         match (settings.tempo_bpm, settings.meter, settings.key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
@@ -273,10 +275,108 @@ impl Compiler {
                 rhythms,
                 patterns,
                 tracks,
+                sections,
                 arrangement,
             }),
             _ => None,
         }
+    }
+
+    fn require_song_settings(&mut self, settings: &SongSettings, span: SourceSpan) {
+        if !settings.tempo_seen {
+            self.error("tempo is required", span);
+        }
+        if !settings.meter_seen {
+            self.error("meter is required", span);
+        }
+        if !settings.key_seen {
+            self.error("key is required", span);
+        }
+    }
+
+    /// Declared tracks and a *pattern* arrangement (the original,
+    /// track-less form) are mutually exclusive; declared tracks and a
+    /// *section* arrangement (`play <name>`) require each other, since a
+    /// section's body always references declared tracks by name.
+    fn check_arrangement_track_combination(
+        &mut self,
+        arrangement: Option<&(&Vec<ArrangementEntry>, SourceSpan)>,
+        tracks_declared: bool,
+        span: SourceSpan,
+    ) {
+        let Some((entries, _)) = arrangement else {
+            return;
+        };
+        let is_play = entries
+            .iter()
+            .any(|entry| matches!(entry, ArrangementEntry::Play { .. }));
+        if is_play && !tracks_declared {
+            self.error("an arrangement of sections requires declared tracks", span);
+        } else if !is_play && tracks_declared {
+            self.error(
+                "track declarations cannot be combined with a pattern arrangement",
+                span,
+            );
+        }
+    }
+
+    /// Lowers `section <name> bars <N> { parallel [exact] { play track ... } }`.
+    /// `bars` resolves to a whole-note `Duration` using the same formula as
+    /// `N bar` note/chord/rest durations (`count * meter.numerator /
+    /// meter.denominator`). Each `play track X` name is resolved against the
+    /// already-lowered `tracks` list; a track declared as `layer { use ... }`
+    /// contributes every one of its layers (all `TrackDefinition`s sharing
+    /// that name), so referencing a layered track places every layer.
+    fn section(
+        &mut self,
+        declaration: &SectionDeclaration,
+        tracks: &[TrackDefinition],
+        meter: Option<&Meter>,
+    ) -> Option<Section> {
+        let bars = meter.and_then(|meter| {
+            let Some(numerator) = declaration.bars.checked_mul(meter.numerator) else {
+                self.error("section bars is out of range", declaration.span);
+                return None;
+            };
+            self.duration(
+                numerator,
+                meter.denominator,
+                declaration.span,
+                "section bars",
+            )
+        });
+        let mut any_missing = false;
+        let mut track_ids = Vec::new();
+        if declaration.tracks.is_empty() {
+            self.error(
+                "section must reference at least one track",
+                declaration.span,
+            );
+            any_missing = true;
+        }
+        for name in &declaration.tracks {
+            let matches = tracks
+                .iter()
+                .filter(|track| track.name == name.text)
+                .map(|track| track.id)
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                self.error("section references an unknown track", name.span);
+                any_missing = true;
+            } else {
+                track_ids.extend(matches);
+            }
+        }
+        if any_missing {
+            return None;
+        }
+        Some(Section {
+            id: self.id(),
+            name: declaration.name.text.clone(),
+            bars: bars?,
+            exact: declaration.exact,
+            tracks: track_ids,
+        })
     }
 
     fn build_tracks(
@@ -1029,18 +1129,54 @@ impl Compiler {
 
     fn arrangement(
         &mut self,
-        references: &[ArrangementOccurrence],
+        entries: &[ArrangementEntry],
         span: SourceSpan,
         patterns: &[Pattern],
         instruments: &[(&str, Option<InstrumentKind>)],
+        sections: &[Section],
     ) -> Option<Arrangement> {
-        if references.is_empty() {
-            self.error("arrangement must contain at least one pattern", span);
+        if entries.is_empty() {
+            self.error("arrangement must contain at least one entry", span);
             return None;
         }
-        let occurrences = references
+        let has_play = entries
             .iter()
-            .filter_map(|reference| {
+            .any(|entry| matches!(entry, ArrangementEntry::Play { .. }));
+        let has_pattern = entries
+            .iter()
+            .any(|entry| matches!(entry, ArrangementEntry::Pattern(_)));
+        if has_play && has_pattern {
+            self.error(
+                "arrangement cannot mix `play <section>` entries with pattern entries",
+                span,
+            );
+            return None;
+        }
+        if has_play {
+            let occurrences = entries
+                .iter()
+                .filter_map(|entry| {
+                    let ArrangementEntry::Play { name, .. } = entry else {
+                        unreachable!("checked above: every entry is Play")
+                    };
+                    let section = sections.iter().find(|section| section.name == name.text);
+                    if section.is_none() {
+                        self.error("arrangement references an unknown section", name.span);
+                    }
+                    section.map(|section| SectionOccurrence {
+                        id: self.id(),
+                        section: section.id,
+                    })
+                })
+                .collect();
+            return Some(Arrangement::Sections(occurrences));
+        }
+        let occurrences = entries
+            .iter()
+            .filter_map(|entry| {
+                let ArrangementEntry::Pattern(reference) = entry else {
+                    unreachable!("checked above: every entry is Pattern")
+                };
                 let pattern = patterns
                     .iter()
                     .find(|pattern| pattern.name == reference.pattern.text);
@@ -1074,7 +1210,7 @@ impl Compiler {
                     })
             })
             .collect();
-        Some(Arrangement { occurrences })
+        Some(Arrangement::Patterns(occurrences))
     }
 
     fn instrument_kind(&mut self, body: &InstrumentBody) -> Option<InstrumentKind> {

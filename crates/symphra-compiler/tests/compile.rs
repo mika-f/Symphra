@@ -6,6 +6,13 @@ use symphra_compiler::{ScheduleError, compile, schedule};
 use symphra_score::{MusicalTime, SampleSelector};
 use symphra_syntax::{SourceId, parse};
 
+fn pattern_occurrences(arrangement: &Arrangement) -> &[PatternOccurrence] {
+    let Arrangement::Patterns(occurrences) = arrangement else {
+        panic!("arrangement should be pattern occurrences");
+    };
+    occurrences
+}
+
 const EXAMPLE: &str = r#"
 project {
   seed 20260809
@@ -87,6 +94,7 @@ fn compile_should_lower_valid_source_to_normalized_hir() {
                     ],
                 }],
                 tracks: Vec::new(),
+                sections: Vec::new(),
                 arrangement: None,
             }],
         }
@@ -1087,28 +1095,24 @@ song "Invalid arrangement" {
 fn schedule_should_reject_invalid_arrangements_in_manual_hir() {
     let parsed = parse(SourceId(0), EXAMPLE);
     let mut program = compile(&parsed.file).expect("example should compile");
-    program.songs[0].arrangement = Some(Arrangement {
-        occurrences: vec![PatternOccurrence {
-            id: NodeId(99),
-            pattern: NodeId(u32::MAX),
-            instrument: InstrumentKind::Sine,
-        }],
-    });
+    program.songs[0].arrangement = Some(Arrangement::Patterns(vec![PatternOccurrence {
+        id: NodeId(99),
+        pattern: NodeId(u32::MAX),
+        instrument: InstrumentKind::Sine,
+    }]));
     let unknown = schedule(&program);
-    program.songs[0].arrangement = Some(Arrangement {
-        occurrences: vec![
-            PatternOccurrence {
-                id: NodeId(99),
-                pattern: NodeId(1),
-                instrument: InstrumentKind::Sine,
-            },
-            PatternOccurrence {
-                id: NodeId(99),
-                pattern: NodeId(1),
-                instrument: InstrumentKind::Sine,
-            },
-        ],
-    });
+    program.songs[0].arrangement = Some(Arrangement::Patterns(vec![
+        PatternOccurrence {
+            id: NodeId(99),
+            pattern: NodeId(1),
+            instrument: InstrumentKind::Sine,
+        },
+        PatternOccurrence {
+            id: NodeId(99),
+            pattern: NodeId(1),
+            instrument: InstrumentKind::Sine,
+        },
+    ]));
     let duplicate = schedule(&program);
 
     assert_eq!(
@@ -1141,8 +1145,10 @@ song "Instruments" {
     assert_eq!(
         (
             program.songs[0].arrangement.as_ref().map(|arrangement| {
-                arrangement
-                    .occurrences
+                let Arrangement::Patterns(occurrences) = arrangement else {
+                    panic!("arrangement should be pattern occurrences");
+                };
+                occurrences
                     .iter()
                     .map(|occurrence| occurrence.instrument.clone())
                     .collect::<Vec<_>>()
@@ -1380,7 +1386,7 @@ song "Sample" {
         program.songs[0]
             .arrangement
             .as_ref()
-            .and_then(|arrangement| arrangement.occurrences.first())
+            .and_then(|arrangement| pattern_occurrences(arrangement).first())
             .map(|occurrence| &occurrence.instrument),
         Some(&InstrumentKind::Sampled {
             source: "samples/piano-c4.wav".to_owned(),
@@ -1410,7 +1416,7 @@ song "Sampler" {
         program.songs[0]
             .arrangement
             .as_ref()
-            .and_then(|arrangement| arrangement.occurrences.first())
+            .and_then(|arrangement| pattern_occurrences(arrangement).first())
             .map(|occurrence| &occurrence.instrument),
         Some(&InstrumentKind::Sampler {
             pack: "numbers".to_owned(),
@@ -2513,5 +2519,257 @@ song "Repeated" {
             true,
             true,
         )
+    );
+}
+
+const SECTIONS_EXAMPLE: &str = r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 1bar }
+  pattern bassline = sequence { note C2 for 1bar }
+  track chords role harmony { instrument lead play chords }
+  track bass role low { instrument lead play bassline }
+  section phrase bars 1 {
+    parallel exact {
+      play track chords
+      play track bass
+    }
+  }
+  arrangement { play phrase play phrase }
+}
+"#;
+
+#[test]
+fn schedule_should_place_sectioned_tracks_at_cumulative_bar_offsets() {
+    let parsed = parse(SourceId(0), SECTIONS_EXAMPLE);
+    let program = compile(&parsed.file).expect("sections example should compile");
+
+    let score = schedule(&program).expect("sections example should schedule");
+    let tracks = &score.songs[0].tracks;
+    let one_bar = MusicalTime::new(1, 1).expect("one bar in 4/4 should be a whole note");
+
+    assert_eq!(
+        tracks
+            .iter()
+            .map(|track| track.notes[0].start)
+            .collect::<Vec<_>>(),
+        [MusicalTime::ZERO, MusicalTime::ZERO, one_bar, one_bar]
+    );
+}
+
+#[test]
+fn schedule_should_namespace_entity_ids_per_reused_section_occurrence() {
+    let parsed = parse(SourceId(0), SECTIONS_EXAMPLE);
+    let program = compile(&parsed.file).expect("sections example should compile");
+
+    let score = schedule(&program).expect("sections example should schedule");
+    let tracks = &score.songs[0].tracks;
+
+    // tracks[0]/[2] are both the "chords" track, once per `play phrase`
+    // occurrence; a section referenced twice must get independent entity IDs
+    // (and track IDs) per occurrence, not a verbatim duplicate.
+    assert_ne!(tracks[0].id, tracks[2].id);
+    assert_ne!(tracks[0].notes[0].id, tracks[2].notes[0].id);
+    assert_ne!(tracks[1].id, tracks[3].id);
+}
+
+#[test]
+fn schedule_should_reject_exact_parallel_length_mismatch() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 2bar }
+  track chords role harmony { instrument lead play chords }
+  section phrase bars 1 {
+    parallel exact {
+      play track chords
+    }
+  }
+  arrangement { play phrase }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("sections example should compile");
+
+    let result = schedule(&program);
+
+    assert!(matches!(
+        result,
+        Err(ScheduleError::SectionTrackLengthMismatch { .. })
+    ));
+}
+
+#[test]
+fn schedule_should_allow_non_exact_parallel_length_mismatch() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 2bar }
+  pattern bassline = sequence { note C2 for 1bar }
+  track chords role harmony { instrument lead play chords }
+  track bass role low { instrument lead play bassline }
+  section short bars 1 {
+    parallel {
+      play track chords
+    }
+  }
+  section next bars 1 {
+    parallel exact {
+      play track bass
+    }
+  }
+  arrangement { play short play next }
+}
+"#,
+    );
+    let program = compile(&parsed.file).expect("sections example should compile");
+
+    let score = schedule(&program).expect("non-exact overflow should still schedule");
+
+    // The overlong "chords" track is allowed to spill past its own
+    // section's 1-bar window; the next section's offset is still only the
+    // cumulative `bars` value (1 bar), not the actual scheduled length.
+    assert_eq!(
+        score.songs[0].tracks[1].notes[0].start,
+        MusicalTime::new(1, 1).expect("one bar in 4/4 should be a whole note")
+    );
+}
+
+#[test]
+fn compile_should_reject_arrangement_play_referencing_unknown_section() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 1bar }
+  track chords role harmony { instrument lead play chords }
+  section phrase bars 1 {
+    parallel exact { play track chords }
+  }
+  arrangement { play missing }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("unknown section should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "arrangement references an unknown section")
+    );
+}
+
+#[test]
+fn compile_should_reject_section_referencing_unknown_track() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 1bar }
+  track chords role harmony { instrument lead play chords }
+  section phrase bars 1 {
+    parallel exact { play track missing }
+  }
+  arrangement { play phrase }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("unknown track should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "section references an unknown track")
+    );
+}
+
+#[test]
+fn compile_should_reject_zero_bar_section() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 1bar }
+  track chords role harmony { instrument lead play chords }
+  section phrase bars 0 {
+    parallel exact { play track chords }
+  }
+  arrangement { play phrase }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("zero-bar section should fail");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message
+                == "section bars duration must be greater than zero")
+    );
+}
+
+#[test]
+fn compile_should_reject_declared_tracks_combined_with_legacy_pattern_arrangement() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 1bar }
+  track chords role harmony { instrument lead play chords }
+  arrangement { chords }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("mixed arrangement forms should fail");
+
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.message == "track declarations cannot be combined with a pattern arrangement"
+    }));
+}
+
+#[test]
+fn compile_should_reject_arrangement_of_sections_without_declared_tracks() {
+    let parsed = parse(
+        SourceId(0),
+        r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  arrangement { play phrase }
+}
+"#,
+    );
+
+    let diagnostics = compile(&parsed.file).expect_err("sectionless arrangement should fail");
+
+    assert!(
+        diagnostics.iter().any(|diagnostic| diagnostic.message
+            == "an arrangement of sections requires declared tracks")
     );
 }

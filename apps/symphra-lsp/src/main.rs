@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
-use symphra_syntax::ast::{Declaration, PatternBody, SequenceItem, SongStatement};
+use symphra_syntax::ast::{
+    ArrangementEntry, Declaration, PatternBody, SequenceItem, SongStatement,
+};
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
 };
@@ -276,6 +278,14 @@ fn document_symbols(source: &SourceText) -> Vec<DocumentSymbol> {
                             track.name.span,
                             None,
                         ),
+                        SongStatement::Section(section) => symbol(
+                            source,
+                            section.name.text.clone(),
+                            SymbolKind::OBJECT,
+                            section.span,
+                            section.name.span,
+                            None,
+                        ),
                         _ => None,
                     })
                     .collect();
@@ -358,6 +368,8 @@ enum CompletionBlock {
     Layer,
     Use,
     Effect,
+    Section,
+    Parallel,
     Arrangement,
     Sequence,
     Steps,
@@ -415,54 +427,20 @@ fn completion_labels(
         }
     } else if duration_keyword_follows(line_tokens) {
         &["for"]
-    } else if matches!(
-        line_tokens,
-        [
-            Token {
-                kind: TokenKind::Degree,
-                ..
-            },
-            Token {
-                kind: TokenKind::Integer,
-                ..
-            }
-        ]
-    ) {
-        &["octave"]
-    } else if matches!(
-        line_tokens,
-        [
-            Token {
-                kind: TokenKind::Rhythm,
-                ..
-            },
-            Token {
-                kind: TokenKind::Identifier,
-                ..
-            }
-        ]
-    ) {
-        &["resolution"]
-    } else if matches!(
-        line_tokens,
-        [
-            Token {
-                kind: TokenKind::Track,
-                ..
-            },
-            Token {
-                kind: TokenKind::Identifier,
-                ..
-            }
-        ]
-    ) {
-        &["role"]
+    } else if let Some(labels) = two_token_follow_up_labels(line_tokens) {
+        labels
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Pan) {
         &["alternate"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Effect) {
         &["delay"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Parallel) {
+        &["exact"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Play) {
-        &["drum"]
+        if matches!(block, Some(CompletionBlock::Parallel)) {
+            &["track"]
+        } else {
+            &["drum"]
+        }
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::PipeGreater) {
         &[
             "trigger_with",
@@ -481,6 +459,7 @@ fn completion_labels(
         &["velocity"]
     } else if matches!(block, Some(CompletionBlock::Arrangement))
         && matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Identifier)
+        && !matches!(line_tokens.first(), Some(token) if token.kind == TokenKind::Play)
         && !matches!(line_tokens.get(line_tokens.len().saturating_sub(2)), Some(token) if token.kind == TokenKind::With)
     {
         &["with"]
@@ -488,6 +467,54 @@ fn completion_labels(
         completion_block_labels(block)
     } else {
         &[]
+    }
+}
+
+/// Keyword suggested right after a two-token `<keyword> <name>` header, such
+/// as `track lead` (suggest `role`) or `section phrase` (suggest `bars`).
+fn two_token_follow_up_labels(line_tokens: &[Token]) -> Option<&'static [&'static str]> {
+    match line_tokens {
+        [
+            Token {
+                kind: TokenKind::Degree,
+                ..
+            },
+            Token {
+                kind: TokenKind::Integer,
+                ..
+            },
+        ] => Some(&["octave"]),
+        [
+            Token {
+                kind: TokenKind::Rhythm,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            },
+        ] => Some(&["resolution"]),
+        [
+            Token {
+                kind: TokenKind::Track,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            },
+        ] => Some(&["role"]),
+        [
+            Token {
+                kind: TokenKind::Section,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            },
+        ] => Some(&["bars"]),
+        _ => None,
     }
 }
 
@@ -502,6 +529,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
             "instrument",
             "rhythm",
             "track",
+            "section",
             "pattern",
             "arrangement",
         ],
@@ -518,6 +546,8 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Layer) => &["use"],
         Some(CompletionBlock::Use) => &["play", "at"],
         Some(CompletionBlock::Effect) => &["mix", "time", "feedback"],
+        Some(CompletionBlock::Section) => &["parallel"],
+        Some(CompletionBlock::Parallel) => &["play"],
         Some(CompletionBlock::Arrangement | CompletionBlock::Other) => &[],
     }
 }
@@ -603,6 +633,8 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
             TokenKind::Layer => pending = Some(CompletionBlock::Layer),
             TokenKind::Use => pending = Some(CompletionBlock::Use),
             TokenKind::Delay => pending = Some(CompletionBlock::Effect),
+            TokenKind::Section => pending = Some(CompletionBlock::Section),
+            TokenKind::Parallel => pending = Some(CompletionBlock::Parallel),
             TokenKind::Arrangement => pending = Some(CompletionBlock::Arrangement),
             TokenKind::Sequence => {
                 pending = Some(if matches!(blocks.last(), Some(CompletionBlock::Choice)) {
@@ -691,7 +723,11 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Source
                     | TokenKind::Root
                     | TokenKind::Pack
-                    | TokenKind::Bank,
+                    | TokenKind::Bank
+                    | TokenKind::Section
+                    | TokenKind::Bars
+                    | TokenKind::Parallel
+                    | TokenKind::Exact,
                 ..
             }]
         )
@@ -731,13 +767,43 @@ fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Loca
         let Declaration::Song(song) = declaration else {
             continue;
         };
-        let occurrence = song.statements.iter().find_map(|statement| {
-            let SongStatement::Arrangement { occurrences, .. } = statement else {
+        let play_entry = song.statements.iter().find_map(|statement| {
+            let SongStatement::Arrangement { entries, .. } = statement else {
                 return None;
             };
-            occurrences
-                .iter()
-                .find(|occurrence| occurrence.span.start <= offset && offset < occurrence.span.end)
+            entries.iter().find_map(|entry| match entry {
+                ArrangementEntry::Play { name, .. }
+                    if name.span.start <= offset && offset < name.span.end =>
+                {
+                    Some(name)
+                }
+                _ => None,
+            })
+        });
+        if let Some(name) = play_entry {
+            let section = song.statements.iter().find_map(|statement| {
+                let SongStatement::Section(section) = statement else {
+                    return None;
+                };
+                (section.name.text == name.text).then_some(section)
+            })?;
+            return Some(Location::new(
+                uri.clone(),
+                lsp_range(source, section.name.span)?,
+            ));
+        }
+        let occurrence = song.statements.iter().find_map(|statement| {
+            let SongStatement::Arrangement { entries, .. } = statement else {
+                return None;
+            };
+            entries.iter().find_map(|entry| match entry {
+                ArrangementEntry::Pattern(occurrence)
+                    if occurrence.span.start <= offset && offset < occurrence.span.end =>
+                {
+                    Some(occurrence)
+                }
+                _ => None,
+            })
         });
         let Some(occurrence) = occurrence else {
             continue;
@@ -855,7 +921,9 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Feedback => {
             "sets how much of a delay's echo feeds back into itself, `0.0` to `0.95`."
         }
-        TokenKind::Play => "selects the pattern played by a track.",
+        TokenKind::Play => {
+            "selects the pattern played by a track, or references a track/section elsewhere."
+        }
         TokenKind::TriggerWith => "applies a reusable rhythm to a played pattern.",
         TokenKind::Gate => "scales sounding duration without moving later steps.",
         TokenKind::Transpose => "moves pitched events by a number of semitones.",
@@ -872,9 +940,17 @@ const fn keyword_description(kind: TokenKind) -> Option<&'static str> {
         }
         TokenKind::At => "places a track's play statement at an absolute `bar:beat` position.",
         TokenKind::Pattern => "declares a named musical pattern.",
-        TokenKind::Arrangement => "orders named patterns for sequential playback.",
+        TokenKind::Arrangement => {
+            "orders named patterns, or `play`ed sections, for sequential playback."
+        }
         TokenKind::With => {
             "assigns an instrument to an arrangement occurrence, or a rhythm to a `play drum` shorthand."
+        }
+        TokenKind::Section => "declares a named, fixed-length (`bars`) group of declared tracks.",
+        TokenKind::Bars => "sets a section's length in bars, such as `bars 4`.",
+        TokenKind::Parallel => "starts a section's group of simultaneously placed tracks.",
+        TokenKind::Exact => {
+            "requires every track in a `parallel` block to last exactly the section's `bars`."
         }
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Steps => "plays fixed-resolution steps in source order.",
@@ -1014,6 +1090,7 @@ mod tests {
                 "instrument",
                 "rhythm",
                 "track",
+                "section",
                 "pattern",
                 "arrangement"
             ]

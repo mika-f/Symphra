@@ -57,10 +57,13 @@ fn schedule_song(song: &hir::Song, seed: u64) -> Result<Song, ScheduleError> {
 
 fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleError> {
     if !song.tracks.is_empty() {
+        if let Some(hir::Arrangement::Sections(occurrences)) = &song.arrangement {
+            return schedule_sectioned_tracks(song, occurrences, seed);
+        }
         return song
             .tracks
             .iter()
-            .map(|track| schedule_declared_track(song, track, seed))
+            .map(|track| schedule_declared_track(song, track, track.id, seed))
             .collect();
     }
     let Some(arrangement) = &song.arrangement else {
@@ -79,14 +82,17 @@ fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleEr
             })
             .collect();
     };
-    if arrangement.occurrences.is_empty() {
+    let hir::Arrangement::Patterns(occurrences) = arrangement else {
+        return Err(ScheduleError::EmptyArrangement);
+    };
+    if occurrences.is_empty() {
         return Err(ScheduleError::EmptyArrangement);
     }
 
     let mut cursor = MusicalTime::ZERO;
-    let mut tracks = Vec::with_capacity(arrangement.occurrences.len());
-    for (index, occurrence) in arrangement.occurrences.iter().enumerate() {
-        if arrangement.occurrences[..index]
+    let mut tracks = Vec::with_capacity(occurrences.len());
+    for (index, occurrence) in occurrences.iter().enumerate() {
+        if occurrences[..index]
             .iter()
             .any(|previous| previous.id == occurrence.id)
         {
@@ -110,9 +116,74 @@ fn schedule_tracks(song: &hir::Song, seed: u64) -> Result<Vec<Track>, ScheduleEr
     Ok(tracks)
 }
 
+/// Schedules an `arrangement { play <section> }` of declared-track sections:
+/// each occurrence's tracks are scheduled independently (their own full
+/// pipeline, as if placed at absolute zero), checked against `exact` if set,
+/// then shifted by the cumulative offset of every `bars N` that came before
+/// it in the arrangement — mirroring how `at N:M` is applied as a final,
+/// additive shift (`apply_at`) after every other per-track stage.
+fn schedule_sectioned_tracks(
+    song: &hir::Song,
+    occurrences: &[hir::SectionOccurrence],
+    seed: u64,
+) -> Result<Vec<Track>, ScheduleError> {
+    if occurrences.is_empty() {
+        return Err(ScheduleError::EmptyArrangement);
+    }
+    let mut cursor = MusicalTime::ZERO;
+    let mut tracks = Vec::new();
+    for (index, occurrence) in occurrences.iter().enumerate() {
+        if occurrences[..index]
+            .iter()
+            .any(|previous| previous.id == occurrence.id)
+        {
+            return Err(ScheduleError::DuplicateOccurrence(occurrence.id));
+        }
+        let section = song
+            .sections
+            .iter()
+            .find(|section| section.id == occurrence.section)
+            .ok_or(ScheduleError::UnknownSection(occurrence.section))?;
+        let section_len = musical_time(section.bars)?;
+        for track_id in &section.tracks {
+            let track = song
+                .tracks
+                .iter()
+                .find(|track| track.id == *track_id)
+                .ok_or(ScheduleError::UnknownTrack(*track_id))?;
+            let occurrence_id = section_track_occurrence_id(occurrence.id, track.id);
+            let mut scheduled = schedule_declared_track(song, track, occurrence_id, seed)?;
+            if section.exact && scheduled.end != section_len {
+                return Err(ScheduleError::SectionTrackLengthMismatch {
+                    section: section.id,
+                    track: track.id,
+                    expected: section_len,
+                    actual: scheduled.end,
+                });
+            }
+            apply_at(&mut scheduled, cursor)?;
+            tracks.push(scheduled);
+        }
+        cursor = cursor.checked_add(section_len)?;
+    }
+    Ok(tracks)
+}
+
+/// Combines a `SectionOccurrence` id with a `TrackDefinition` id into a
+/// single `NodeId` used in place of `track.id` when scheduling a
+/// section-placed track, so a section referenced more than once in an
+/// arrangement gets independent `chance`/`choose_sample`/`retrigger`
+/// selections per occurrence (mirroring how the pattern-arrangement path
+/// already namespaces by its own fresh `PatternOccurrence.id` rather than the
+/// pattern's id).
+fn section_track_occurrence_id(occurrence: hir::NodeId, track: hir::NodeId) -> hir::NodeId {
+    hir::NodeId(occurrence.0.wrapping_mul(1_000_003).wrapping_add(track.0))
+}
+
 fn schedule_declared_track(
     song: &hir::Song,
     track: &hir::TrackDefinition,
+    occurrence_id: hir::NodeId,
     seed: u64,
 ) -> Result<Track, ScheduleError> {
     let pattern = song
@@ -135,7 +206,7 @@ fn schedule_declared_track(
     let (mut scheduled, _) = schedule_track(
         pattern,
         MusicalTime::ZERO,
-        Some(track.id),
+        Some(occurrence_id),
         &track.instrument,
         seed,
     )?;
@@ -806,12 +877,25 @@ fn note_event(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ScheduleError {
-    #[error("arrangement must contain at least one pattern")]
+    #[error("arrangement must contain at least one entry")]
     EmptyArrangement,
     #[error("arrangement occurrence ID {0:?} is used more than once")]
     DuplicateOccurrence(hir::NodeId),
     #[error("arrangement references unknown pattern ID {0:?}")]
     UnknownPattern(hir::NodeId),
+    #[error("arrangement references unknown section ID {0:?}")]
+    UnknownSection(hir::NodeId),
+    #[error("section references unknown track ID {0:?}")]
+    UnknownTrack(hir::NodeId),
+    #[error(
+        "track ID {track:?} in section ID {section:?} must last exactly {expected:?} but scheduled to {actual:?}"
+    )]
+    SectionTrackLengthMismatch {
+        section: hir::NodeId,
+        track: hir::NodeId,
+        expected: MusicalTime,
+        actual: MusicalTime,
+    },
     #[error("track references unknown rhythm ID {0:?}")]
     UnknownRhythm(hir::NodeId),
     #[error("trigger_with rhythm must contain at least one item")]

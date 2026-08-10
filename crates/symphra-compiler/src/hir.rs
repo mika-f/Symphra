@@ -33,7 +33,23 @@ pub struct Song {
     pub rhythms: Vec<Rhythm>,
     pub patterns: Vec<Pattern>,
     pub tracks: Vec<TrackDefinition>,
+    pub sections: Vec<Section>,
     pub arrangement: Option<Arrangement>,
+}
+
+/// `section <name> bars <N> { parallel [exact] { play track <name> ... } }`.
+/// A named, fixed-length (`bars`, a whole-note-fraction `Duration`) group of
+/// declared tracks, referenced (and possibly reused) from
+/// `arrangement { play <name> }`. `exact` requires every referenced track's
+/// scheduled length to equal `bars` precisely, checked at schedule time since
+/// a track's true post-pipeline length is not known until scheduling runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Section {
+    pub id: NodeId,
+    pub name: String,
+    pub bars: Duration,
+    pub exact: bool,
+    pub tracks: Vec<NodeId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -112,9 +128,14 @@ pub enum RhythmItem {
     Rest,
 }
 
+/// A song's arrangement is either a sequence of bare pattern occurrences
+/// (track-less, pattern-only songs — the original form), or a sequence of
+/// section references (songs with declared tracks + declared sections). The
+/// two never mix within one song.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Arrangement {
-    pub occurrences: Vec<PatternOccurrence>,
+pub enum Arrangement {
+    Patterns(Vec<PatternOccurrence>),
+    Sections(Vec<SectionOccurrence>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -122,6 +143,12 @@ pub struct PatternOccurrence {
     pub id: NodeId,
     pub pattern: NodeId,
     pub instrument: InstrumentKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionOccurrence {
+    pub id: NodeId,
+    pub section: NodeId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

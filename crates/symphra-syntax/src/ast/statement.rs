@@ -243,6 +243,39 @@ pub struct ArrangementOccurrence {
     pub span: SourceSpan,
 }
 
+/// An `arrangement` entry is either a bare pattern name (with an optional
+/// `with <instrument>`, for track-less pattern-only songs), or `play <name>`
+/// referencing a declared `section` (for songs with declared tracks).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArrangementEntry {
+    Pattern(ArrangementOccurrence),
+    Play { name: Identifier, span: SourceSpan },
+}
+
+impl ArrangementEntry {
+    #[must_use]
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Pattern(occurrence) => occurrence.span,
+            Self::Play { span, .. } => *span,
+        }
+    }
+}
+
+/// `section <name> bars <N> { parallel [exact] { play track <name> ... } }`.
+/// Declares a named, fixed-length group of declared tracks that can be
+/// referenced (and reused) from an `arrangement { play <name> }` entry. The
+/// body is always exactly one `parallel` block; `exact` requires every
+/// referenced track's scheduled length to equal `bars` precisely.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionDeclaration {
+    pub name: Identifier,
+    pub bars: u32,
+    pub exact: bool,
+    pub tracks: Vec<Identifier>,
+    pub span: SourceSpan,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProjectStatement {
     Seed {
@@ -278,8 +311,9 @@ pub enum SongStatement {
     Instrument(InstrumentDeclaration),
     Rhythm(RhythmDeclaration),
     Track(Box<TrackDeclaration>),
+    Section(SectionDeclaration),
     Arrangement {
-        occurrences: Vec<ArrangementOccurrence>,
+        entries: Vec<ArrangementEntry>,
         span: SourceSpan,
     },
     Pattern(PatternDeclaration),

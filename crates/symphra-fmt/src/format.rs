@@ -2,13 +2,14 @@ use std::fmt::Write as _;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementOccurrence, ChanceTransformExpression, ChordExpression, Declaration,
-    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, Identifier,
-    InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression, PanExpression, PatternBody,
-    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SequenceItem, SongDeclaration, SongStatement, SourceFile,
-    SpeedExpression, StepItem, TrackBody, TrackDeclaration, VolumeExpression,
+    ArrangementEntry, ArrangementOccurrence, ChanceTransformExpression, ChordExpression,
+    Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor,
+    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression, PanExpression,
+    PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::Printer;
@@ -262,7 +263,8 @@ fn song_statement_rank(statement: &SongStatement) -> u8 {
         SongStatement::Rhythm(_) => 4,
         SongStatement::Pattern(_) => 5,
         SongStatement::Track(_) => 6,
-        SongStatement::Arrangement { .. } => 7,
+        SongStatement::Section(_) => 7,
+        SongStatement::Arrangement { .. } => 8,
     }
 }
 
@@ -275,6 +277,7 @@ fn song_statement_span(statement: &SongStatement) -> SourceSpan {
         SongStatement::Instrument(decl) => decl.span,
         SongStatement::Rhythm(decl) => decl.span,
         SongStatement::Track(decl) => decl.span,
+        SongStatement::Section(decl) => decl.span,
         SongStatement::Pattern(decl) => decl.span,
     }
 }
@@ -297,20 +300,30 @@ fn print_song_statement(ctx: &mut Ctx<'_>, statement: &SongStatement) {
         SongStatement::Instrument(decl) => print_instrument(ctx, decl),
         SongStatement::Rhythm(decl) => print_rhythm(ctx, decl),
         SongStatement::Track(decl) => print_track(ctx, decl),
-        SongStatement::Arrangement { occurrences, span } => {
-            let items: Vec<&ArrangementOccurrence> = occurrences.iter().collect();
+        SongStatement::Section(decl) => print_section(ctx, decl),
+        SongStatement::Arrangement { entries, span } => {
+            let items: Vec<&ArrangementEntry> = entries.iter().collect();
             print_block(
                 ctx,
                 "arrangement",
                 *span,
                 &items,
-                |occurrence: &ArrangementOccurrence| occurrence.span,
+                |entry: &ArrangementEntry| entry.span(),
                 |_| 0,
                 Reorder::No,
-                print_arrangement_occurrence,
+                print_arrangement_entry,
             );
         }
         SongStatement::Pattern(decl) => print_pattern(ctx, decl),
+    }
+}
+
+fn print_arrangement_entry(ctx: &mut Ctx<'_>, entry: &ArrangementEntry) {
+    match entry {
+        ArrangementEntry::Pattern(occurrence) => print_arrangement_occurrence(ctx, occurrence),
+        ArrangementEntry::Play { name, .. } => {
+            ctx.printer.line(format!("play {}", ctx.text(name.span)));
+        }
     }
 }
 
@@ -321,6 +334,45 @@ fn print_arrangement_occurrence(ctx: &mut Ctx<'_>, occurrence: &ArrangementOccur
         line.push_str(ctx.text(instrument.span));
     }
     ctx.printer.line(line);
+}
+
+// --- section -------------------------------------------------------------
+
+fn print_section(ctx: &mut Ctx<'_>, decl: &SectionDeclaration) {
+    let header = format!("section {} bars {}", ctx.text(decl.name.span), decl.bars);
+    let items: Vec<&SectionDeclaration> = vec![decl];
+    print_block(
+        ctx,
+        &header,
+        decl.span,
+        &items,
+        |decl: &SectionDeclaration| decl.span,
+        |_| 0,
+        Reorder::No,
+        print_section_parallel,
+    );
+}
+
+fn print_section_parallel(ctx: &mut Ctx<'_>, decl: &SectionDeclaration) {
+    let header = if decl.exact {
+        "parallel exact"
+    } else {
+        "parallel"
+    };
+    let items: Vec<&Identifier> = decl.tracks.iter().collect();
+    print_block(
+        ctx,
+        header,
+        decl.span,
+        &items,
+        |track: &Identifier| track.span,
+        |_| 0,
+        Reorder::No,
+        |ctx, track| {
+            ctx.printer
+                .line(format!("play track {}", ctx.text(track.span)));
+        },
+    );
 }
 
 // --- instrument ----------------------------------------------------------

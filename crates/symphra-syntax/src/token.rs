@@ -66,6 +66,10 @@ pub enum TokenKind {
     Mix,
     Time,
     Feedback,
+    Section,
+    Bars,
+    Parallel,
+    Exact,
     LeftBrace,
     RightBrace,
     Equal,
@@ -145,6 +149,10 @@ impl TokenKind {
             "mix" => Self::Mix,
             "time" => Self::Time,
             "feedback" => Self::Feedback,
+            "section" => Self::Section,
+            "bars" => Self::Bars,
+            "parallel" => Self::Parallel,
+            "exact" => Self::Exact,
             _ => return None,
         })
     }

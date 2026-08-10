@@ -1,6 +1,6 @@
 use symphra_syntax::ast::{
-    Declaration, DurationExpression, InstrumentBody, PatternBody, ProjectStatement, RhythmItem,
-    SequenceItem, SongStatement, StepItem,
+    ArrangementEntry, Declaration, DurationExpression, InstrumentBody, PatternBody,
+    ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -123,10 +123,13 @@ fn parses_the_draft_example() {
         panic!("note duration should be a fraction");
     };
     assert_eq!((numerator, denominator), (1, 2));
-    let SongStatement::Arrangement { occurrences, .. } = &song.statements[4] else {
+    let SongStatement::Arrangement { entries, .. } = &song.statements[4] else {
         panic!("fifth song statement should be an arrangement");
     };
-    assert_eq!(occurrences[0].pattern.text, "melody");
+    let ArrangementEntry::Pattern(occurrence) = &entries[0] else {
+        panic!("first arrangement entry should be a bare pattern reference");
+    };
+    assert_eq!(occurrence.pattern.text, "melody");
 }
 
 #[test]
@@ -149,20 +152,26 @@ fn parses_instrument_assignments_in_arrangements() {
     let InstrumentBody::Builtin(kind) = &instrument.body else {
         panic!("instrument should be built in");
     };
-    let SongStatement::Arrangement { occurrences, .. } = &song.statements[2] else {
+    let SongStatement::Arrangement { entries, .. } = &song.statements[2] else {
         panic!("third statement should be an arrangement");
+    };
+    let ArrangementEntry::Pattern(first) = &entries[0] else {
+        panic!("first arrangement entry should be a bare pattern reference");
+    };
+    let ArrangementEntry::Pattern(second) = &entries[1] else {
+        panic!("second arrangement entry should be a bare pattern reference");
     };
 
     assert_eq!(
         (
             instrument.name.text.as_str(),
             kind.text.as_str(),
-            occurrences[0].pattern.text.as_str(),
-            occurrences[0]
+            first.pattern.text.as_str(),
+            first
                 .instrument
                 .as_ref()
                 .map(|instrument| instrument.text.as_str()),
-            occurrences[1].instrument.as_ref(),
+            second.instrument.as_ref(),
         ),
         ("lead", "triangle", "melody", Some("lead"), None)
     );
@@ -1009,4 +1018,102 @@ song "Recovery" {
         panic!("recovered sequence item should be a note");
     };
     assert_eq!((items.len(), note.pitch.text.as_str()), (1, "E4"));
+}
+
+#[test]
+fn parses_section_with_exact_parallel_block() {
+    let parsed = parse(
+        SourceId(0),
+        concat!(
+            "song \"Sections\" { ",
+            "section phrase bars 4 { ",
+            "parallel exact { play track chords play track bass } ",
+            "} }",
+        ),
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Section(section) = &song.statements[0] else {
+        panic!("statement should be a section");
+    };
+    assert_eq!(section.name.text, "phrase");
+    assert_eq!(section.bars, 4);
+    assert!(section.exact);
+    assert_eq!(
+        section
+            .tracks
+            .iter()
+            .map(|track| track.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["chords", "bass"]
+    );
+}
+
+#[test]
+fn parses_section_without_exact_parallel_block() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Sections\" { section intro bars 2 { parallel { play track pad } } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Section(section) = &song.statements[0] else {
+        panic!("statement should be a section");
+    };
+    assert!(!section.exact);
+    assert_eq!(section.tracks.len(), 1);
+}
+
+#[test]
+fn parses_arrangement_play_section_entries() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Sections\" { arrangement { play phrase play phrase } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Arrangement { entries, .. } = &song.statements[0] else {
+        panic!("statement should be an arrangement");
+    };
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        let ArrangementEntry::Play { name, .. } = entry else {
+            panic!("entry should be a `play <name>` section reference");
+        };
+        assert_eq!(name.text, "phrase");
+    }
+}
+
+#[test]
+fn parses_arrangement_legacy_pattern_entries_unchanged() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"Legacy\" { pattern melody = sequence {} arrangement { melody with lead } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Arrangement { entries, .. } = &song.statements[1] else {
+        panic!("statement should be an arrangement");
+    };
+    let ArrangementEntry::Pattern(occurrence) = &entries[0] else {
+        panic!("entry should be a bare pattern reference");
+    };
+    assert_eq!(
+        (
+            occurrence.pattern.text.as_str(),
+            occurrence
+                .instrument
+                .as_ref()
+                .map(|instrument| instrument.text.as_str())
+        ),
+        ("melody", Some("lead"))
+    );
 }

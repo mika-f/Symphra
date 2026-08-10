@@ -502,6 +502,63 @@ song "S" {
 }
 
 #[test]
+fn formats_section_with_exact_parallel_block() {
+    let input = r#"song "S" {
+  section phrase bars 4 { parallel exact { play track chords play track bass } }
+}
+"#;
+
+    let expected = r#"song "S" {
+  section phrase bars 4 {
+    parallel exact {
+      play track chords
+      play track bass
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_section_without_exact_parallel_block() {
+    let input = r#"song "S" {
+  section intro bars 2 { parallel { play track pad } }
+}
+"#;
+
+    let expected = r#"song "S" {
+  section intro bars 2 {
+    parallel {
+      play track pad
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_arrangement_play_section_entries() {
+    let input = r#"song "S" {
+  arrangement { play phrase play phrase }
+}
+"#;
+
+    let expected = r#"song "S" {
+  arrangement {
+    play phrase
+    play phrase
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn collapses_empty_bodies_to_a_single_line() {
     let input = "project {}\nsong \"S\" {\n  tempo 120bpm meter 4/4 key C major\n  pattern p = sequence {}\n}\n";
 
@@ -561,6 +618,32 @@ song "S" {
 }
 "#,
         "project {\n  # header comment\n  seed 1 // trailing\n  sample_rate 8khz\n  output mono\n}\n\nsong \"S\" {\n  tempo 120bpm\n  meter 4/4\n  key C major\n  pattern p = sequence {\n    note C4 for 1/4\n  }\n}\n",
+        r#"project { seed 1 sample_rate 8khz output mono }
+song "Sections" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern chords = sequence { note C4 for 1bar }
+  pattern bassline = sequence { note C2 for 1bar }
+  track chords role harmony {
+    instrument lead
+    play chords
+  }
+  track bass role low {
+    instrument lead
+    play bassline
+  }
+  section phrase bars 1 {
+    parallel exact {
+      play track chords
+      play track bass
+    }
+  }
+  arrangement {
+    play phrase
+    play phrase
+  }
+}
+"#,
     ];
 
     for source in sources {

@@ -1,15 +1,16 @@
 mod literal;
 
 use crate::ast::{
-    ArrangementOccurrence, AtExpression, ChanceExpression, ChanceTransformExpression,
-    ChooseSampleExpression, ChordExpression, Declaration, DegreeChoiceAlternative,
-    DurationExpression, EffectDeclaration, EffectFactor, GainExpression, GateExpression,
-    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression, NumberLiteral,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RestExpression,
-    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
+    ArrangementEntry, ArrangementOccurrence, AtExpression, ChanceExpression,
+    ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
+    DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, GainExpression,
+    GateExpression, Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, NoteExpression,
+    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
+    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
+    VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -28,6 +29,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Instrument,
     TokenKind::Rhythm,
     TokenKind::Track,
+    TokenKind::Section,
     TokenKind::Pattern,
     TokenKind::Arrangement,
     TokenKind::RightBrace,
@@ -56,6 +58,7 @@ const STEP_ITEM_START: &[TokenKind] = &[
     TokenKind::Eof,
 ];
 const LAYER_USE_START: &[TokenKind] = &[TokenKind::Use, TokenKind::RightBrace, TokenKind::Eof];
+const PARALLEL_PLAY_START: &[TokenKind] = &[TokenKind::Play, TokenKind::RightBrace, TokenKind::Eof];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedSource {
@@ -175,6 +178,7 @@ impl Parser {
                 TokenKind::Instrument => self.instrument().map(SongStatement::Instrument),
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
                 TokenKind::Track => self.track().map(Box::new).map(SongStatement::Track),
+                TokenKind::Section => self.section(),
                 TokenKind::Arrangement => self.arrangement(),
                 TokenKind::Pattern => self.pattern().map(SongStatement::Pattern),
                 _ => {
@@ -291,9 +295,16 @@ impl Parser {
     fn arrangement(&mut self) -> Option<SongStatement> {
         let start = self.bump().span;
         self.required(TokenKind::LeftBrace, "expected `{` after `arrangement`")?;
-        let mut occurrences = Vec::new();
+        let mut entries = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            if self.at(TokenKind::Identifier) {
+            if self.at(TokenKind::Play) {
+                let play_start = self.bump().span;
+                let name = self.identifier("expected a section name after `play`")?;
+                entries.push(ArrangementEntry::Play {
+                    span: play_start.cover(name.span),
+                    name,
+                });
+            } else if self.at(TokenKind::Identifier) {
                 let pattern = self.identifier("expected a pattern name in arrangement")?;
                 let instrument = if self.at(TokenKind::With) {
                     self.bump();
@@ -304,13 +315,13 @@ impl Parser {
                 let span = instrument.as_ref().map_or(pattern.span, |instrument| {
                     pattern.span.cover(instrument.span)
                 });
-                occurrences.push(ArrangementOccurrence {
+                entries.push(ArrangementEntry::Pattern(ArrangementOccurrence {
                     pattern,
                     instrument,
                     span,
-                });
+                }));
             } else {
-                self.error("expected a pattern name in arrangement");
+                self.error("expected a pattern name or `play <name>` in arrangement");
                 while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
                     self.bump();
                 }
@@ -320,9 +331,56 @@ impl Parser {
             .required(TokenKind::RightBrace, "expected `}` to close arrangement")?
             .span;
         Some(SongStatement::Arrangement {
-            occurrences,
+            entries,
             span: start.cover(end),
         })
+    }
+
+    /// `section <name> bars <N> { parallel [exact] { play track <name> ... } }`.
+    /// The body is always exactly one `parallel` block.
+    fn section(&mut self) -> Option<SongStatement> {
+        let start = self.bump().span;
+        let name = self.identifier("expected a section name")?;
+        self.required(TokenKind::Bars, "expected `bars` after section name")?;
+        let bars_token = self.required(TokenKind::Integer, "expected a bar count after `bars`")?;
+        let bars = self.parse_u32(&bars_token)?;
+        self.required(TokenKind::LeftBrace, "expected `{` after section header")?;
+        let (exact, tracks) = self.parallel_block()?;
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close section")?
+            .span;
+        Some(SongStatement::Section(SectionDeclaration {
+            name,
+            bars,
+            exact,
+            tracks,
+            span: start.cover(end),
+        }))
+    }
+
+    fn parallel_block(&mut self) -> Option<(bool, Vec<Identifier>)> {
+        self.required(TokenKind::Parallel, "expected `parallel` in section")?;
+        let exact = if self.at(TokenKind::Exact) {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        self.required(TokenKind::LeftBrace, "expected `{` after `parallel`")?;
+        let mut tracks = Vec::new();
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            if self.at(TokenKind::Play) {
+                self.bump();
+                self.required(TokenKind::Track, "expected `track` after `play`")?;
+                let track = self.identifier("expected a track name after `play track`")?;
+                tracks.push(track);
+            } else {
+                self.error("expected `play track <name>` in parallel block");
+                self.recover_to(PARALLEL_PLAY_START);
+            }
+        }
+        self.required(TokenKind::RightBrace, "expected `}` to close parallel")?;
+        Some((exact, tracks))
     }
 
     fn rhythm(&mut self) -> Option<RhythmDeclaration> {

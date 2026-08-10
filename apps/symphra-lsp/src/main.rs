@@ -464,12 +464,150 @@ fn completions(source: &SourceText, position: Position) -> Vec<CompletionItem> {
         .map_or(0, |index| index + 1);
     let line_tokens = &tokens[line_token_start..];
 
-    completion_labels(block, line_tokens)
+    let mut items: Vec<CompletionItem> = completion_labels(block, line_tokens)
         .iter()
         .map(|label| CompletionItem {
             label: (*label).to_owned(),
             kind: Some(CompletionItemKind::KEYWORD),
             detail: Some("Symphra keyword".to_owned()),
+            ..CompletionItem::default()
+        })
+        .collect();
+
+    if let Some(kind) = name_completion_kind(block, line_tokens) {
+        let Ok(offset) = u32::try_from(byte_offset) else {
+            return items;
+        };
+        items.extend(named_completion_items(source, offset, kind));
+    }
+    items
+}
+
+/// Contexts where a declared song-local name is expected next.
+fn name_completion_kind(
+    block: Option<CompletionBlock>,
+    line_tokens: &[Token],
+) -> Option<NamedKind> {
+    // Ignore a trailing partial identifier so `play mel|` still matches `play`.
+    let tokens = match line_tokens.last() {
+        Some(Token {
+            kind: TokenKind::Identifier,
+            ..
+        }) => &line_tokens[..line_tokens.len().saturating_sub(1)],
+        _ => line_tokens,
+    };
+
+    match tokens {
+        // `play <pattern>` inside a track or layer use.
+        [Token {
+            kind: TokenKind::Play,
+            ..
+        }] if matches!(
+            block,
+            Some(CompletionBlock::Track | CompletionBlock::Use)
+        ) =>
+        {
+            Some(NamedKind::Pattern)
+        }
+        // `play track <name>` inside a section parallel block.
+        [
+            Token {
+                kind: TokenKind::Play,
+                ..
+            },
+            Token {
+                kind: TokenKind::Track,
+                ..
+            },
+        ] if matches!(block, Some(CompletionBlock::Parallel)) => Some(NamedKind::Track),
+        // `play <section>` inside arrangement.
+        [Token {
+            kind: TokenKind::Play,
+            ..
+        }] if matches!(block, Some(CompletionBlock::Arrangement)) => Some(NamedKind::Section),
+        // Bare pattern occurrence in arrangement: empty line or partial name.
+        [] if matches!(block, Some(CompletionBlock::Arrangement)) => Some(NamedKind::Pattern),
+        // `arrangement { melody with <instrument> }`
+        [.., Token {
+            kind: TokenKind::With,
+            ..
+        }] if matches!(block, Some(CompletionBlock::Arrangement))
+            && !matches!(
+                tokens.first(),
+                Some(Token {
+                    kind: TokenKind::Play,
+                    ..
+                })
+            ) =>
+        {
+            Some(NamedKind::Instrument)
+        }
+        // `play drum "kick" with <rhythm>` or `play ... |> trigger_with <rhythm>`.
+        [
+            Token {
+                kind: TokenKind::Play,
+                ..
+            },
+            Token {
+                kind: TokenKind::Drum,
+                ..
+            },
+            Token {
+                kind: TokenKind::String,
+                ..
+            },
+            Token {
+                kind: TokenKind::With,
+                ..
+            },
+        ]
+        | [.., Token {
+            kind: TokenKind::TriggerWith,
+            ..
+        }] => Some(NamedKind::Rhythm),
+        // `instrument <name>` / `use <name>` inside a track body.
+        [Token {
+            kind: TokenKind::Instrument,
+            ..
+        }] if matches!(block, Some(CompletionBlock::Track)) => Some(NamedKind::Instrument),
+        [Token {
+            kind: TokenKind::Use,
+            ..
+        }] if matches!(block, Some(CompletionBlock::Layer | CompletionBlock::Use)) => {
+            Some(NamedKind::Instrument)
+        }
+        _ => None,
+    }
+}
+
+fn named_completion_items(
+    source: &SourceText,
+    offset: u32,
+    kind: NamedKind,
+) -> Vec<CompletionItem> {
+    let parsed = parse(source.id, &source.text);
+    let Some(song) = parsed.file.declarations.iter().find_map(|declaration| {
+        let Declaration::Song(song) = declaration else {
+            return None;
+        };
+        // Song spans cover nested blocks, so the cursor need not sit on `song`.
+        span_contains(song.span, offset).then_some(song)
+    }) else {
+        return Vec::new();
+    };
+    let (item_kind, detail) = match kind {
+        NamedKind::Pattern => (CompletionItemKind::FUNCTION, "pattern"),
+        NamedKind::Instrument => (CompletionItemKind::VARIABLE, "instrument"),
+        NamedKind::Rhythm => (CompletionItemKind::FUNCTION, "rhythm"),
+        NamedKind::Track => (CompletionItemKind::VARIABLE, "track"),
+        NamedKind::Section => (CompletionItemKind::MODULE, "section"),
+    };
+    named_declarations(song)
+        .filter(|(declaration_kind, _)| *declaration_kind == kind)
+        .map(|(_, name)| CompletionItem {
+            label: name.text.clone(),
+            kind: Some(item_kind),
+            detail: Some(detail.to_owned()),
             ..CompletionItem::default()
         })
         .collect()
@@ -515,6 +653,9 @@ fn completion_labels(
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Play) {
         if matches!(block, Some(CompletionBlock::Parallel)) {
             &["track"]
+        } else if matches!(block, Some(CompletionBlock::Arrangement)) {
+            // Arrangement uses `play <section>`; `play drum` is a track-body form.
+            &[]
         } else {
             &["drum"]
         }
@@ -540,11 +681,35 @@ fn completion_labels(
         && !matches!(line_tokens.get(line_tokens.len().saturating_sub(2)), Some(token) if token.kind == TokenKind::With)
     {
         &["with"]
+    } else if name_taking_keyword_line(block, line_tokens) {
+        // The keyword is already typed; only declared-name items apply next.
+        &[]
     } else if completion_statement_start(line_tokens) {
         completion_block_labels(block)
     } else {
         &[]
     }
+}
+
+/// `instrument <name>` / `use <name>` lines: suppress statement keywords once the
+/// keyword itself is present so name completions are the only suggestions.
+fn name_taking_keyword_line(block: Option<CompletionBlock>, line_tokens: &[Token]) -> bool {
+    matches!(
+        (block, line_tokens),
+        (
+            Some(CompletionBlock::Track),
+            [Token {
+                kind: TokenKind::Instrument,
+                ..
+            }]
+        ) | (
+            Some(CompletionBlock::Layer | CompletionBlock::Use),
+            [Token {
+                kind: TokenKind::Use,
+                ..
+            }]
+        )
+    )
 }
 
 /// Keyword suggested right after a two-token `<keyword> <name>` header, such
@@ -1484,7 +1649,8 @@ mod tests {
         flatten_document_symbols, formatting_edits, hover, prepare_rename, references, rename,
     };
     use tower_lsp_server::ls_types::{
-        DiagnosticSeverity, Position, PrepareRenameResponse, Range, SymbolKind, Uri,
+        CompletionItemKind, DiagnosticSeverity, Position, PrepareRenameResponse, Range, SymbolKind,
+        Uri,
     };
 
     #[test]
@@ -1824,6 +1990,248 @@ mod tests {
                 30
             ),
             ["transpose", "retrigger", "speed"]
+        );
+    }
+
+    #[test]
+    fn completes_declared_patterns_on_play() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        // `play <pattern>` offers declared patterns after the `drum` keyword.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern melody = sequence {}\n",
+                    "  pattern bass = sequence {}\n",
+                    "  track lead role harmony {\n",
+                    "    play \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                4,
+                9,
+            ),
+            ["drum", "melody", "bass"]
+        );
+
+        // Partial identifier after `play` still matches the pattern context
+        // (keyword suggestions no longer apply once an identifier is started).
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern melody = sequence {}\n",
+                    "  track lead role harmony {\n",
+                    "    play mel\n",
+                    "  }\n",
+                    "}\n",
+                ),
+                3,
+                12,
+            ),
+            ["melody"]
+        );
+
+        // Names stay song-local: First's pattern is not offered inside Second.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"First\" {\n",
+                    "  pattern other = sequence {}\n",
+                    "}\n",
+                    "song \"Second\" {\n",
+                    "  pattern melody = sequence {}\n",
+                    "  track lead role harmony {\n",
+                    "    play \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                6,
+                9,
+            ),
+            ["drum", "melody"]
+        );
+
+        let play_items = completions(
+            &SourceText::new(
+                SourceId(0),
+                "test.sym",
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern melody = sequence {}\n",
+                    "  track lead role harmony {\n",
+                    "    play \n",
+                    "  }\n",
+                    "}\n",
+                ),
+            ),
+            Position::new(3, 9),
+        );
+        let melody = play_items
+            .iter()
+            .find(|item| item.label == "melody")
+            .expect("melody completion");
+        assert_eq!(melody.kind, Some(CompletionItemKind::FUNCTION));
+        assert_eq!(melody.detail.as_deref(), Some("pattern"));
+    }
+
+    #[test]
+    fn completes_declared_instruments_on_instrument_and_use() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  instrument lead = triangle\n",
+                    "  instrument sub = triangle\n",
+                    "  track chords role harmony {\n",
+                    "    instrument \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                4,
+                15,
+            ),
+            ["lead", "sub"]
+        );
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  instrument lead = triangle\n",
+                    "  track bass role low {\n",
+                    "    layer {\n",
+                    "      use \n",
+                    "    }\n",
+                    "  }\n",
+                    "}\n",
+                ),
+                4,
+                10,
+            ),
+            ["lead"]
+        );
+    }
+
+    #[test]
+    fn completes_declared_rhythms_tracks_and_sections() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        // `trigger_with` offers rhythm names.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  rhythm stabs resolution 1/8 { hit rest }\n",
+                    "  rhythm pulse resolution 1/8 { hit hit }\n",
+                    "  pattern melody = sequence {}\n",
+                    "  track lead role harmony {\n",
+                    "    instrument lead\n",
+                    "    play melody |> trigger_with \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                6,
+                31,
+            ),
+            ["stabs", "pulse"]
+        );
+
+        // Arrangement bare entries and `with` / `play` contexts.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern melody = sequence {}\n",
+                    "  instrument lead = triangle\n",
+                    "  section intro bars 2 { parallel { play track pad } }\n",
+                    "  arrangement {\n",
+                    "    \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                5,
+                4,
+            ),
+            ["melody"]
+        );
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern melody = sequence {}\n",
+                    "  instrument lead = triangle\n",
+                    "  arrangement {\n",
+                    "    melody with \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                4,
+                16,
+            ),
+            ["lead"]
+        );
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  section intro bars 2 { parallel { play track pad } }\n",
+                    "  section verse bars 4 { parallel { play track pad } }\n",
+                    "  arrangement {\n",
+                    "    play \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                4,
+                9,
+            ),
+            ["intro", "verse"]
+        );
+
+        // `play track <name>` inside parallel.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  track pad role harmony { instrument lead play melody }\n",
+                    "  track bass role low { instrument sub play bassline }\n",
+                    "  section intro bars 2 {\n",
+                    "    parallel {\n",
+                    "      play track \n",
+                    "    }\n",
+                    "  }\n",
+                    "}\n",
+                ),
+                5,
+                16,
+            ),
+            ["pad", "bass"]
         );
     }
 

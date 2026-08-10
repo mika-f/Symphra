@@ -3,14 +3,15 @@
 The current LSP communicates over standard input and output, accepts
 full-document synchronization, publishes lexical, syntax, or compiler
 diagnostics, exposes document symbols, and offers context-aware keyword
-completion, documents language keywords on hover, and shows the compiled MIDI
-note number for valid written pitches. Definition navigation resolves
-arrangement pattern and instrument references, `arrangement { play <section> }`
-to section declarations, `play track <name>` inside sections to track
-declarations, track-body instrument names, `play <pattern>` (including inside
-layered `use` blocks) to pattern declarations, and `trigger_with <rhythm>` to
-rhythm declarations. Find-all-references, declaration CodeLens (`N references`),
-and rename / prepareRename cover the same song-local named symbols. Its JSON-RPC
+completion plus song-local declared-name completion at reference sites,
+documents language keywords on hover, and shows the compiled MIDI note number
+for valid written pitches. Definition navigation resolves arrangement pattern
+and instrument references, `arrangement { play <section> }` to section
+declarations, `play track <name>` inside sections to track declarations,
+track-body instrument names, `play <pattern>` (including inside layered `use`
+blocks) to pattern declarations, and `trigger_with <rhythm>` to rhythm
+declarations. Find-all-references, declaration CodeLens (`N references`), and
+rename / prepareRename cover the same song-local named symbols. Its JSON-RPC
 lifecycle is covered by an end-to-end stdio test.
 A Visual Studio Code extension lives at [`editors/vscode`](../../editors/vscode)
 and provides syntax highlighting plus a language client for manual testing;
@@ -87,7 +88,10 @@ Exercise these cases by replacing the buffer contents without saving:
 7. On an empty top-level line, request completion (normally `<C-x><C-o>` in
    insert mode). It should include `project` and `song`. Inside a song it should
    include `tempo`, `meter`, `key`, and `pattern`; inside a sequence it should
-   include `note`.
+   include `note`. After `play` in a track that already declares patterns, those
+   pattern names should appear alongside `drum`. After `instrument` in a track
+   body, declared instrument names should appear; after `trigger_with`, rhythm
+   names; after `play track` in a section, track names.
 8. Place the cursor on a language keyword and run `:lua vim.lsp.buf.hover()`.
    A short Markdown description should appear and apply to exactly that token.
 9. With a semantically valid document, hover `C4`. It should report MIDI note

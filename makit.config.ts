@@ -1,4 +1,5 @@
 import { defineConfig } from "@natsuneko-laboratory/makit";
+import cloudflare from "@natsuneko-laboratory/makit-adapter-cloudflare-pages";
 
 export default defineConfig({
   title: "Symphra",
@@ -49,4 +50,13 @@ export default defineConfig({
       crossSection: true,
     },
   },
+  dev: {
+    silentNext: true,
+  },
+  deployment: {
+    adapter: cloudflare({
+      projectName: "symphra-natsuneko-com",
+      generateWranglerConfig: true,
+    }),
+  }
 });

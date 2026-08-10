@@ -10,6 +10,7 @@
     "docs:check": "makit check"
   },
   "devDependencies": {
-    "@natsuneko-laboratory/makit": "^0.7.0"
+    "@natsuneko-laboratory/makit": "^0.7.0",
+    "@natsuneko-laboratory/makit-adapter-cloudflare-pages": "^0.6.1"
   }
 }

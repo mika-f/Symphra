@@ -182,6 +182,10 @@ fn stdio_server_should_handle_documents_and_shutdown() {
             "type"
         ])
     );
+    assert_eq!(
+        initialized["result"]["capabilities"]["inlayHintProvider"],
+        json!({ "resolveProvider": false })
+    );
 
     server.send(&json!({
         "jsonrpc": "2.0",
@@ -407,6 +411,30 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     server.send(&json!({
         "jsonrpc": "2.0",
         "id": 10,
+        "method": "textDocument/inlayHint",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": 20, "character": 0 }
+            }
+        }
+    }));
+    let inlays = server.receive();
+    let inlay_labels: Vec<&str> = inlays["result"]
+        .as_array()
+        .expect("inlay hints")
+        .iter()
+        .filter_map(|hint| hint["label"].as_str())
+        .collect();
+    assert!(
+        inlay_labels.contains(&"pattern"),
+        "arrangement reference should get a pattern inlay: {inlay_labels:?}"
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 11,
         "method": "textDocument/prepareRename",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
@@ -427,7 +455,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 11,
+        "id": 12,
         "method": "textDocument/rename",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
@@ -479,11 +507,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 12,
+        "id": 13,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 12);
+    assert_eq!(server.receive()["id"], 13);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

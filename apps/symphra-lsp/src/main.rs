@@ -18,7 +18,9 @@ use tower_lsp_server::ls_types::{
     DocumentFormattingParams, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
-    InitializeParams, InitializeResult, Location, MarkupContent, MarkupKind, OneOf, Position,
+    InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions,
+    InlayHintParams, InlayHintServerCapabilities, Location, MarkupContent, MarkupKind, OneOf,
+    Position,
     PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, RenameOptions,
     RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
@@ -84,6 +86,12 @@ impl LanguageServer for Backend {
                         work_done_progress_options: WorkDoneProgressOptions::default(),
                     },
                 )),
+                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+                    InlayHintOptions {
+                        resolve_provider: Some(false),
+                        work_done_progress_options: WorkDoneProgressOptions::default(),
+                    },
+                ))),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
             },
@@ -208,6 +216,14 @@ impl LanguageServer for Backend {
         Ok(documents
             .get(&uri)
             .map(|source| SemanticTokensResult::Tokens(semantic_tokens(source))))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let documents = self.documents.read().await;
+        let uri = params.text_document.uri;
+        Ok(documents
+            .get(&uri)
+            .map(|source| inlay_hints(source, &params.range)))
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -1696,12 +1712,106 @@ const fn named_kind_token_type(kind: NamedKind) -> u32 {
     }
 }
 
-fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
+fn inlay_hints(source: &SourceText, visible_range: &Range) -> Vec<InlayHint> {
+    let mut hints = Vec::new();
+
+    for (span, midi) in pitch_midi_spans(source) {
+        if let Some(hint) =
+            trailing_inlay_hint(source, span, format!("MIDI {midi}"), visible_range)
+        {
+            hints.push(hint);
+        }
+    }
+
     let parsed = parse(source.id, &source.text);
-    let program = parsed
+    for declaration in &parsed.file.declarations {
+        let Declaration::Song(song) = declaration else {
+            continue;
+        };
+        visit_name_references(song, |kind, identifier| {
+            if declaration_span(song, kind, &identifier.text).is_none() {
+                return;
+            }
+            if let Some(hint) = trailing_inlay_hint(
+                source,
+                identifier.span,
+                kind.label().to_owned(),
+                visible_range,
+            ) {
+                hints.push(hint);
+            }
+        });
+    }
+
+    hints.sort_by(|left, right| {
+        left.position
+            .line
+            .cmp(&right.position.line)
+            .then(left.position.character.cmp(&right.position.character))
+            .then_with(|| inlay_label_text(&left.label).cmp(inlay_label_text(&right.label)))
+    });
+    hints
+}
+
+fn trailing_inlay_hint(
+    source: &SourceText,
+    span: SourceSpan,
+    label: String,
+    visible_range: &Range,
+) -> Option<InlayHint> {
+    let range = lsp_range(source, span)?;
+    let position = range.end;
+    if !range_contains_position(visible_range, position) {
+        return None;
+    }
+    Some(InlayHint {
+        position,
+        label: InlayHintLabel::String(label),
+        kind: Some(InlayHintKind::TYPE),
+        text_edits: None,
+        tooltip: None,
+        padding_left: Some(true),
+        padding_right: None,
+        data: None,
+    })
+}
+
+fn range_contains_position(range: &Range, position: Position) -> bool {
+    let after_start = position.line > range.start.line
+        || (position.line == range.start.line && position.character >= range.start.character);
+    let before_end = position.line < range.end.line
+        || (position.line == range.end.line && position.character <= range.end.character);
+    after_start && before_end
+}
+
+fn inlay_label_text(label: &InlayHintLabel) -> &str {
+    match label {
+        InlayHintLabel::String(text) => text.as_str(),
+        InlayHintLabel::LabelParts(parts) => {
+            parts.first().map_or("", |part| part.value.as_str())
+        }
+    }
+}
+
+fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
+    pitch_midi_spans(source)
+        .into_iter()
+        .find_map(|(pitch_span, midi)| {
+            (pitch_span == span).then(|| format!("MIDI note {midi}."))
+        })
+}
+
+/// Compiled MIDI values for every sequence pitch that the compiler lowered.
+fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
+    let parsed = parse(source.id, &source.text);
+    let Some(program) = parsed
         .diagnostics
         .is_empty()
-        .then(|| compile(&parsed.file).ok())??;
+        .then(|| compile(&parsed.file).ok())
+        .flatten()
+    else {
+        return Vec::new();
+    };
     let songs = parsed.file.declarations.iter().filter_map(|declaration| {
         let Declaration::Song(song) = declaration else {
             return None;
@@ -1709,6 +1819,7 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
         Some(song)
     });
 
+    let mut pitches = Vec::new();
     for (source_song, song) in songs.zip(&program.songs) {
         let patterns = source_song
             .statements
@@ -1724,21 +1835,17 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
             for (item, step) in items.iter().zip(&pattern.steps) {
                 match (item, step) {
                     (
-                        SequenceItem::Note(source),
+                        SequenceItem::Note(source_note),
                         symphra_compiler::hir::PatternStep::Note(note),
                     ) => {
-                        if source.pitch.span == span {
-                            return Some(format!("MIDI note {}.", note.midi_pitch));
-                        }
+                        pitches.push((source_note.pitch.span, note.midi_pitch));
                     }
                     (
-                        SequenceItem::Chord(source),
+                        SequenceItem::Chord(source_chord),
                         symphra_compiler::hir::PatternStep::Chord(chord),
                     ) => {
-                        for (source, note) in source.pitches.iter().zip(&chord.notes) {
-                            if source.span == span {
-                                return Some(format!("MIDI note {}.", note.midi_pitch));
-                            }
+                        for (source_pitch, note) in source_chord.pitches.iter().zip(&chord.notes) {
+                            pitches.push((source_pitch.span, note.midi_pitch));
                         }
                     }
                     _ => {}
@@ -1746,7 +1853,7 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
             }
         }
     }
-    None
+    pitches
 }
 
 /// Delegates to two halves so each stays under clippy's `too_many_lines`
@@ -1902,13 +2009,13 @@ async fn main() {
 mod tests {
     use super::{
         SEMANTIC_MOD_DECLARATION, SEMANTIC_TOKEN_COMMENT, SEMANTIC_TOKEN_FUNCTION,
-        SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER, SEMANTIC_TOKEN_STRING,
-        SEMANTIC_TOKEN_TYPE, SourceId, SourceText, code_lenses, completions, definition,
-        diagnostics, document_highlights, document_symbols, flatten_document_symbols,
-        formatting_edits, hover, prepare_rename, references, rename, semantic_tokens,
+        SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER, SEMANTIC_TOKEN_STRING, SEMANTIC_TOKEN_TYPE,
+        SourceId, SourceText, code_lenses, completions, definition, diagnostics,
+        document_highlights, document_symbols, flatten_document_symbols, formatting_edits, hover,
+        inlay_hints, prepare_rename, references, rename, semantic_tokens,
     };
     use tower_lsp_server::ls_types::{
-        CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, Position,
+        CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, InlayHintLabel, Position,
         PrepareRenameResponse, Range, SemanticToken, SymbolKind, Uri,
     };
 
@@ -2687,6 +2794,71 @@ mod tests {
             panic!("hover should use markup content");
         };
         assert_eq!(contents.value, "`C#4` — MIDI note 61.");
+    }
+
+    #[test]
+    fn builds_inlay_hints_for_midi_pitches_and_reference_kinds() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 48khz output stereo }\n",
+                "song \"Test\" {\n",
+                "  tempo 120bpm\n",
+                "  meter 4/4\n",
+                "  key C major\n",
+                "  pattern melody = sequence { note C4 for 1/4 }\n",
+                "  arrangement { melody }\n",
+                "}\n",
+            ),
+        );
+        let whole = Range::new(Position::new(0, 0), Position::new(20, 0));
+        let hints = inlay_hints(&source, &whole);
+
+        let labels: Vec<(u32, u32, String)> = hints
+            .iter()
+            .map(|hint| {
+                let label = match &hint.label {
+                    InlayHintLabel::String(text) => text.clone(),
+                    InlayHintLabel::LabelParts(parts) => parts
+                        .iter()
+                        .map(|part| part.value.as_str())
+                        .collect::<String>(),
+                };
+                (hint.position.line, hint.position.character, label)
+            })
+            .collect();
+
+        assert!(
+            labels
+                .iter()
+                .any(|(line, _, label)| *line == 5 && label == "MIDI 60"),
+            "C4 should show MIDI 60: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(line, _, label)| *line == 6 && label == "pattern"),
+            "arrangement melody use should show pattern: {labels:?}"
+        );
+
+        // A narrow range around the arrangement line should exclude the MIDI hint.
+        let arrangement_only = Range::new(Position::new(6, 0), Position::new(7, 0));
+        let filtered = inlay_hints(&source, &arrangement_only);
+        assert!(
+            filtered.iter().all(|hint| match &hint.label {
+                InlayHintLabel::String(text) => text != "MIDI 60",
+                InlayHintLabel::LabelParts(_) => true,
+            }),
+            "range-filtered hints should omit MIDI 60: {filtered:?}"
+        );
+        assert!(
+            filtered.iter().any(|hint| match &hint.label {
+                InlayHintLabel::String(text) => text == "pattern",
+                InlayHintLabel::LabelParts(_) => false,
+            }),
+            "range-filtered hints should keep pattern: {filtered:?}"
+        );
     }
 
     #[test]

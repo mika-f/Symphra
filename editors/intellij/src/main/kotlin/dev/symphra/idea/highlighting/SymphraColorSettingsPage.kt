@@ -30,6 +30,23 @@ class SymphraColorSettingsPage : ColorSettingsPage {
             pack "lead"
           }
 
+          instrument piano = soundfont {
+            source "gm.sf2"
+            preset "Acoustic Grand Piano"
+          }
+
+          instrument pad = synth supersaw {
+            voices 5
+            detune 0.28
+            spread 0.75
+            envelope {
+              attack 8ms
+              decay 120ms
+              sustain 0.72
+              release 180ms
+            }
+          }
+
           rhythm stabs resolution 1/8 {
             hit rest hit hit
           }

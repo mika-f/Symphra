@@ -82,11 +82,11 @@
       "patterns": [
         {
           "name": "keyword.control.declaration.symphra",
-          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|drum_machine|choose|rhythm|track|section|arrangement|master|limiter)\\b"
+          "match": "\\b(project|song|instrument|pattern|sequence|steps|sampled|sampler|drum_machine|soundfont|synth|supersaw|choose|rhythm|track|section|arrangement|master|limiter)\\b"
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|key|sample|weight|source|root|pack|bank|drum|with|resolution|hit|role|volume|play|trigger_with|gate|transpose|gain|repeat|reverse|pan|alternate|chance|speed|retrigger|choose_sample|at|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|filter|cutoff|resonance|reverb|size|automate|lfo|range|rate|cycles|bars|parallel|exact|ceiling)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|key|sample|weight|source|root|pack|bank|drum|preset|with|resolution|hit|role|volume|play|trigger_with|gate|transpose|gain|repeat|reverse|pan|alternate|chance|speed|retrigger|choose_sample|at|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|filter|cutoff|resonance|reverb|size|automate|lfo|range|rate|cycles|bars|parallel|exact|ceiling|envelope|attack|decay|sustain|release|voices|detune|spread)\\b"
         }
       ]
     },

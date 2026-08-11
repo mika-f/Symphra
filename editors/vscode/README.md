@@ -8,11 +8,12 @@ tracks the current draft and will need updates as the language grows.
 ## What it provides
 
 - TextMate grammar aligned with `crates/symphra-syntax` token kinds: keywords
-  (including tracks, effects, pipelines, automate/lfo, drums, and master),
-  comments, strings, numbers, rate literals (`48khz`, `150bpm`), pitch
-  literals (`C4`), and punctuation (`|>`, `..`, `:`, `()`, `,`).
+  (including tracks, effects, pipelines, automate/lfo, drums, master,
+  `arpeggiate` / `style` / `octaves`, `step` / `fit`, and `vst3`), comments,
+  strings, numbers, rate literals (`48khz`, `150bpm`), pitch literals (`C4`),
+  and punctuation (`|>`, `..`, `:`, `*`, `[]`, `()`, `,`).
 - A language client that launches `symphra-lsp` over stdio and forwards
-  diagnostics, document symbols, and completions.
+  diagnostics, document symbols, completions, semantic tokens, and inlay hints.
 
 ## Building and running
 

@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use symphra_compiler::compile;
 use symphra_syntax::ast::{
-    ArrangementEntry, Declaration, Identifier, PatternBody, PlaySource, PlayStatement,
-    SequenceItem, SongDeclaration, SongStatement, TrackBody,
+    ArrangementEntry, ChordPitches, Declaration, Identifier, PatternBody, PlaySource,
+    PlayStatement, SequenceItem, SongDeclaration, SongStatement, TrackBody, TrackEffect,
 };
 use symphra_syntax::{
     SourceId, SourcePosition, SourceSpan, SourceText, Token, TokenKind, lex, parse,
@@ -387,6 +387,14 @@ fn document_symbols(source: &SourceText) -> Vec<DocumentSymbol> {
                             section.name.span,
                             None,
                         ),
+                        SongStatement::EffectPreset(preset) => symbol(
+                            source,
+                            preset.name.text.clone(),
+                            SymbolKind::OBJECT,
+                            preset.span,
+                            preset.name.span,
+                            None,
+                        ),
                         _ => None,
                     })
                     .collect();
@@ -663,6 +671,7 @@ fn named_completion_items(
         NamedKind::Rhythm => (CompletionItemKind::FUNCTION, "rhythm"),
         NamedKind::Track => (CompletionItemKind::VARIABLE, "track"),
         NamedKind::Section => (CompletionItemKind::MODULE, "section"),
+        NamedKind::Effect => (CompletionItemKind::VARIABLE, "effect"),
     };
     named_declarations(song)
         .filter(|(declaration_kind, _)| *declaration_kind == kind)
@@ -1133,6 +1142,8 @@ enum NamedKind {
     Rhythm,
     Track,
     Section,
+    /// Song-level `effect <name> = …` preset (RFC 0001 S10).
+    Effect,
 }
 
 fn definition(source: &SourceText, uri: &Uri, position: Position) -> Option<Location> {
@@ -1411,6 +1422,7 @@ impl NamedKind {
             Self::Rhythm => "rhythm",
             Self::Track => "track",
             Self::Section => "section",
+            Self::Effect => "effect",
         }
     }
 }
@@ -1444,6 +1456,7 @@ fn named_declarations(song: &SongDeclaration) -> impl Iterator<Item = (NamedKind
             SongStatement::Rhythm(rhythm) => Some((NamedKind::Rhythm, &rhythm.name)),
             SongStatement::Track(track) => Some((NamedKind::Track, &track.name)),
             SongStatement::Section(section) => Some((NamedKind::Section, &section.name)),
+            SongStatement::EffectPreset(preset) => Some((NamedKind::Effect, &preset.name)),
             _ => None,
         })
 }
@@ -1497,22 +1510,50 @@ fn visit_name_references(song: &SongDeclaration, mut visit: impl FnMut(NamedKind
             SongStatement::Section(section) => {
                 for track in &section.tracks {
                     visit(NamedKind::Track, &track.name);
+                    visit_track_effect_references(track.effect.as_ref(), &mut visit);
                 }
             }
-            SongStatement::Track(track) => match &track.body {
-                TrackBody::Single { instrument, play } => {
-                    visit(NamedKind::Instrument, instrument);
-                    visit_play_name_references(play, &mut visit);
-                }
-                TrackBody::Layers { uses, .. } => {
-                    for layer in uses {
-                        visit(NamedKind::Instrument, &layer.instrument);
-                        visit_play_name_references(&layer.play, &mut visit);
+            SongStatement::Track(track) => {
+                visit_track_effect_references(track.effect.as_ref(), &mut visit);
+                match &track.body {
+                    TrackBody::Single { instrument, play } => {
+                        visit(NamedKind::Instrument, instrument);
+                        visit_play_name_references(play, &mut visit);
+                    }
+                    TrackBody::Layers { uses, .. } => {
+                        for layer in uses {
+                            visit(NamedKind::Instrument, &layer.instrument);
+                            visit_play_name_references(&layer.play, &mut visit);
+                        }
                     }
                 }
-            },
+            }
+            SongStatement::Pattern(pattern) => visit_pattern_body_references(&pattern.body, &mut visit),
             _ => {}
         }
+    }
+}
+
+fn visit_track_effect_references(
+    effect: Option<&TrackEffect>,
+    visit: &mut impl FnMut(NamedKind, &Identifier),
+) {
+    if let Some(TrackEffect::Preset(name)) = effect {
+        visit(NamedKind::Effect, name);
+    }
+}
+
+fn visit_pattern_body_references(
+    body: &PatternBody,
+    visit: &mut impl FnMut(NamedKind, &Identifier),
+) {
+    match body {
+        // `pattern x = y |> …` and `pattern x = arpeggiate y { … }` both
+        // name another pattern as their source material (RFC 0001 S6/S7).
+        PatternBody::Derived { source, .. } | PatternBody::Arpeggiate { source, .. } => {
+            visit(NamedKind::Pattern, source);
+        }
+        PatternBody::Sequence { .. } | PatternBody::Steps { .. } => {}
     }
 }
 
@@ -1716,7 +1757,7 @@ fn named_semantic_classifications(source: &SourceText) -> HashMap<SourceSpan, (u
 const fn named_kind_token_type(kind: NamedKind) -> u32 {
     match kind {
         NamedKind::Pattern | NamedKind::Rhythm => SEMANTIC_TOKEN_FUNCTION,
-        NamedKind::Instrument | NamedKind::Track => SEMANTIC_TOKEN_VARIABLE,
+        NamedKind::Instrument | NamedKind::Track | NamedKind::Effect => SEMANTIC_TOKEN_VARIABLE,
         NamedKind::Section => SEMANTIC_TOKEN_NAMESPACE,
     }
 }
@@ -1727,6 +1768,22 @@ fn inlay_hints(source: &SourceText, visible_range: &Range) -> Vec<InlayHint> {
     for (span, midi) in pitch_midi_spans(source) {
         if let Some(hint) = trailing_inlay_hint(source, span, format!("MIDI {midi}"), visible_range)
         {
+            hints.push(hint);
+        }
+    }
+
+    // `G3:maj7` only spells the root in the AST; show the expanded voicing
+    // after the quality so the sugar is readable without expanding by hand.
+    for (span, midis) in chord_symbol_voicing_spans(source) {
+        let label = format!(
+            "MIDI {}",
+            midis
+                .iter()
+                .map(u8::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        if let Some(hint) = trailing_inlay_hint(source, span, label, visible_range) {
             hints.push(hint);
         }
     }
@@ -1805,8 +1862,64 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
         .find_map(|(pitch_span, midi)| (pitch_span == span).then(|| format!("MIDI note {midi}.")))
 }
 
-/// Compiled MIDI values for every sequence pitch that the compiler lowered.
+/// Compiled MIDI values for every written sequence pitch that the compiler lowered.
+///
+/// Chord symbols contribute only their root here — the full voicing is
+/// exposed separately by [`chord_symbol_voicing_spans`] for inlay labels.
 fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
+    let mut pitches = Vec::new();
+    for_compiled_sequence_steps(source, |expanded, step| {
+        match (expanded, step) {
+            (
+                SequenceItem::Note(source_note),
+                symphra_compiler::hir::PatternStep::Note(note),
+            ) => {
+                pitches.push((source_note.pitch.span, note.midi_pitch));
+            }
+            (
+                SequenceItem::Chord(source_chord),
+                symphra_compiler::hir::PatternStep::Chord(chord),
+            ) => {
+                for (source_pitch, note) in source_chord.pitches.spelled().iter().zip(&chord.notes) {
+                    pitches.push((source_pitch.span, note.midi_pitch));
+                }
+            }
+            _ => {}
+        }
+    });
+    pitches
+}
+
+/// Expanded MIDI notes for each `root:quality` chord symbol, keyed on the
+/// quality span so an inlay can sit after `maj7` rather than the root alone.
+fn chord_symbol_voicing_spans(source: &SourceText) -> Vec<(SourceSpan, Vec<u8>)> {
+    let mut voicings = Vec::new();
+    for_compiled_sequence_steps(source, |expanded, step| {
+        let (
+            SequenceItem::Chord(source_chord),
+            symphra_compiler::hir::PatternStep::Chord(chord),
+        ) = (expanded, step)
+        else {
+            return;
+        };
+        let ChordPitches::Symbol { quality, .. } = &source_chord.pitches else {
+            return;
+        };
+        let midis: Vec<u8> = chord.notes.iter().map(|note| note.midi_pitch).collect();
+        if !midis.is_empty() {
+            voicings.push((quality.span, midis));
+        }
+    });
+    voicings
+}
+
+/// Walks each successfully compiled sequence pattern's expanded items against
+/// the matching HIR steps. Shared by pitch inlays/hover and chord-symbol
+/// voicing labels so repetition expansion stays in one place.
+fn for_compiled_sequence_steps(
+    source: &SourceText,
+    mut visit: impl FnMut(&SequenceItem, &symphra_compiler::hir::PatternStep),
+) {
     let parsed = parse(source.id, &source.text);
     let Some(program) = parsed
         .diagnostics
@@ -1814,7 +1927,7 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
         .then(|| compile(&parsed.file).ok())
         .flatten()
     else {
-        return Vec::new();
+        return;
     };
     let songs = parsed.file.declarations.iter().filter_map(|declaration| {
         let Declaration::Song(song) = declaration else {
@@ -1823,7 +1936,6 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
         Some(song)
     });
 
-    let mut pitches = Vec::new();
     for (source_song, song) in songs.zip(&program.songs) {
         let patterns = source_song
             .statements
@@ -1842,30 +1954,11 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
             let Some(items) = symphra_compiler::expand::sequence_items(items) else {
                 continue;
             };
-            for (expanded, step) in items.into_iter().zip(&pattern.steps) {
-                match (expanded.item, step) {
-                    (
-                        SequenceItem::Note(source_note),
-                        symphra_compiler::hir::PatternStep::Note(note),
-                    ) => {
-                        pitches.push((source_note.pitch.span, note.midi_pitch));
-                    }
-                    (
-                        SequenceItem::Chord(source_chord),
-                        symphra_compiler::hir::PatternStep::Chord(chord),
-                    ) => {
-                        for (source_pitch, note) in
-                            source_chord.pitches.spelled().iter().zip(&chord.notes)
-                        {
-                            pitches.push((source_pitch.span, note.midi_pitch));
-                        }
-                    }
-                    _ => {}
-                }
+            for (expanded, step) in items.iter().zip(&pattern.steps) {
+                visit(expanded.item, step);
             }
         }
     }
-    pitches
 }
 
 /// Delegates to two halves so each stays under clippy's `too_many_lines`
@@ -1898,7 +1991,9 @@ const fn keyword_description_declarations(kind: TokenKind) -> Option<&'static st
             "declares several independently scheduled `use` layers, mixed into one track."
         }
         TokenKind::Use => "declares one layer's instrument and play pipeline inside `layer`.",
-        TokenKind::Effect => "applies an audio effect to the track's rendered output.",
+        TokenKind::Effect => {
+            "declares a named effect preset, or applies an effect (inline or by preset name) to a track."
+        }
         TokenKind::Delay => "a feedback delay (echo).",
         TokenKind::Mix => "blends dry (`0.0`) and delayed/wet (`1.0`) signal in an effect.",
         TokenKind::Time => "sets a delay effect's echo time, such as `1/4` or `1bar`.",
@@ -1975,6 +2070,21 @@ const fn keyword_description_playback(kind: TokenKind) -> Option<&'static str> {
         TokenKind::Ceiling => "sets a limiter's maximum output level, such as `-0.3db`.",
         TokenKind::Sequence => "plays pattern notes one after another.",
         TokenKind::Steps => "plays fixed-resolution steps in source order.",
+        TokenKind::Step => {
+            "sets a default duration for sequence items that omit `for`, such as `sequence step 1/8`."
+        }
+        TokenKind::Arpeggiate => {
+            "builds a pattern by walking another pattern's chords one note at a time."
+        }
+        TokenKind::Style => {
+            "sets an arpeggio walk order, such as `up`, `down`, `up_down`, `down_up`, or `as_written`."
+        }
+        TokenKind::Octaves => {
+            "caps how many octaves of a chord's tones an arpeggio may use before wrapping."
+        }
+        TokenKind::Fit => {
+            "on `repeat fit`, repeats a pattern enough times to fill the enclosing section."
+        }
         TokenKind::Degree => "adds a pitch offset from the song key tonic.",
         TokenKind::Octave => "sets the base octave for a degree step.",
         TokenKind::Note => "adds a written pitch to a sequence.",
@@ -2870,6 +2980,171 @@ mod tests {
                 InlayHintLabel::LabelParts(_) => false,
             }),
             "range-filtered hints should keep pattern: {filtered:?}"
+        );
+    }
+
+    #[test]
+    fn builds_inlay_hints_for_chord_symbols_and_sugar_references() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 48khz output stereo }\n",
+                "song \"Test\" {\n",
+                "  tempo 120bpm\n",
+                "  meter 4/4\n",
+                "  key C major\n",
+                "  instrument lead = triangle\n",
+                "  effect hall = reverb { mix 0.5 size 0.7 }\n",
+                "  pattern pad = sequence step 1bar { chord G3:maj7 }\n",
+                "  pattern high = pad |> transpose 12 st\n",
+                "  pattern arp = arpeggiate pad { style up step 1/8 }\n",
+                "  track t role harmony {\n",
+                "    instrument lead\n",
+                "    play high\n",
+                "    effect hall\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let whole = Range::new(Position::new(0, 0), Position::new(30, 0));
+        let labels: Vec<(u32, String)> = inlay_hints(&source, &whole)
+            .into_iter()
+            .map(|hint| {
+                let label = match hint.label {
+                    InlayHintLabel::String(text) => text,
+                    InlayHintLabel::LabelParts(parts) => parts
+                        .into_iter()
+                        .map(|part| part.value)
+                        .collect::<String>(),
+                };
+                (hint.position.line, label)
+            })
+            .collect();
+
+        // G3 root + maj7 voicing G3 B3 D4 F#4 → MIDI 55 59 62 66
+        assert!(
+            labels
+                .iter()
+                .any(|(line, label)| *line == 7 && label == "MIDI 55"),
+            "chord root G3: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(line, label)| *line == 7 && label == "MIDI 55 59 62 66"),
+            "maj7 voicing after quality: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(line, label)| *line == 8 && label == "pattern"),
+            "derived source pad: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(line, label)| *line == 9 && label == "pattern"),
+            "arpeggiate source pad: {labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|(line, label)| *line == 13 && label == "effect"),
+            "effect preset use: {labels:?}"
+        );
+    }
+
+    #[test]
+    fn finds_pattern_and_effect_definitions_from_sugar() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  instrument lead = triangle\n",
+                "  effect hall = reverb { mix 0.5 size 0.7 }\n",
+                "  pattern pad = sequence { chord C4 E4 G4 for 1bar }\n",
+                "  pattern high = pad |> transpose 12 st\n",
+                "  pattern arp = arpeggiate pad { style up step 1/8 }\n",
+                "  track t role harmony {\n",
+                "    instrument lead\n",
+                "    play high\n",
+                "    effect hall\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        // `pad` in `pattern high = pad |> …` — col 17 is the `p` of `pad`.
+        let derived = definition(&source, &uri, Position::new(4, 17))
+            .expect("derived pattern source should resolve");
+        assert_eq!(
+            derived.range,
+            Range::new(Position::new(3, 10), Position::new(3, 13))
+        );
+
+        // `pad` in `arpeggiate pad` — col 27 is the `p` of `pad`.
+        let arp = definition(&source, &uri, Position::new(5, 27))
+            .expect("arpeggiate source should resolve");
+        assert_eq!(
+            arp.range,
+            Range::new(Position::new(3, 10), Position::new(3, 13))
+        );
+
+        // `hall` in `effect hall` on the track — col 11 is the `h` of `hall`.
+        let effect = definition(&source, &uri, Position::new(9, 11))
+            .expect("effect preset use should resolve");
+        assert_eq!(
+            effect.range,
+            Range::new(Position::new(2, 9), Position::new(2, 13))
+        );
+    }
+
+    #[test]
+    fn highlights_sugar_keywords_as_semantic_tokens() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  pattern pad = sequence step 1bar { rest for 1bar }\n",
+                "  pattern arp = arpeggiate pad { style up step 1/8 octaves 2 }\n",
+                "  track t role harmony {\n",
+                "    play arp |> repeat fit\n",
+                "  }\n",
+                "}\n",
+            ),
+        );
+        let decoded = decode_semantic_tokens(&semantic_tokens(&source).data);
+
+        // Keywords that arrived with RFC 0001 must classify as keywords, not
+        // fall through as bare identifiers. Columns are absolute (not delta).
+        let keyword_on = |line: u32, col: u32, len: u32| {
+            decoded.iter().any(|token| {
+                token.0 == line
+                    && token.1 == col
+                    && token.2 == len
+                    && token.3 == SEMANTIC_TOKEN_KEYWORD
+            })
+        };
+        assert!(keyword_on(1, 25, 4), "step: {decoded:?}");
+        assert!(keyword_on(2, 16, 10), "arpeggiate: {decoded:?}");
+        assert!(keyword_on(2, 33, 5), "style: {decoded:?}");
+        assert!(keyword_on(2, 51, 7), "octaves: {decoded:?}");
+        assert!(keyword_on(4, 23, 3), "fit: {decoded:?}");
+
+        // `pad` source of arpeggiate is a pattern reference (function, no declaration).
+        assert!(
+            decoded.iter().any(|token| {
+                token.0 == 2
+                    && token.1 == 27
+                    && token.2 == 3
+                    && token.3 == SEMANTIC_TOKEN_FUNCTION
+                    && token.4 == 0
+            }),
+            "arpeggiate source pad: {decoded:?}"
         );
     }
 

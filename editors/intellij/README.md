@@ -37,14 +37,16 @@ presence on older builds hasn't been verified.
   covering the token classes from `crates/symphra-syntax` — comments, strings,
   numbers, rate literals (`48khz`, `150bpm`), pitch literals (`C4`), all
   reserved keywords (tracks, effects, pipelines, automate/lfo, drums, master,
-  …), and punctuation (`|>`, `..`, `:`, `()`, `,`) — mirroring the VS Code
+  `arpeggiate` / `style` / `octaves`, `step` / `fit`, `vst3`, …), and
+  punctuation (`|>`, `..`, `:`, `*`, `[]`, `()`, `,`) — mirroring the VS Code
   TextMate grammar (`editors/vscode/syntaxes/symphra.tmLanguage.json`) rather
   than a formal parser, since the grammar is still changing. A colors page under
   **Settings \| Editor \| Color Scheme \| Symphra** lets you customize each
   token's styling.
 - An `LspServerSupportProvider` that launches `symphra-lsp` over stdio for
-  `.sym` files and forwards diagnostics, completion, hover, and document
-  symbols, using the platform's own LSP client (no third-party dependency).
+  `.sym` files and forwards diagnostics, completion, hover, document symbols,
+  semantic tokens, and inlay hints, using the platform's own LSP client (no
+  third-party dependency).
 - A minimal `ParserDefinition` ([`SymphraParserDefinition`](src/main/kotlin/dev/symphra/idea/psi/SymphraParserDefinition.kt))
   that wraps the raw lexer token stream in one flat PSI file with no real
   grammar structure. It exists only so `.sym` files are recognized as PSI

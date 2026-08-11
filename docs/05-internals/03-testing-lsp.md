@@ -10,12 +10,16 @@ and instrument references, `arrangement { play <section> }` to section
 declarations, `play track <name>` inside sections to track declarations,
 track-body instrument names, `play <pattern>` (including inside layered `use`
 blocks) to pattern declarations, and `trigger_with <rhythm>` to rhythm
-declarations. Find-all-references, document highlight, declaration CodeLens
-(`N references`), and rename / prepareRename cover the same song-local named
-symbols. Semantic tokens color keywords, declared/referenced names, strings,
-numbers, comments, and pitch identifiers. Inlay hints show compiled MIDI values
-after pitches and a kind label after resolved name references. Its JSON-RPC
-lifecycle is covered by an end-to-end stdio test.
+declarations, pattern sources of `pattern x = y |> …` / `arpeggiate y`, and
+named effect presets (`effect hall = …` / `effect hall`). Find-all-references,
+document highlight, declaration CodeLens (`N references`), and rename /
+prepareRename cover the same song-local named symbols. Semantic tokens color
+keywords (including RFC 0001 sugar: `step`, `fit`, `arpeggiate`, `style`,
+`octaves`), declared/referenced names, strings, numbers, comments, and pitch
+identifiers. Inlay hints show compiled MIDI values after pitches, expanded
+voicings after chord-symbol qualities (`G3:maj7` → `MIDI 55 59 62 66`), and a
+kind label after resolved name references. Its JSON-RPC lifecycle is covered by
+an end-to-end stdio test.
 A Visual Studio Code extension lives at
 [`editors/vscode`](https://github.com/mika-f/Symphra/tree/main/editors/vscode)
 and provides syntax highlighting plus a language client for manual testing;
@@ -141,7 +145,10 @@ Exercise these cases by replacing the buffer contents without saving:
     should receive distinct semantic token classes from the server.
 20. With inlay hints enabled, a compiled pitch such as `C4` should show
     `MIDI 60` after the name, and a resolved reference such as arrangement
-    `melody` should show a `pattern` label.
+    `melody` should show a `pattern` label. A chord symbol such as `G3:maj7`
+    should show the root MIDI after `G3` and the full voicing after `maj7`.
+    Derived / arpeggiate pattern sources and effect-preset uses should show
+    `pattern` / `effect` labels.
 
 Diagnostics should refresh after every edit because the server requests
 full-text synchronization. Closing the buffer sends `textDocument/didClose`,

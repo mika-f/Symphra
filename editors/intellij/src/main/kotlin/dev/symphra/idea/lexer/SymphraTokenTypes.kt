@@ -42,16 +42,16 @@ object SymphraTokenTypes {
     val KEYWORDS = setOf(
         "project", "song", "seed", "sample_rate", "output", "tempo", "meter", "key",
         "instrument", "sample", "choose", "weight", "sampled", "sampler", "drum_machine",
-        "soundfont", "preset", "source", "root", "pack", "bank", "drum", "rhythm",
+        "soundfont", "vst3", "preset", "source", "root", "pack", "bank", "drum", "rhythm",
         "resolution", "hit", "track", "role", "volume", "layer", "use", "play",
         "trigger_with", "gate", "transpose", "gain", "repeat", "fit", "reverse", "pan",
         "alternate", "chance", "speed", "retrigger", "choose_sample", "at", "pattern",
-        "arrangement", "with", "sequence", "steps", "step", "degree", "octave", "note", "chord",
-        "rest", "for", "velocity", "bar", "effect", "delay", "mix", "time", "feedback",
-        "filter", "cutoff", "resonance", "reverb", "size", "automate", "lfo", "range",
-        "rate", "cycles", "section", "bars", "parallel", "exact", "master", "limiter",
-        "ceiling", "synth", "supersaw", "envelope", "attack", "decay", "sustain",
-        "release", "voices", "detune", "spread"
+        "arrangement", "with", "sequence", "steps", "step", "arpeggiate", "style", "octaves",
+        "degree", "octave", "note", "chord", "rest", "for", "velocity", "bar", "effect",
+        "delay", "mix", "time", "feedback", "filter", "cutoff", "resonance", "reverb",
+        "size", "automate", "lfo", "range", "rate", "cycles", "section", "bars",
+        "parallel", "exact", "master", "limiter", "ceiling", "synth", "supersaw",
+        "envelope", "attack", "decay", "sustain", "release", "voices", "detune", "spread"
     )
 
     // Natural (C4), sharp (C#4), flat (Cb4), and negative-octave (C-1, C#-1, Cb-1) pitches.

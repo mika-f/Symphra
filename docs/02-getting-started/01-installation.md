@@ -24,6 +24,8 @@ There is no published crate on crates.io yet.
 - **Rust 1.88+** with Cargo (edition 2024)
 - A C toolchain if your platform needs one for native dependencies (VST3 host
   path on some targets)
+- On Linux: `libasound2-dev` and `pkg-config` (pulled in by the VST3 host /
+  `cpal` dependency via ALSA)
 
 ### Clone and build
 

@@ -499,6 +499,8 @@ enum CompletionBlock {
     Oscillator,
     Supersaw,
     Envelope,
+    /// `pattern x = arpeggiate y { … }` body fields.
+    Arpeggiate,
     Other,
 }
 
@@ -781,6 +783,10 @@ fn completion_labels(
         &["cutoff"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Lfo) {
         &["sine", "triangle"]
+    } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Style) {
+        // Arpeggio walk orders (validated identifiers, same set the compiler
+        // accepts on `style` inside `arpeggiate`).
+        &["up", "down", "up_down", "down_up", "as_written"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Master) {
         &["limiter"]
     } else if matches!(line_tokens.last(), Some(token) if token.kind == TokenKind::Parallel) {
@@ -923,6 +929,7 @@ fn completion_block_labels(block: Option<CompletionBlock>) -> &'static [&'static
         Some(CompletionBlock::Oscillator) => &["envelope"],
         Some(CompletionBlock::Supersaw) => &["voices", "detune", "spread", "envelope"],
         Some(CompletionBlock::Envelope) => &["attack", "decay", "sustain", "release"],
+        Some(CompletionBlock::Arpeggiate) => &["style", "step", "octaves"],
         Some(CompletionBlock::Rhythm) => &["hit", "rest"],
         Some(CompletionBlock::Track) => &[
             "instrument",
@@ -1047,6 +1054,7 @@ fn completion_block(tokens: &[Token]) -> Option<CompletionBlock> {
                 });
             }
             TokenKind::Steps => pending = Some(CompletionBlock::Steps),
+            TokenKind::Arpeggiate => pending = Some(CompletionBlock::Arpeggiate),
             TokenKind::Choose => pending = Some(CompletionBlock::Choice),
             TokenKind::Sampled => pending = Some(CompletionBlock::Sampled),
             TokenKind::Sampler => pending = Some(CompletionBlock::Sampler),
@@ -1169,7 +1177,12 @@ fn completion_statement_start(tokens: &[Token]) -> bool {
                     | TokenKind::Release
                     | TokenKind::Voices
                     | TokenKind::Detune
-                    | TokenKind::Spread,
+                    | TokenKind::Spread
+                    | TokenKind::Step
+                    | TokenKind::Arpeggiate
+                    | TokenKind::Style
+                    | TokenKind::Octaves
+                    | TokenKind::Fit,
                 ..
             }]
         )
@@ -2901,6 +2914,70 @@ mod tests {
             ),
             // Same: unfinished `high` is absent until its body parses.
             ["sequence", "steps", "arpeggiate", "pad"]
+        );
+    }
+
+    #[test]
+    fn completes_arpeggiate_style_and_body_keywords() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        // Empty line inside `arpeggiate { … }` offers field keywords.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern pad = sequence {}\n",
+                    "  pattern arp = arpeggiate pad {\n",
+                    "    \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                3,
+                4,
+            ),
+            ["style", "step", "octaves"]
+        );
+
+        // After `style`, offer the five walk orders the compiler accepts.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern pad = sequence {}\n",
+                    "  pattern arp = arpeggiate pad {\n",
+                    "    style \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                3,
+                10,
+            ),
+            ["up", "down", "up_down", "down_up", "as_written"]
+        );
+
+        // Partial field keyword still starts the arpeggiate body set.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern pad = sequence {}\n",
+                    "  pattern arp = arpeggiate pad {\n",
+                    "    st\n",
+                    "  }\n",
+                    "}\n",
+                ),
+                3,
+                6,
+            ),
+            ["style", "step", "octaves"]
         );
     }
 

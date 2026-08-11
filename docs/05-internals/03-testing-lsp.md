@@ -103,7 +103,9 @@ Exercise these cases by replacing the buffer contents without saving:
    names; after `play track` in a section, track names; after track-body
    `effect`, effect-preset names alongside `delay`/`filter`/`reverb`; after
    `arpeggiate` or `pattern x =`, declared pattern names (with `sequence` /
-   `steps` / `arpeggiate` on the `=` form).
+   `steps` / `arpeggiate` on the `=` form); inside an `arpeggiate` body,
+   `style` / `step` / `octaves`, and after `style` the walk orders `up`,
+   `down`, `up_down`, `down_up`, `as_written`.
 8. Place the cursor on a language keyword and run `:lua vim.lsp.buf.hover()`.
    A short Markdown description should appear and apply to exactly that token.
 9. With a semantically valid document, hover `C4`. It should report MIDI note

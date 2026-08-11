@@ -3759,3 +3759,79 @@ song "S" {
         ["velocity must be from 0 to 127"]
     );
 }
+
+/// A `[ ... ]` subdivision splits its cell evenly between its items, and
+/// nests: each level divides the cell it sits in.
+#[test]
+fn compile_should_split_a_step_between_subdivided_items() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1bar {
+    drum "bd"
+    [ drum "cp" * 2 ]
+    [ drum "bd" [ drum "sn" rest ] ]
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("subdivisions should compile");
+    let durations = program.songs[0].patterns[0]
+        .steps
+        .iter()
+        .map(|step| match step {
+            PatternStep::Sample(sample) => sample.duration,
+            PatternStep::Rest(rest) => rest.duration,
+            other => panic!("unexpected step {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    let bar = Duration {
+        numerator: 4,
+        denominator: 4,
+    };
+    let half = Duration {
+        numerator: 2,
+        denominator: 4,
+    };
+    let quarter = Duration {
+        numerator: 1,
+        denominator: 4,
+    };
+    assert_eq!(
+        durations,
+        vec![
+            bar,     // an unsubdivided cell is still a whole bar
+            half,    // [ cp * 2 ]
+            half,    //
+            half,    // [ bd [ sn rest ] ]
+            quarter, //
+            quarter, //
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_subdivisions_that_expand_past_the_cap() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1bar { [ rest * 4000 ] * 4000 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("nested expansion should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["repetitions expand to more than 4096 items"]
+    );
+}

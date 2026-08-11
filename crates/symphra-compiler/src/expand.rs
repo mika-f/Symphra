@@ -99,6 +99,33 @@ pub fn rhythm_items(items: &[RhythmItem]) -> Option<Vec<Expanded<'_, RhythmItem>
     })
 }
 
+/// Total number of events a `steps` body lowers to, counting through
+/// repetitions and into subdivisions, or `None` past
+/// [`MAX_EXPANDED_ITEMS`].
+///
+/// Subdivisions nest, so the per-level cap in [`step_items`] is not enough
+/// on its own: `[ rest * 4096 ] * 4096` is 4096 cells at the top level and
+/// 16 million events in total. Counting the whole body up front rejects
+/// that before any of it is built.
+#[must_use]
+pub fn step_event_count(items: &[StepItem]) -> Option<usize> {
+    let mut total: usize = 0;
+    for item in items {
+        let events = match item {
+            StepItem::Repeat(group) => {
+                step_event_count(&group.items)?.checked_mul(group.count as usize)?
+            }
+            StepItem::Subdivide { items, .. } => step_event_count(items)?,
+            _ => 1,
+        };
+        total = total.checked_add(events)?;
+        if total > MAX_EXPANDED_ITEMS {
+            return None;
+        }
+    }
+    Some(total)
+}
+
 fn expand<T>(
     items: &[T],
     repeat: fn(&T) -> Option<&RepeatGroup<T>>,

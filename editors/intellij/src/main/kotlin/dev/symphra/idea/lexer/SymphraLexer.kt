@@ -110,7 +110,7 @@ class SymphraLexer : LexerBase() {
                         out += Token(s, i, type)
                     }
 
-                    c == '{' || c == '}' || c == '(' || c == ')' -> {
+                    c == '{' || c == '}' || c == '(' || c == ')' || c == '[' || c == ']' -> {
                         out += Token(i, i + 1, SymphraTokenTypes.BRACE)
                         i++
                     }

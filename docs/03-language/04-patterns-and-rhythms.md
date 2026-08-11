@@ -126,6 +126,34 @@ the pattern you would have typed by hand. Two rules keep it predictable:
 - A body may not expand to more than 4096 items. Past that, the count is
   almost certainly a typo, and the compiler says so instead of building it.
 
+## Subdivisions
+
+A step cell can be split between several items with `[ ... ]`. The items
+share that one cell, dividing it evenly:
+
+```symphra
+pattern fill = steps 1bar {
+  drum "bd"                 // one bar
+  [ drum "cp" * 2 ]         // two claps, half a bar each
+  [ drum "bd" [ drum "sn" rest ] ]   // half, then two quarters
+}
+```
+
+- Subdivisions nest, and each level divides the cell it sits in
+- A subdivision may be repeated: `[ drum "sn" * 2 ] * 4`
+- `choose { ... }` cannot appear inside one, the same way it cannot be
+  repeated
+
+A step resolution may be written in bars (`steps 1bar`) as well as as a
+fraction (`steps 1/16`), which is what makes bar-sized cells worth
+subdividing.
+
+Note what a subdivision does *not* do: it changes each item's duration, not
+the grid it sits on. `steps 1bar { [ drum "cp" * 2 ] }` is two claps each
+half a bar long — not two claps on a 1/16 grid followed by rests. For
+drum machines that matters, because a sample is cut off at the end of its
+step.
+
 ## Velocity ramps
 
 Anywhere `velocity N` is accepted, `velocity A..B` ramps linearly across the

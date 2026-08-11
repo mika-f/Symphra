@@ -15,7 +15,7 @@ compiler tests are authoritative.
 | String | `"Aoharu Signal"`, `"assets/x.wav"` |
 | Pitch | `C4`, `F#3`, `Bb2`, `C-1` |
 | Rate / unit literals | `48khz`, `150bpm`, `10ms`, `-6db`, `1400hz` |
-| Operators | `=`, `|>`, `..`, `:`, `/`, `*`, `%`, `{`, `}`, `(`, `)`, `,` |
+| Operators | `=`, `|>`, `..`, `:`, `/`, `*`, `%`, `{`, `}`, `(`, `)`, `[`, `]`, `,` |
 | Comment | `// line comment` |
 
 ## Top level
@@ -108,6 +108,9 @@ StepAtom =
   | "drum" String [Velocity]
   | "degree" Integer "octave" Integer
   | Group
+  | Subdivision
+
+Subdivision = "[" StepItem { StepItem } "]"       // splits one cell evenly
 
 Group    = "(" Item { "," Item } ")"             // Repeat is mandatory
 Repeat   = "*" Integer                           // Integer >= 1

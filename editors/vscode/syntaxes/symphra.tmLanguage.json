@@ -101,6 +101,10 @@
           "match": "[()]"
         },
         {
+          "name": "punctuation.section.brackets.symphra",
+          "match": "[\\[\\]]"
+        },
+        {
           "name": "keyword.operator.assignment.symphra",
           "match": "="
         },

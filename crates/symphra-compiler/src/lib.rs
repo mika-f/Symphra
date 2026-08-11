@@ -41,6 +41,25 @@ fn rhythm_cell_count(duration: Duration, resolution: Duration) -> Option<u64> {
     }
 }
 
+/// Splits one grid cell between the `cells` items of a `[ ... ]`
+/// subdivision. Prefers dividing the numerator so nested subdivisions do not
+/// grow the denominator faster than they have to; `None` when the split
+/// cannot be represented (an empty subdivision, or a denominator past
+/// `u32`).
+fn divide_duration(duration: Duration, cells: usize) -> Option<Duration> {
+    let cells = u32::try_from(cells).ok().filter(|cells| *cells > 0)?;
+    if duration.numerator.is_multiple_of(cells) {
+        return Some(Duration {
+            numerator: duration.numerator / cells,
+            denominator: duration.denominator,
+        });
+    }
+    Some(Duration {
+        numerator: duration.numerator,
+        denominator: duration.denominator.checked_mul(cells)?,
+    })
+}
+
 fn transposed_pitch(midi_pitch: u8, semitones: i32) -> Option<u8> {
     i32::from(midi_pitch)
         .checked_add(semitones)
@@ -1660,17 +1679,10 @@ impl Compiler {
         let steps = match &declaration.body {
             PatternBody::Sequence { items, span } => self.sequence_steps(items, *span, meter),
             PatternBody::Steps {
-                resolution_numerator,
-                resolution_denominator,
+                resolution,
                 items,
                 span,
-            } => self.steps(
-                *resolution_numerator,
-                *resolution_denominator,
-                items,
-                *span,
-                key,
-            ),
+            } => self.steps(resolution, items, *span, key, meter),
         };
         Pattern {
             id,
@@ -1749,23 +1761,61 @@ impl Compiler {
 
     fn steps(
         &mut self,
-        numerator: u32,
-        denominator: u32,
+        resolution: &DurationExpression,
         items: &[StepItem],
         span: SourceSpan,
         key: Option<&Key>,
+        meter: Option<&Meter>,
     ) -> Vec<PatternStep> {
-        let Some(duration) = self.duration(numerator, denominator, span, "step") else {
+        let Some(duration) = self.item_duration(resolution, meter, span, "step") else {
             return Vec::new();
         };
+        // Counted once for the whole body, subdivisions included, so a
+        // nested blow-up is rejected before any of it is built.
+        if expand::step_event_count(items).is_none() {
+            self.error(
+                &format!(
+                    "repetitions expand to more than {} items",
+                    expand::MAX_EXPANDED_ITEMS
+                ),
+                span,
+            );
+            return Vec::new();
+        }
+        self.step_events(items, duration, span, key)
+    }
+
+    /// Lowers one level of a `steps` body at `duration` per cell, recursing
+    /// into `[ ... ]` subdivisions with the cell duration split between
+    /// their items.
+    fn step_events(
+        &mut self,
+        items: &[StepItem],
+        duration: Duration,
+        span: SourceSpan,
+        key: Option<&Key>,
+    ) -> Vec<PatternStep> {
         let Some(items) = self.expanded(expand::step_items(items), span) else {
             return Vec::new();
         };
-        items
-            .into_iter()
-            .filter_map(|expanded| match expanded.item {
-                StepItem::Repeat(_) => {
-                    unreachable!("repetitions are expanded before lowering")
+        let mut steps = Vec::with_capacity(items.len());
+        for expanded in items {
+            if let StepItem::Subdivide {
+                items: nested,
+                span: nested_span,
+            } = expanded.item
+            {
+                let cells = expand::step_items(nested).map_or(0, |cells| cells.len());
+                let Some(divided) = divide_duration(duration, cells) else {
+                    self.error("subdivision splits a step too finely", *nested_span);
+                    continue;
+                };
+                steps.extend(self.step_events(nested, divided, *nested_span, key));
+                continue;
+            }
+            let step = match expanded.item {
+                StepItem::Repeat(_) | StepItem::Subdivide { .. } => {
+                    unreachable!("repetitions are expanded, and subdivisions handled above")
                 }
                 StepItem::Degree {
                     degree,
@@ -1829,8 +1879,10 @@ impl Compiler {
                 StepItem::ChooseDegrees { alternatives, span } => Some(PatternStep::DegreeChoice(
                     self.degree_choice(alternatives, *span, duration, key),
                 )),
-            })
-            .collect()
+            };
+            steps.extend(step);
+        }
+        steps
     }
 
     fn sample_choice_alternatives(

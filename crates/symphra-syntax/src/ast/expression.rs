@@ -15,8 +15,7 @@ pub enum PatternBody {
         span: SourceSpan,
     },
     Steps {
-        resolution_numerator: u32,
-        resolution_denominator: u32,
+        resolution: DurationExpression,
         items: Vec<StepItem>,
         span: SourceSpan,
     },
@@ -42,6 +41,13 @@ pub enum StepItem {
     /// `drum "hh" velocity 38 * 4`, or `(rest, drum "cp") * 2`. Block-shaped
     /// items (`choose`) are not repeatable — see the parser.
     Repeat(RepeatGroup<StepItem>),
+    /// `[ a b c ]`: the items share one grid cell, splitting it evenly, so
+    /// each lasts `resolution / 3` here. Subdivisions nest, and each level
+    /// divides the cell it sits in.
+    Subdivide {
+        items: Vec<StepItem>,
+        span: SourceSpan,
+    },
     Degree {
         degree: u32,
         octave: u32,

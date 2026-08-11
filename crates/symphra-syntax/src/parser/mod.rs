@@ -53,6 +53,7 @@ const SEQUENCE_ITEM_START: &[TokenKind] = &[
     TokenKind::Eof,
 ];
 const STEP_ITEM_START: &[TokenKind] = &[
+    TokenKind::LeftBracket,
     TokenKind::Degree,
     TokenKind::Sample,
     TokenKind::Drum,
@@ -67,6 +68,12 @@ const STEP_ITEM_START: &[TokenKind] = &[
 const GROUP_ITEM_RECOVERY: &[TokenKind] = &[
     TokenKind::Comma,
     TokenKind::RightParen,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+/// Where to resync after a malformed item inside a `[ ... ]` subdivision.
+const SUBDIVISION_ITEM_RECOVERY: &[TokenKind] = &[
+    TokenKind::RightBracket,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -1449,10 +1456,7 @@ impl Parser {
 
     fn steps_pattern(&mut self, start: SourceSpan, name: Identifier) -> Option<PatternDeclaration> {
         self.bump();
-        let numerator = self.required(TokenKind::Integer, "expected step resolution numerator")?;
-        self.required(TokenKind::Slash, "expected `/` in step resolution")?;
-        let denominator =
-            self.required(TokenKind::Integer, "expected step resolution denominator")?;
+        let resolution = self.duration_expr("step resolution")?;
         let body_start = self
             .required(TokenKind::LeftBrace, "expected `{` after step resolution")?
             .span;
@@ -1470,8 +1474,7 @@ impl Parser {
         Some(PatternDeclaration {
             name,
             body: PatternBody::Steps {
-                resolution_numerator: self.parse_u32(&numerator)?,
-                resolution_denominator: self.parse_u32(&denominator)?,
+                resolution,
                 items,
                 span: body_start.cover(end),
             },
@@ -1491,6 +1494,10 @@ impl Parser {
         if self.at(TokenKind::LeftParen) {
             let (items, count, span) = self.repetition_group(Self::step_item, start)?;
             return Some(StepItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        if self.at(TokenKind::LeftBracket) {
+            let subdivision = self.subdivision(start)?;
+            return self.repeated(subdivision, start, StepItem::Repeat);
         }
         if self.at(TokenKind::Choose) {
             let item = self.choice();
@@ -1531,11 +1538,41 @@ impl Parser {
                 span: self.bump().span,
             }),
             _ => {
-                self.error("expected a degree, sample, drum, rest, choose, or `(` in steps");
+                self.error("expected a degree, sample, drum, rest, choose, `(`, or `[` in steps");
                 None
             }
         }?;
         self.repeated(item, start, StepItem::Repeat)
+    }
+
+    /// Parses `[ a b c ]`: items that split one grid cell evenly between
+    /// them. Unlike a repetition group the elements are not comma-separated,
+    /// because a subdivision reads as a run of cells, not as an argument
+    /// list.
+    fn subdivision(&mut self, start: SourceSpan) -> Option<StepItem> {
+        self.bump();
+        let mut items = Vec::new();
+        while !self.at_any(&[TokenKind::RightBracket, TokenKind::Eof]) {
+            if let Some(item) = self.step_item() {
+                items.push(item);
+            } else {
+                self.recover_to(SUBDIVISION_ITEM_RECOVERY);
+            }
+        }
+        let end = self
+            .required(
+                TokenKind::RightBracket,
+                "expected `]` to close a subdivision",
+            )?
+            .span;
+        if items.is_empty() {
+            self.error("a subdivision must contain at least one item");
+            return None;
+        }
+        Some(StepItem::Subdivide {
+            items,
+            span: start.cover(end),
+        })
     }
 
     fn degree_step(&mut self) -> Option<StepItem> {

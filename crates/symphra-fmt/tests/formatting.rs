@@ -1027,3 +1027,21 @@ fn formats_velocity_ramps() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_subdivisions_and_bar_step_resolutions() {
+    let input = r#"song "S" {
+  pattern kit = steps 1bar { [drum "cp" velocity 70..74*2] [ drum "bd"   [drum "sn" rest] ] }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern kit = steps 1bar {
+    [drum "cp" velocity 70..74 * 2]
+    [drum "bd" [drum "sn" rest]]
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

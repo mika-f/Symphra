@@ -1205,7 +1205,8 @@ fn step_item_span(item: &StepItem) -> SourceSpan {
         | StepItem::Drum { span, .. }
         | StepItem::Rest { span }
         | StepItem::Choose { span, .. }
-        | StepItem::ChooseDegrees { span, .. } => *span,
+        | StepItem::ChooseDegrees { span, .. }
+        | StepItem::Subdivide { span, .. } => *span,
         StepItem::Repeat(group) => group.span,
     }
 }
@@ -1227,16 +1228,12 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
             );
         }
         PatternBody::Steps {
-            resolution_numerator,
-            resolution_denominator,
-            items,
-            ..
+            resolution, items, ..
         } => {
             let header = format!(
-                "pattern {} = steps {}/{}",
+                "pattern {} = steps {}",
                 ctx.text(decl.name.span),
-                resolution_numerator,
-                resolution_denominator
+                format_duration(resolution)
             );
             let items: Vec<&StepItem> = items.iter().collect();
             print_block(
@@ -1336,6 +1333,14 @@ fn step_item_text(ctx: &Ctx<'_>, item: &StepItem) -> String {
         }
         StepItem::Rest { .. } => "rest".to_owned(),
         StepItem::Repeat(group) => format_repeat(group, |item| step_item_text(ctx, item)),
+        StepItem::Subdivide { items, .. } => {
+            let items = items
+                .iter()
+                .map(|item| step_item_text(ctx, item))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("[{items}]")
+        }
         StepItem::Choose { .. } | StepItem::ChooseDegrees { .. } => {
             unreachable!("choose is not repeatable, and is printed as a block")
         }
@@ -1348,7 +1353,8 @@ fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
         | StepItem::Sample { .. }
         | StepItem::Drum { .. }
         | StepItem::Rest { .. }
-        | StepItem::Repeat(_) => {
+        | StepItem::Repeat(_)
+        | StepItem::Subdivide { .. } => {
             let line = step_item_text(ctx, item);
             ctx.printer.line(line);
         }

@@ -98,6 +98,8 @@ pub enum TokenKind {
     Spread,
     LeftBrace,
     RightBrace,
+    LeftBracket,
+    RightBracket,
     Equal,
     Slash,
     Plus,

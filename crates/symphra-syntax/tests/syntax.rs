@@ -418,6 +418,7 @@ fn parses_drum_steps() {
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
             StepItem::Repeat(_) => panic!("unexpected repetition"),
+            StepItem::Subdivide { .. } => panic!("unexpected subdivision"),
         })
         .collect::<Vec<_>>();
     assert_eq!(names, vec![Some("bd"), None, Some("hh")]);
@@ -439,10 +440,7 @@ fn parses_sample_steps() {
         panic!("statement should be a pattern");
     };
     let PatternBody::Steps {
-        resolution_numerator,
-        resolution_denominator,
-        items,
-        ..
+        resolution, items, ..
     } = &pattern.body
     else {
         panic!("pattern should contain steps");
@@ -458,12 +456,18 @@ fn parses_sample_steps() {
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
             StepItem::Repeat(_) => panic!("unexpected repetition"),
+            StepItem::Subdivide { .. } => panic!("unexpected subdivision"),
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        (*resolution_numerator, *resolution_denominator, indices),
-        (1, 8, vec![Some(1), None, Some(3)])
-    );
+    assert!(matches!(
+        resolution,
+        DurationExpression::Fraction {
+            numerator: 1,
+            denominator: 8,
+            ..
+        }
+    ));
+    assert_eq!(indices, vec![Some(1), None, Some(3)]);
 }
 
 #[test]
@@ -496,6 +500,7 @@ fn parses_drum_and_sample_step_velocity() {
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
             StepItem::Repeat(_) => panic!("unexpected repetition"),
+            StepItem::Subdivide { .. } => panic!("unexpected subdivision"),
         })
         .collect::<Vec<_>>();
     assert_eq!(velocities, vec![Some(90), Some(40), None]);
@@ -1563,5 +1568,59 @@ fn rejects_a_velocity_ramp_without_an_end() {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         ["expected the end of a velocity ramp"]
+    );
+}
+
+#[test]
+fn parses_a_bar_step_resolution_and_subdivisions() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1bar { [ drum "cp" * 2 ] [ drum "bd" [ drum "sn" rest ] ] } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps {
+        resolution, items, ..
+    } = &pattern.body
+    else {
+        panic!("pattern should contain steps");
+    };
+    assert!(matches!(
+        resolution,
+        DurationExpression::Bars { count: 1, .. }
+    ));
+
+    let [
+        StepItem::Subdivide { items: first, .. },
+        StepItem::Subdivide { items: second, .. },
+    ] = items.as_slice()
+    else {
+        panic!("both cells should be subdivisions");
+    };
+    assert!(matches!(first.as_slice(), [StepItem::Repeat(_)]));
+    assert!(matches!(
+        second.as_slice(),
+        [StepItem::Drum { .. }, StepItem::Subdivide { .. }]
+    ));
+}
+
+#[test]
+fn rejects_an_empty_subdivision() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { [] } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["a subdivision must contain at least one item"]
     );
 }

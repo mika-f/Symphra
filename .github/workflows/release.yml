@@ -1,0 +1,156 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # Ensure the tag matches [workspace.package].version before building.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check tag matches workspace version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Tag must look like v0.1.0 (got: $tag)" >&2
+            exit 1
+          fi
+          expected="${tag#v}"
+          actual="$(
+            awk '
+              /^\[workspace\.package\]/ { in_pkg = 1; next }
+              /^\[/ { in_pkg = 0 }
+              in_pkg && /^version = "/ {
+                sub(/^version = "/, "")
+                sub(/"$/, "")
+                print
+                exit
+              }
+            ' Cargo.toml
+          )"
+          if [[ -z "$actual" ]]; then
+            echo "Could not read workspace.package.version from Cargo.toml" >&2
+            exit 1
+          fi
+          if [[ "$actual" != "$expected" ]]; then
+            echo "Tag version ($expected) does not match Cargo.toml workspace version ($actual)" >&2
+            echo "Bump [workspace.package].version before tagging." >&2
+            exit 1
+          fi
+          echo "version=$actual" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$actual"
+
+  build:
+    name: Build (${{ matrix.target }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build release binaries
+        run: >
+          cargo build --release --locked
+          --target ${{ matrix.target }}
+          -p symphra
+          -p symphra-lsp
+          -p symphra-formatter
+
+      - name: Package artifacts (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.plan.outputs.version }}"
+          target="${{ matrix.target }}"
+          staging="symphra-v${version}-${target}"
+          mkdir -p "$staging"
+          cp "target/${target}/release/symphra" "$staging/"
+          cp "target/${target}/release/symphra-lsp" "$staging/"
+          cp "target/${target}/release/symphra-formatter" "$staging/"
+          cp LICENSE README.md "$staging/"
+          tar -czf "${staging}.tar.gz" "$staging"
+          echo "ASSET=${staging}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = "${{ needs.plan.outputs.version }}"
+          $target = "${{ matrix.target }}"
+          $staging = "symphra-v${version}-${target}"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+          Copy-Item "target/${target}/release/symphra.exe" $staging
+          Copy-Item "target/${target}/release/symphra-lsp.exe" $staging
+          Copy-Item "target/${target}/release/symphra-formatter.exe" $staging
+          Copy-Item LICENSE, README.md $staging
+          Compress-Archive -Path $staging -DestinationPath "${staging}.zip"
+          Add-Content -Path $env:GITHUB_ENV -Value "ASSET=${staging}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binaries-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download all artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          name: Symphra ${{ needs.plan.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

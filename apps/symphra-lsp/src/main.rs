@@ -20,8 +20,7 @@ use tower_lsp_server::ls_types::{
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, HoverProviderCapability,
     InitializeParams, InitializeResult, InlayHint, InlayHintKind, InlayHintLabel, InlayHintOptions,
     InlayHintParams, InlayHintServerCapabilities, Location, MarkupContent, MarkupKind, OneOf,
-    Position,
-    PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, RenameOptions,
+    Position, PositionEncodingKind, PrepareRenameResponse, Range, ReferenceParams, RenameOptions,
     RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
@@ -78,14 +77,16 @@ impl LanguageServer for Backend {
                     prepare_provider: Some(true),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 })),
-                semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
-                    SemanticTokensOptions {
-                        legend: semantic_tokens_legend(),
-                        full: Some(SemanticTokensFullOptions::Bool(true)),
-                        range: Some(false),
-                        work_done_progress_options: WorkDoneProgressOptions::default(),
-                    },
-                )),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: semantic_tokens_legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: Some(false),
+                            work_done_progress_options: WorkDoneProgressOptions::default(),
+                        },
+                    ),
+                ),
                 inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
                     InlayHintOptions {
                         resolve_provider: Some(false),
@@ -550,14 +551,12 @@ fn name_completion_kind(
 
     match tokens {
         // `play <pattern>` inside a track or layer use.
-        [Token {
-            kind: TokenKind::Play,
-            ..
-        }] if matches!(
-            block,
-            Some(CompletionBlock::Track | CompletionBlock::Use)
-        ) =>
-        {
+        [
+            Token {
+                kind: TokenKind::Play,
+                ..
+            },
+        ] if matches!(block, Some(CompletionBlock::Track | CompletionBlock::Use)) => {
             Some(NamedKind::Pattern)
         }
         // `play track <name>` inside a section parallel block.
@@ -572,17 +571,22 @@ fn name_completion_kind(
             },
         ] if matches!(block, Some(CompletionBlock::Parallel)) => Some(NamedKind::Track),
         // `play <section>` inside arrangement.
-        [Token {
-            kind: TokenKind::Play,
-            ..
-        }] if matches!(block, Some(CompletionBlock::Arrangement)) => Some(NamedKind::Section),
+        [
+            Token {
+                kind: TokenKind::Play,
+                ..
+            },
+        ] if matches!(block, Some(CompletionBlock::Arrangement)) => Some(NamedKind::Section),
         // Bare pattern occurrence in arrangement: empty line or partial name.
         [] if matches!(block, Some(CompletionBlock::Arrangement)) => Some(NamedKind::Pattern),
         // `arrangement { melody with <instrument> }`
-        [.., Token {
-            kind: TokenKind::With,
-            ..
-        }] if matches!(block, Some(CompletionBlock::Arrangement))
+        [
+            ..,
+            Token {
+                kind: TokenKind::With,
+                ..
+            },
+        ] if matches!(block, Some(CompletionBlock::Arrangement))
             && !matches!(
                 tokens.first(),
                 Some(Token {
@@ -612,19 +616,26 @@ fn name_completion_kind(
                 ..
             },
         ]
-        | [.., Token {
-            kind: TokenKind::TriggerWith,
-            ..
-        }] => Some(NamedKind::Rhythm),
+        | [
+            ..,
+            Token {
+                kind: TokenKind::TriggerWith,
+                ..
+            },
+        ] => Some(NamedKind::Rhythm),
         // `instrument <name>` / `use <name>` inside a track body.
-        [Token {
-            kind: TokenKind::Instrument,
-            ..
-        }] if matches!(block, Some(CompletionBlock::Track)) => Some(NamedKind::Instrument),
-        [Token {
-            kind: TokenKind::Use,
-            ..
-        }] if matches!(block, Some(CompletionBlock::Layer | CompletionBlock::Use)) => {
+        [
+            Token {
+                kind: TokenKind::Instrument,
+                ..
+            },
+        ] if matches!(block, Some(CompletionBlock::Track)) => Some(NamedKind::Instrument),
+        [
+            Token {
+                kind: TokenKind::Use,
+                ..
+            },
+        ] if matches!(block, Some(CompletionBlock::Layer | CompletionBlock::Use)) => {
             Some(NamedKind::Instrument)
         }
         _ => None,
@@ -1152,9 +1163,7 @@ fn references(
     };
 
     let mut locations = Vec::new();
-    if include_declaration
-        && let Some(range) = lsp_range(source, declaration)
-    {
+    if include_declaration && let Some(range) = lsp_range(source, declaration) {
         locations.push(Location::new(uri.clone(), range));
     }
     for span in ref_spans {
@@ -1364,8 +1373,11 @@ fn rename_target_in_song(
     });
     let (kind, name, occurrence) = matched?;
     named_declarations(song).find_map(|(declaration_kind, identifier)| {
-        (declaration_kind == kind && identifier.text == name)
-            .then_some((kind, identifier.text.as_str(), occurrence))
+        (declaration_kind == kind && identifier.text == name).then_some((
+            kind,
+            identifier.text.as_str(),
+            occurrence,
+        ))
     })
 }
 
@@ -1404,10 +1416,7 @@ impl NamedKind {
 }
 
 /// Declaration or resolved reference under `offset` → `(kind, name, declaration span)`.
-fn named_symbol_at(
-    song: &SongDeclaration,
-    offset: u32,
-) -> Option<(NamedKind, &str, SourceSpan)> {
+fn named_symbol_at(song: &SongDeclaration, offset: u32) -> Option<(NamedKind, &str, SourceSpan)> {
     for (kind, name) in named_declarations(song) {
         if span_contains(name.span, offset) {
             return Some((kind, name.text.as_str(), name.span));
@@ -1425,14 +1434,18 @@ fn declaration_span(song: &SongDeclaration, kind: NamedKind, name: &str) -> Opti
 }
 
 fn named_declarations(song: &SongDeclaration) -> impl Iterator<Item = (NamedKind, &Identifier)> {
-    song.statements.iter().filter_map(|statement| match statement {
-        SongStatement::Pattern(pattern) => Some((NamedKind::Pattern, &pattern.name)),
-        SongStatement::Instrument(instrument) => Some((NamedKind::Instrument, &instrument.name)),
-        SongStatement::Rhythm(rhythm) => Some((NamedKind::Rhythm, &rhythm.name)),
-        SongStatement::Track(track) => Some((NamedKind::Track, &track.name)),
-        SongStatement::Section(section) => Some((NamedKind::Section, &section.name)),
-        _ => None,
-    })
+    song.statements
+        .iter()
+        .filter_map(|statement| match statement {
+            SongStatement::Pattern(pattern) => Some((NamedKind::Pattern, &pattern.name)),
+            SongStatement::Instrument(instrument) => {
+                Some((NamedKind::Instrument, &instrument.name))
+            }
+            SongStatement::Rhythm(rhythm) => Some((NamedKind::Rhythm, &rhythm.name)),
+            SongStatement::Track(track) => Some((NamedKind::Track, &track.name)),
+            SongStatement::Section(section) => Some((NamedKind::Section, &section.name)),
+            _ => None,
+        })
 }
 
 /// Reference site under `offset` → `(kind, referenced name)`, only when a matching declaration exists.
@@ -1555,12 +1568,9 @@ fn semantic_tokens(source: &SourceText) -> SemanticTokens {
     let mut absolute = Vec::new();
 
     for comment in &lexed.comments {
-        if let Some(token) = absolute_semantic_token(
-            source,
-            comment.span,
-            SEMANTIC_TOKEN_COMMENT,
-            0,
-        ) {
+        if let Some(token) =
+            absolute_semantic_token(source, comment.span, SEMANTIC_TOKEN_COMMENT, 0)
+        {
             absolute.push(token);
         }
     }
@@ -1576,9 +1586,7 @@ fn semantic_tokens(source: &SourceText) -> SemanticTokens {
         } else {
             continue;
         };
-        if let Some(encoded) =
-            absolute_semantic_token(source, token.span, token_type, modifiers)
-        {
+        if let Some(encoded) = absolute_semantic_token(source, token.span, token_type, modifiers) {
             absolute.push(encoded);
         }
     }
@@ -1614,7 +1622,10 @@ fn absolute_semantic_token(
     if range.start.line != range.end.line {
         return None;
     }
-    let length = range.end.utf16_column.saturating_sub(range.start.utf16_column);
+    let length = range
+        .end
+        .utf16_column
+        .saturating_sub(range.start.utf16_column);
     (length > 0).then_some(AbsoluteSemanticToken {
         line: range.start.line,
         start: range.start.utf16_column,
@@ -1656,9 +1667,7 @@ fn lex_token_classification(token: &Token) -> Option<(u32, u32)> {
     match token.kind {
         TokenKind::String => Some((SEMANTIC_TOKEN_STRING, 0)),
         TokenKind::Integer | TokenKind::Decimal => Some((SEMANTIC_TOKEN_NUMBER, 0)),
-        TokenKind::Identifier if looks_like_pitch(&token.text) => {
-            Some((SEMANTIC_TOKEN_TYPE, 0))
-        }
+        TokenKind::Identifier if looks_like_pitch(&token.text) => Some((SEMANTIC_TOKEN_TYPE, 0)),
         _ => None,
     }
 }
@@ -1716,8 +1725,7 @@ fn inlay_hints(source: &SourceText, visible_range: &Range) -> Vec<InlayHint> {
     let mut hints = Vec::new();
 
     for (span, midi) in pitch_midi_spans(source) {
-        if let Some(hint) =
-            trailing_inlay_hint(source, span, format!("MIDI {midi}"), visible_range)
+        if let Some(hint) = trailing_inlay_hint(source, span, format!("MIDI {midi}"), visible_range)
         {
             hints.push(hint);
         }
@@ -1787,18 +1795,14 @@ fn range_contains_position(range: &Range, position: Position) -> bool {
 fn inlay_label_text(label: &InlayHintLabel) -> &str {
     match label {
         InlayHintLabel::String(text) => text.as_str(),
-        InlayHintLabel::LabelParts(parts) => {
-            parts.first().map_or("", |part| part.value.as_str())
-        }
+        InlayHintLabel::LabelParts(parts) => parts.first().map_or("", |part| part.value.as_str()),
     }
 }
 
 fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
     pitch_midi_spans(source)
         .into_iter()
-        .find_map(|(pitch_span, midi)| {
-            (pitch_span == span).then(|| format!("MIDI note {midi}."))
-        })
+        .find_map(|(pitch_span, midi)| (pitch_span == span).then(|| format!("MIDI note {midi}.")))
 }
 
 /// Compiled MIDI values for every sequence pitch that the compiler lowered.
@@ -3288,10 +3292,7 @@ mod tests {
         // arrangement use of `melody`: function without declaration.
         assert!(
             decoded.iter().any(|token| {
-                token.0 == 3
-                    && token.3 == SEMANTIC_TOKEN_FUNCTION
-                    && token.4 == 0
-                    && token.2 == 6
+                token.0 == 3 && token.3 == SEMANTIC_TOKEN_FUNCTION && token.4 == 0 && token.2 == 6
             }),
             "melody reference: {decoded:?}"
         );
@@ -3368,19 +3369,18 @@ mod tests {
         let lenses = code_lenses(&source, &uri);
         let melody = lenses
             .iter()
-            .find(|lens| {
-                lens.range == Range::new(Position::new(1, 10), Position::new(1, 16))
-            })
+            .find(|lens| lens.range == Range::new(Position::new(1, 10), Position::new(1, 16)))
             .expect("melody should have a code lens");
         let unused = lenses
             .iter()
-            .find(|lens| {
-                lens.range == Range::new(Position::new(2, 10), Position::new(2, 16))
-            })
+            .find(|lens| lens.range == Range::new(Position::new(2, 10), Position::new(2, 16)))
             .expect("unused should have a code lens");
 
         assert_eq!(
-            melody.command.as_ref().map(|command| command.title.as_str()),
+            melody
+                .command
+                .as_ref()
+                .map(|command| command.title.as_str()),
             Some("1 reference")
         );
         assert_eq!(
@@ -3419,11 +3419,7 @@ mod tests {
         // prepareRename on the Second.melody declaration.
         let prepared = prepare_rename(&source, Position::new(4, 10))
             .expect("pattern declaration should be renameable");
-        let PrepareRenameResponse::RangeWithPlaceholder {
-            range,
-            placeholder,
-        } = prepared
-        else {
+        let PrepareRenameResponse::RangeWithPlaceholder { range, placeholder } = prepared else {
             panic!("prepareRename should return a range with placeholder");
         };
         assert_eq!(
@@ -3493,19 +3489,11 @@ mod tests {
 
         let invalid = rename(&source, &uri, Position::new(1, 10), "1bad")
             .expect_err("invalid identifiers should error");
-        assert!(
-            invalid
-                .message
-                .contains("not a valid Symphra identifier")
-        );
+        assert!(invalid.message.contains("not a valid Symphra identifier"));
 
         let keyword = rename(&source, &uri, Position::new(1, 10), "pattern")
             .expect_err("keywords should error");
-        assert!(
-            keyword
-                .message
-                .contains("not a valid Symphra identifier")
-        );
+        assert!(keyword.message.contains("not a valid Symphra identifier"));
 
         let conflict = rename(&source, &uri, Position::new(1, 10), "bass")
             .expect_err("same-kind name collisions should error");

@@ -378,16 +378,40 @@ fn print_section_parallel(ctx: &mut Ctx<'_>, decl: &SectionDeclaration) {
         "parallel"
     };
     let items: Vec<&SectionTrack> = decl.tracks.iter().collect();
+    // `SectionDeclaration` only records the whole section span, not the
+    // inner `parallel` block. Using the section span as the parallel body's
+    // open bound makes the first `play track` see the newlines after the
+    // section `{` *and* the parallel `{` as a blank gap. Start at the
+    // `parallel` keyword instead so only the gap inside the parallel body
+    // counts.
+    let block_span = SourceSpan {
+        source: decl.span.source,
+        start: parallel_keyword_start(ctx.source, decl),
+        end: decl.span.end,
+    };
     print_block(
         ctx,
         header,
-        decl.span,
+        block_span,
         &items,
         |track: &SectionTrack| track.span,
         |_| 0,
         Reorder::No,
         print_section_track,
     );
+}
+
+/// Byte offset of the `parallel` keyword inside a section, or the section
+/// start if it cannot be found (should not happen for a valid parse).
+fn parallel_keyword_start(source: &str, section: &SectionDeclaration) -> u32 {
+    let text = &source[section.span.range()];
+    let Some(brace) = text.find('{') else {
+        return section.span.start;
+    };
+    let Some(rel) = text[brace..].find("parallel") else {
+        return section.span.start;
+    };
+    section.span.start + u32::try_from(brace + rel).unwrap_or(0)
 }
 
 /// Prints `play track <name>`, with its override block when it has one.

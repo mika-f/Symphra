@@ -774,6 +774,29 @@ fn formats_section_with_exact_parallel_block() {
 "#;
 
     assert_eq!(format(input), expected);
+
+    // Already multi-line input must not invent a blank line before the first
+    // `play track` (the parallel body open bound used to be the section
+    // span, so the newlines after both `{`s looked like a blank gap).
+    let multiline = r#"song "S" {
+  section intro bars 4 {
+    parallel exact {
+      play track arp
+    }
+  }
+}
+"#;
+    assert_eq!(
+        format(multiline),
+        r#"song "S" {
+  section intro bars 4 {
+    parallel exact {
+      play track arp
+    }
+  }
+}
+"#
+    );
 }
 
 #[test]

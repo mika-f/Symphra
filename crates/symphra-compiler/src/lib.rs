@@ -13,6 +13,7 @@ use symphra_syntax::ast::{
     SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
 };
 
+use crate::expand::Repetition;
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
     Duration, Effect, Envelope, FilterAutomation, FilterEffect, InstrumentKind, Key, LfoWaveform,
@@ -545,7 +546,7 @@ impl Compiler {
             resolution,
             items: items
                 .into_iter()
-                .map(|item| match item {
+                .map(|expanded| match expanded.item {
                     symphra_syntax::ast::RhythmItem::Hit { .. } => RhythmItem::Hit,
                     symphra_syntax::ast::RhythmItem::Rest { .. } => RhythmItem::Rest,
                     symphra_syntax::ast::RhythmItem::Repeat(_) => {
@@ -1689,14 +1690,14 @@ impl Compiler {
         };
         items
             .into_iter()
-            .filter_map(|item| match item {
+            .filter_map(|expanded| match expanded.item {
                 SequenceItem::Repeat(_) => {
                     unreachable!("repetitions are expanded before lowering")
                 }
                 SequenceItem::Note(note) => {
                     let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
                     let duration = self.item_duration(&note.duration, meter, note.span, "note");
-                    let velocity = self.velocity(note.velocity.as_ref());
+                    let velocity = self.velocity(note.velocity.as_ref(), expanded.position);
                     let (Some(midi_pitch), Some(duration), Some(velocity)) =
                         (midi_pitch, duration, velocity)
                     else {
@@ -1716,7 +1717,7 @@ impl Compiler {
                         .map(|pitch| self.pitch(&pitch.text, pitch.span))
                         .collect::<Option<Vec<_>>>();
                     let duration = self.item_duration(&chord.duration, meter, chord.span, "chord");
-                    let velocity = self.velocity(chord.velocity.as_ref());
+                    let velocity = self.velocity(chord.velocity.as_ref(), expanded.position);
                     let (Some(midi_pitches), Some(duration), Some(velocity)) =
                         (midi_pitches, duration, velocity)
                     else {
@@ -1762,7 +1763,7 @@ impl Compiler {
         };
         items
             .into_iter()
-            .filter_map(|item| match item {
+            .filter_map(|expanded| match expanded.item {
                 StepItem::Repeat(_) => {
                     unreachable!("repetitions are expanded before lowering")
                 }
@@ -1782,14 +1783,16 @@ impl Compiler {
                     }),
                 StepItem::Sample {
                     index, velocity, ..
-                } => self.velocity(velocity.as_ref()).map(|velocity| {
-                    PatternStep::Sample(SampleTrigger {
-                        id: self.id(),
-                        selector: SampleSelector::Index(*index),
-                        duration,
-                        velocity,
-                    })
-                }),
+                } => self
+                    .velocity(velocity.as_ref(), expanded.position)
+                    .map(|velocity| {
+                        PatternStep::Sample(SampleTrigger {
+                            id: self.id(),
+                            selector: SampleSelector::Index(*index),
+                            duration,
+                            velocity,
+                        })
+                    }),
                 StepItem::Drum {
                     name,
                     velocity,
@@ -1799,14 +1802,15 @@ impl Compiler {
                         self.error("drum voice name must not be empty", *span);
                         None
                     } else {
-                        self.velocity(velocity.as_ref()).map(|velocity| {
-                            PatternStep::Sample(SampleTrigger {
-                                id: self.id(),
-                                selector: SampleSelector::Named(name.value.clone()),
-                                duration,
-                                velocity,
+                        self.velocity(velocity.as_ref(), expanded.position)
+                            .map(|velocity| {
+                                PatternStep::Sample(SampleTrigger {
+                                    id: self.id(),
+                                    selector: SampleSelector::Named(name.value.clone()),
+                                    duration,
+                                    velocity,
+                                })
                             })
-                        })
                     }
                 }
                 StepItem::Rest { .. } => Some(PatternStep::Rest(Rest {
@@ -2007,22 +2011,30 @@ impl Compiler {
         self.duration(numerator, denominator, span, item)
     }
 
+    /// Resolves an item's velocity at `position`, the place it sits in the
+    /// repetition that produced it. A plain `velocity N` ignores the
+    /// position; a `velocity A..B` ramp interpolates across the repetition's
+    /// copies, and needs one to ramp across.
     fn velocity(
         &mut self,
         velocity: Option<&symphra_syntax::ast::VelocityExpression>,
+        position: Repetition,
     ) -> Option<u8> {
         let Some(velocity) = velocity else {
             return Some(DEFAULT_VELOCITY);
         };
-        if let Some(value) = u8::try_from(velocity.value)
-            .ok()
-            .filter(|value| *value <= 127)
-        {
-            Some(value)
-        } else {
+        if velocity.value > 127 || velocity.ramp_to.is_some_and(|end| end > 127) {
             self.error("velocity must be from 0 to 127", velocity.span);
-            None
+            return None;
         }
+        if velocity.ramp_to.is_some() && position.count <= 1 {
+            self.error(
+                "a velocity ramp needs a `* N` repetition to ramp across",
+                velocity.span,
+            );
+            return None;
+        }
+        u8::try_from(position.velocity(velocity)).ok()
     }
 
     #[expect(
@@ -2146,7 +2158,20 @@ impl Compiler {
         id
     }
 
+    /// Records a diagnostic, ignoring one that repeats a message already
+    /// reported at the same span.
+    ///
+    /// Repetition sugar lowers one written item into several, so a mistake
+    /// in `drum "cp" velocity 100..200 * 4` would otherwise be reported four
+    /// times at the same place.
     fn error(&mut self, message: &str, span: SourceSpan) {
+        let duplicate = self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.span == span && diagnostic.message == message);
+        if duplicate {
+            return;
+        }
         self.diagnostics.push(CompileDiagnostic {
             message: message.to_owned(),
             span,

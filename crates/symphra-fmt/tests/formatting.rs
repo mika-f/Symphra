@@ -1005,3 +1005,25 @@ fn keeps_repetitions_instead_of_expanding_them() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_velocity_ramps() {
+    let input = r#"song "S" {
+  pattern roll = steps 1/16 { drum "cp" velocity 70..110*4 }
+  pattern line = sequence { note C4 for 1/8 velocity 40..90 * 2 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern roll = steps 1/16 {
+    drum "cp" velocity 70..110 * 4
+  }
+
+  pattern line = sequence {
+    note C4 for 1/8 velocity 40..90 * 2
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

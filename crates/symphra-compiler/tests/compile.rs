@@ -3674,3 +3674,88 @@ song "S" {
         ["repetitions expand to more than 4096 items"]
     );
 }
+
+/// The four-bar snare fill from the draft-0.1 example: `velocity A..B`
+/// across a `* N` must produce the same velocities the example spells out
+/// by hand.
+#[test]
+fn compile_should_interpolate_velocity_ramps_across_a_repetition() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern roll = steps 1/16 {
+    drum "cp" velocity 70..74 * 2
+    drum "cp" velocity 78..84 * 4
+    drum "cp" velocity 86..93 * 8
+    drum "cp" velocity 110..94 * 2
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("ramps should compile");
+    let velocities = program.songs[0].patterns[0]
+        .steps
+        .iter()
+        .map(|step| match step {
+            PatternStep::Sample(sample) => sample.velocity,
+            other => panic!("unexpected step {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        velocities,
+        vec![
+            70, 74, // A..B over two copies is just its endpoints
+            78, 80, 82, 84, //
+            86, 87, 88, 89, 90, 91, 92, 93, //
+            110, 94, // ramps may descend
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_a_velocity_ramp_without_a_repetition() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern roll = steps 1/16 { drum "cp" velocity 70..110 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("a lone ramp should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["a velocity ramp needs a `* N` repetition to ramp across"]
+    );
+}
+
+#[test]
+fn compile_should_reject_a_velocity_ramp_past_the_midi_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern roll = steps 1/16 { drum "cp" velocity 100..200 * 4 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an out-of-range end should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["velocity must be from 0 to 127"]
+    );
+}

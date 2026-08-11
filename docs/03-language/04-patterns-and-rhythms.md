@@ -126,6 +126,27 @@ the pattern you would have typed by hand. Two rules keep it predictable:
 - A body may not expand to more than 4096 items. Past that, the count is
   almost certainly a typo, and the compiler says so instead of building it.
 
+## Velocity ramps
+
+Anywhere `velocity N` is accepted, `velocity A..B` ramps linearly across the
+copies of the repetition that encloses it:
+
+```symphra
+pattern crescendo = steps 1/16 {
+  drum "cp" velocity 86..93 * 8   // 86 87 88 89 90 91 92 93
+}
+```
+
+- The first copy is `A` and the last is `B`; values in between are rounded to
+  the nearest integer, halves away from zero
+- Ramps may descend (`velocity 110..70`)
+- Both ends must be 0–127
+- A ramp needs a repetition to ramp across; `velocity 70..110` on its own is
+  an error
+- Inside a group, the ramp follows the enclosing repetition, so
+  `(drum "bd" velocity 90..110, drum "cp") * 4` ramps the kick over four
+  iterations and leaves the clap alone
+
 ## Degree steps
 
 ```symphra

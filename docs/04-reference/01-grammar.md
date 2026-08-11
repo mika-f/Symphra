@@ -92,8 +92,8 @@ PatternBody =
 SequenceItem = SequenceAtom [Repeat]
 
 SequenceAtom =
-    "note" Pitch "for" Duration ["velocity" Integer]
-  | "chord" Pitch { Pitch } "for" Duration ["velocity" Integer]
+    "note" Pitch "for" Duration [Velocity]
+  | "chord" Pitch { Pitch } "for" Duration [Velocity]
   | "rest" "for" Duration
   | Group
 
@@ -104,13 +104,14 @@ StepItem =
 StepAtom =
     "rest"
   | Sequence-like note/chord forms (as accepted by steps)
-  | "sample" Integer ["velocity" Integer]
-  | "drum" String ["velocity" Integer]
+  | "sample" Integer [Velocity]
+  | "drum" String [Velocity]
   | "degree" Integer "octave" Integer
   | Group
 
-Group  = "(" Item { "," Item } ")"               // Repeat is mandatory
-Repeat = "*" Integer                             // Integer >= 1
+Group    = "(" Item { "," Item } ")"             // Repeat is mandatory
+Repeat   = "*" Integer                           // Integer >= 1
+Velocity = "velocity" Integer [".." Integer]     // ramp needs a Repeat
 
 ChooseAlt =
   (SampleOrDrum | "sequence" "{" … "}") "weight" Integer

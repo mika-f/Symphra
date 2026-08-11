@@ -10,7 +10,7 @@ use symphra_syntax::ast::{
     ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatGroup,
     RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression,
     SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
-    StepItem, TrackBody, TrackDeclaration, VolumeExpression,
+    StepItem, TrackBody, TrackDeclaration, VelocityExpression, VolumeExpression,
 };
 
 use crate::printer::{BlankSeparator, Printer};
@@ -1267,6 +1267,14 @@ fn sequence_item_text(ctx: &Ctx<'_>, item: &SequenceItem) -> String {
     }
 }
 
+/// `velocity 90`, or the ramp form `velocity 70..110`.
+fn velocity_text(velocity: &VelocityExpression) -> String {
+    match velocity.ramp_to {
+        Some(end) => format!("velocity {}..{end}", velocity.value),
+        None => format!("velocity {}", velocity.value),
+    }
+}
+
 fn format_duration(duration: &DurationExpression) -> String {
     match *duration {
         DurationExpression::Fraction {
@@ -1285,7 +1293,7 @@ fn note_text(ctx: &Ctx<'_>, note: &NoteExpression) -> String {
         format_duration(&note.duration)
     );
     if let Some(velocity) = &note.velocity {
-        let _ = write!(line, " velocity {}", velocity.value);
+        let _ = write!(line, " {}", velocity_text(velocity));
     }
     line
 }
@@ -1299,7 +1307,7 @@ fn chord_text(ctx: &Ctx<'_>, chord: &ChordExpression) -> String {
         .join(" ");
     let mut line = format!("chord {pitches} for {}", format_duration(&chord.duration));
     if let Some(velocity) = &chord.velocity {
-        let _ = write!(line, " velocity {}", velocity.value);
+        let _ = write!(line, " {}", velocity_text(velocity));
     }
     line
 }
@@ -1315,14 +1323,14 @@ fn step_item_text(ctx: &Ctx<'_>, item: &StepItem) -> String {
         } => {
             let mut line = format!("sample {index}");
             if let Some(velocity) = velocity {
-                let _ = write!(line, " velocity {}", velocity.value);
+                let _ = write!(line, " {}", velocity_text(velocity));
             }
             line
         }
         StepItem::Drum { name, velocity, .. } => {
             let mut line = format!("drum {}", ctx.text(name.span));
             if let Some(velocity) = velocity {
-                let _ = write!(line, " velocity {}", velocity.value);
+                let _ = write!(line, " {}", velocity_text(velocity));
             }
             line
         }

@@ -1838,8 +1838,8 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
             let Some(items) = symphra_compiler::expand::sequence_items(items) else {
                 continue;
             };
-            for (item, step) in items.into_iter().zip(&pattern.steps) {
-                match (item, step) {
+            for (expanded, step) in items.into_iter().zip(&pattern.steps) {
+                match (expanded.item, step) {
                     (
                         SequenceItem::Note(source_note),
                         symphra_compiler::hir::PatternStep::Note(note),

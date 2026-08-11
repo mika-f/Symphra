@@ -116,9 +116,15 @@ pub struct ChordExpression {
     pub span: SourceSpan,
 }
 
+/// `velocity 90`, or the ramp form `velocity 70..110`.
+///
+/// A ramp interpolates linearly across the copies of the repetition that
+/// encloses it, so it only means anything under a `* N`; the compiler
+/// rejects one that stands alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VelocityExpression {
     pub value: u32,
+    pub ramp_to: Option<u32>,
     pub span: SourceSpan,
 }
 

@@ -1762,10 +1762,21 @@ impl Parser {
             return None;
         }
         let start = self.bump().span;
-        let value = self.required(TokenKind::Integer, "expected velocity from 0 to 127")?;
+        let token = self.required(TokenKind::Integer, "expected velocity from 0 to 127")?;
+        let value = self.parse_u32(&token)?;
+        if !self.at(TokenKind::DotDot) {
+            return Some(VelocityExpression {
+                value,
+                ramp_to: None,
+                span: start.cover(token.span),
+            });
+        }
+        self.bump();
+        let end = self.required(TokenKind::Integer, "expected the end of a velocity ramp")?;
         Some(VelocityExpression {
-            value: self.parse_u32(&value)?,
-            span: start.cover(value.span),
+            value,
+            ramp_to: Some(self.parse_u32(&end)?),
+            span: start.cover(end.span),
         })
     }
 

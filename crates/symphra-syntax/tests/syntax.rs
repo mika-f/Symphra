@@ -1532,3 +1532,36 @@ fn step_items(parsed: &symphra_syntax::ParsedSource) -> &[StepItem] {
     };
     items
 }
+
+#[test]
+fn parses_a_velocity_ramp() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/16 { drum "cp" velocity 70..110 * 4 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let [StepItem::Repeat(group)] = step_items(&parsed) else {
+        panic!("body should be one repetition");
+    };
+    let [StepItem::Drum { velocity, .. }] = group.items.as_slice() else {
+        panic!("repetition should hold one drum item");
+    };
+    let velocity = velocity.expect("drum should carry a velocity");
+    assert_eq!((velocity.value, velocity.ramp_to), (70, Some(110)));
+}
+
+#[test]
+fn rejects_a_velocity_ramp_without_an_end() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/16 { drum "cp" velocity 70.. * 4 } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["expected the end of a velocity ramp"]
+    );
+}

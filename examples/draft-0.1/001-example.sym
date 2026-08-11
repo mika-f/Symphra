@@ -240,55 +240,16 @@ song "Aoharu Signal" {
   // Strudel snareRoll: <cp*2 cp*4 cp*8 cp*16> over 4 bars (1/16 grid)
   pattern snare_roll = steps 1/16 {
     // bar 1 — cp*2
-    drum "cp" velocity 70
-    rest * 7
-    drum "cp" velocity 74
-    rest * 7
+    (drum "cp" velocity 70..74, rest * 7) * 2
 
     // bar 2 — cp*4
-    drum "cp" velocity 78
-    rest * 3
-    drum "cp" velocity 80
-    rest * 3
-    drum "cp" velocity 82
-    rest * 3
-    drum "cp" velocity 84
-    rest * 3
+    (drum "cp" velocity 78..84, rest * 3) * 4
 
     // bar 3 — cp*8
-    drum "cp" velocity 86
-    rest
-    drum "cp" velocity 87
-    rest
-    drum "cp" velocity 88
-    rest
-    drum "cp" velocity 89
-    rest
-    drum "cp" velocity 90
-    rest
-    drum "cp" velocity 91
-    rest
-    drum "cp" velocity 92
-    rest
-    drum "cp" velocity 93
-    rest
+    (drum "cp" velocity 86..93, rest) * 8
 
     // bar 4 — cp*16
-    drum "cp" velocity 94
-    drum "cp" velocity 95
-    drum "cp" velocity 96
-    drum "cp" velocity 97
-    drum "cp" velocity 98
-    drum "cp" velocity 99
-    drum "cp" velocity 100
-    drum "cp" velocity 101
-    drum "cp" velocity 102
-    drum "cp" velocity 103
-    drum "cp" velocity 104
-    drum "cp" velocity 105
-    drum "cp" velocity 106
-    drum "cp" velocity 107
-    drum "cp" velocity 108
+    drum "cp" velocity 94..108 * 15
     drum "cp" velocity 110
   }
 

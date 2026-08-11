@@ -837,8 +837,10 @@ fn format_repeat<T>(group: &RepeatGroup<T>, element: impl Fn(&T) -> String) -> S
 /// }
 /// ```
 ///
-/// A body whose cells all sit on one source line stays compact:
-/// `rhythm pulse resolution 1/8 { hit rest hit }`.
+/// Compact one-liners stay compact only when the author wrote the braces
+/// inline too: `rhythm pulse resolution 1/8 { hit rest hit }`. A body that
+/// was written with a newline after `{` keeps the multi-line brace form even
+/// when every cell sits on a single content line.
 ///
 /// If any comment sits inside the rhythm span, fall back to one cell per
 /// printed line so comments can still be reattached.
@@ -897,10 +899,13 @@ fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
     let _ = ctx.cursor.take_leading(decl.span.end, prev_end);
 
     let runs = rhythm_line_runs(ctx.source, &decl.items);
-    if runs.len() <= 1 {
-        let body = decl
-            .items
-            .iter()
+    // Compact only when the author wrote `{ … }` on a single source line.
+    // Wrapped braces (`{\n  hit rest\n}`) keep the multi-line form even for
+    // a single content line — that layout is intentional, not noise.
+    if !rhythm_braces_are_multiline(ctx.source, decl.span) {
+        let body = runs
+            .into_iter()
+            .flatten()
             .map(rhythm_item_text)
             .collect::<Vec<_>>()
             .join(" ");
@@ -920,6 +925,18 @@ fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
     }
     ctx.printer.dedent();
     ctx.printer.line("}");
+}
+
+/// True when the rhythm's `{ … }` body contains a newline in the source.
+fn rhythm_braces_are_multiline(source: &str, span: SourceSpan) -> bool {
+    let text = &source[span.range()];
+    let Some(open) = text.find('{') else {
+        return false;
+    };
+    let Some(close) = text.rfind('}') else {
+        return false;
+    };
+    text[open..=close].contains('\n')
 }
 
 /// Groups consecutive rhythm cells that share a source line. Authors use

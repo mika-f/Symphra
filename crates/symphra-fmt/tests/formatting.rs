@@ -473,21 +473,36 @@ fn formats_at_bar_beat_placement() {
 
 #[test]
 fn keeps_same_line_rhythm_cells_compact_and_preserves_line_breaks() {
-    // Cells that already share a source line stay on one printed line, even
-    // when the braces wrap.
-    let compact = r#"song "S" {
-  rhythm stabs resolution 1/4 {
-    hit rest hit rest
-  }
+    // Inline braces stay compact.
+    let inline = r#"song "S" {
   rhythm pulse resolution 1/8 { hit rest hit }
+  rhythm stabs resolution 1/4 {hit  rest   hit rest}
 }
 "#;
     assert_eq!(
-        format(compact),
+        format(inline),
         r#"song "S" {
-  rhythm stabs resolution 1/4 { hit rest hit rest }
-
   rhythm pulse resolution 1/8 { hit rest hit }
+
+  rhythm stabs resolution 1/4 { hit rest hit rest }
+}
+"#
+    );
+
+    // Wrapped braces keep the multi-line form even with a single content line
+    // (e.g. `vox_hits` in the draft-0.1 example).
+    let wrapped = r#"song "S" {
+  rhythm vox_hits resolution 1/8 {
+    rest hit rest*2 hit hit rest*2
+  }
+}
+"#;
+    assert_eq!(
+        format(wrapped),
+        r#"song "S" {
+  rhythm vox_hits resolution 1/8 {
+    rest hit rest * 2 hit hit rest * 2
+  }
 }
 "#
     );

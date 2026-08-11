@@ -1605,7 +1605,9 @@ fn visit_name_references(song: &SongDeclaration, mut visit: impl FnMut(NamedKind
                     }
                 }
             }
-            SongStatement::Pattern(pattern) => visit_pattern_body_references(&pattern.body, &mut visit),
+            SongStatement::Pattern(pattern) => {
+                visit_pattern_body_references(&pattern.body, &mut visit)
+            }
             _ => {}
         }
     }
@@ -1945,24 +1947,16 @@ fn pitch_description(source: &SourceText, span: SourceSpan) -> Option<String> {
 /// exposed separately by [`chord_symbol_voicing_spans`] for inlay labels.
 fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
     let mut pitches = Vec::new();
-    for_compiled_sequence_steps(source, |expanded, step| {
-        match (expanded, step) {
-            (
-                SequenceItem::Note(source_note),
-                symphra_compiler::hir::PatternStep::Note(note),
-            ) => {
-                pitches.push((source_note.pitch.span, note.midi_pitch));
-            }
-            (
-                SequenceItem::Chord(source_chord),
-                symphra_compiler::hir::PatternStep::Chord(chord),
-            ) => {
-                for (source_pitch, note) in source_chord.pitches.spelled().iter().zip(&chord.notes) {
-                    pitches.push((source_pitch.span, note.midi_pitch));
-                }
-            }
-            _ => {}
+    for_compiled_sequence_steps(source, |expanded, step| match (expanded, step) {
+        (SequenceItem::Note(source_note), symphra_compiler::hir::PatternStep::Note(note)) => {
+            pitches.push((source_note.pitch.span, note.midi_pitch));
         }
+        (SequenceItem::Chord(source_chord), symphra_compiler::hir::PatternStep::Chord(chord)) => {
+            for (source_pitch, note) in source_chord.pitches.spelled().iter().zip(&chord.notes) {
+                pitches.push((source_pitch.span, note.midi_pitch));
+            }
+        }
+        _ => {}
     });
     pitches
 }
@@ -1972,10 +1966,8 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
 fn chord_symbol_voicing_spans(source: &SourceText) -> Vec<(SourceSpan, Vec<u8>)> {
     let mut voicings = Vec::new();
     for_compiled_sequence_steps(source, |expanded, step| {
-        let (
-            SequenceItem::Chord(source_chord),
-            symphra_compiler::hir::PatternStep::Chord(chord),
-        ) = (expanded, step)
+        let (SequenceItem::Chord(source_chord), symphra_compiler::hir::PatternStep::Chord(chord)) =
+            (expanded, step)
         else {
             return;
         };
@@ -3271,10 +3263,9 @@ mod tests {
             .map(|hint| {
                 let label = match hint.label {
                     InlayHintLabel::String(text) => text,
-                    InlayHintLabel::LabelParts(parts) => parts
-                        .into_iter()
-                        .map(|part| part.value)
-                        .collect::<String>(),
+                    InlayHintLabel::LabelParts(parts) => {
+                        parts.into_iter().map(|part| part.value).collect::<String>()
+                    }
                 };
                 (hint.position.line, label)
             })

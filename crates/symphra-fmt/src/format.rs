@@ -973,7 +973,9 @@ fn rhythm_line_runs<'a>(source: &str, items: &'a [RhythmItem]) -> Vec<Vec<&'a Rh
         let line = source_line_at(source, rhythm_item_span(item).start);
         match current_line {
             Some(previous) if previous == line => {
-                runs.last_mut().expect("run started with current_line").push(item);
+                runs.last_mut()
+                    .expect("run started with current_line")
+                    .push(item);
             }
             _ => {
                 current_line = Some(line);

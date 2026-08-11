@@ -1606,7 +1606,7 @@ fn visit_name_references(song: &SongDeclaration, mut visit: impl FnMut(NamedKind
                 }
             }
             SongStatement::Pattern(pattern) => {
-                visit_pattern_body_references(&pattern.body, &mut visit)
+                visit_pattern_body_references(&pattern.body, &mut visit);
             }
             _ => {}
         }

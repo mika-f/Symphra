@@ -4066,3 +4066,71 @@ song "S" {
         ["arpeggiate step must divide every chord's duration evenly"]
     );
 }
+
+/// An effect preset is sugar: a track referencing one must lower exactly as
+/// though the block were written into it.
+#[test]
+fn compile_should_resolve_effect_presets_like_inline_blocks() {
+    let sugared = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  effect hall = reverb { mix 0.5 size 0.7 }
+  instrument tone = sine
+  pattern line = sequence step 1/4 { note C4 }
+  track pad role harmony { instrument tone  play line  effect hall }
+  track lead role lead { instrument tone  play line  effect hall }
+}"#,
+    );
+    let written = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1/4 { note C4 }
+  track pad role harmony {
+    instrument tone
+    play line
+    effect reverb { mix 0.5 size 0.7 }
+  }
+  track lead role lead {
+    instrument tone
+    play line
+    effect reverb { mix 0.5 size 0.7 }
+  }
+}"#,
+    );
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("presets should compile"),
+        compile(&written.file).expect("inline blocks should compile"),
+    );
+}
+
+#[test]
+fn compile_should_reject_an_unknown_effect_preset() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1/4 { note C4 }
+  track pad role harmony { instrument tone  play line  effect cathedral }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an unknown preset should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["track references an unknown effect preset"]
+    );
+}

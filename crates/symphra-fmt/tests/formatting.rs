@@ -1121,3 +1121,28 @@ fn formats_an_arpeggiate_pattern() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_effect_presets_and_references() {
+    let input = r#"song "S" {
+  track pad role harmony { instrument warm play chords effect hall }
+  effect hall = reverb { mix 0.5 size 0.7 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  effect hall = reverb {
+    mix 0.5
+    size 0.7
+  }
+
+  track pad role harmony {
+    instrument warm
+    play chords
+    effect hall
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

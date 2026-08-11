@@ -32,8 +32,36 @@ pub struct TrackDeclaration {
     pub role: Identifier,
     pub volume: Option<Box<VolumeExpression>>,
     pub body: TrackBody,
-    pub effect: Option<EffectDeclaration>,
+    pub effect: Option<TrackEffect>,
     pub automate: Option<AutomateDeclaration>,
+    pub span: SourceSpan,
+}
+
+/// A track's `effect`: either the block itself, or the name of a song-level
+/// `effect <name> = <kind> { ... }` preset. `delay`/`filter`/`reverb` are
+/// keywords, so an identifier after `effect` can only be a preset name.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrackEffect {
+    Inline(EffectDeclaration),
+    Preset(Identifier),
+}
+
+impl TrackEffect {
+    #[must_use]
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Inline(effect) => effect.span,
+            Self::Preset(name) => name.span,
+        }
+    }
+}
+
+/// `effect <name> = <kind> { ... }` at song level: an effect configuration
+/// given a name so several tracks can share it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectPresetDeclaration {
+    pub name: Identifier,
+    pub effect: EffectDeclaration,
     pub span: SourceSpan,
 }
 
@@ -429,6 +457,7 @@ pub enum SongStatement {
         span: SourceSpan,
     },
     Instrument(Box<InstrumentDeclaration>),
+    EffectPreset(Box<EffectPresetDeclaration>),
     Rhythm(RhythmDeclaration),
     Track(Box<TrackDeclaration>),
     Section(SectionDeclaration),

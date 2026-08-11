@@ -6,12 +6,12 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind,
-    EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody, MasterDeclaration,
-    OctavesExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
-    RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, TransposeExpression,
+    EffectPresetDeclaration, EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody,
+    MasterDeclaration, OctavesExpression, PanExpression, PatternBody, PatternDeclaration,
+    PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RepeatExpression, RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression,
+    SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
+    StepItem, TrackBody, TrackDeclaration, TrackEffect, TransposeExpression,
 };
 
 use crate::expand::Repetition;
@@ -240,6 +240,7 @@ struct SongSettings {
 /// classification loop.
 struct SongStatements<'a> {
     settings: SongSettings,
+    effect_presets: Vec<&'a EffectPresetDeclaration>,
     pattern_declarations: Vec<&'a PatternDeclaration>,
     rhythm_defs: Vec<&'a RhythmDeclaration>,
     track_defs: Vec<&'a TrackDeclaration>,
@@ -357,6 +358,8 @@ impl Compiler {
         statements: &'a [SongStatement],
     ) -> SongStatements<'a> {
         let mut settings = SongSettings::default();
+        let mut effect_presets = Vec::new();
+        let mut effect_preset_names = HashSet::new();
         let mut pattern_declarations = Vec::new();
         let mut pattern_names = HashSet::new();
         let mut rhythm_defs = Vec::new();
@@ -381,6 +384,11 @@ impl Compiler {
                             instrument.name.text.as_str(),
                             self.instrument_kind(&instrument.body),
                         ));
+                    }
+                }
+                SongStatement::EffectPreset(preset) => {
+                    if self.declare_name(&mut effect_preset_names, &preset.name, "effect preset") {
+                        effect_presets.push(preset.as_ref());
                     }
                 }
                 SongStatement::Rhythm(rhythm) => {
@@ -418,6 +426,7 @@ impl Compiler {
 
         SongStatements {
             settings,
+            effect_presets,
             pattern_declarations,
             rhythm_defs,
             track_defs,
@@ -432,6 +441,7 @@ impl Compiler {
         let id = self.id();
         let SongStatements {
             settings,
+            effect_presets,
             pattern_declarations,
             rhythm_defs,
             track_defs,
@@ -465,6 +475,7 @@ impl Compiler {
             &rhythms,
             &instruments,
             settings.meter.as_ref(),
+            &effect_presets,
         );
         let sections = section_defs
             .iter()
@@ -626,11 +637,12 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
+        effect_presets: &[&EffectPresetDeclaration],
     ) -> Vec<TrackDefinition> {
         let mut tracks = Vec::with_capacity(track_defs.len());
         for track in track_defs {
             for (definition, synthesized) in
-                self.track(track, patterns, rhythms, instruments, meter)
+                self.track(track, patterns, rhythms, instruments, meter, effect_presets)
             {
                 if let Some(pattern) = synthesized {
                     patterns.push(pattern);
@@ -748,15 +760,25 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
+        effect_presets: &[&EffectPresetDeclaration],
     ) -> Vec<(TrackDefinition, Option<Pattern>)> {
         // Resolved once per declaration (not per layer) so an invalid effect
         // is reported once, not once per `use`.
+        let effect_declaration = match declaration.effect.as_ref() {
+            None => None,
+            Some(TrackEffect::Inline(effect)) => Some(effect),
+            Some(TrackEffect::Preset(name)) => {
+                let found = effect_presets
+                    .iter()
+                    .find(|preset| preset.name.text == name.text);
+                if found.is_none() {
+                    self.error("track references an unknown effect preset", name.span);
+                }
+                found.map(|preset| &preset.effect)
+            }
+        };
         let effect = self
-            .effect(
-                declaration.effect.as_ref(),
-                declaration.automate.as_ref(),
-                meter,
-            )
+            .effect(effect_declaration, declaration.automate.as_ref(), meter)
             .ok()
             .flatten();
         match &declaration.body {

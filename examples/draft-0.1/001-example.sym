@@ -96,6 +96,45 @@ song "Aoharu Signal" {
   }
 
   // ─────────────────────────────────────────────
+  // Reverb presets
+  // ─────────────────────────────────────────────
+
+  effect arp_hall = reverb {
+    mix 0.6
+    size 0.8
+  }
+
+  effect pad_hall = reverb {
+    mix 0.5
+    size 0.7
+  }
+
+  effect vox_hall = reverb {
+    mix 0.55
+    size 0.7
+  }
+
+  effect tight = reverb {
+    mix 0.25
+    size 0.4
+  }
+
+  effect plate = reverb {
+    mix 0.3
+    size 0.45
+  }
+
+  effect room = reverb {
+    mix 0.3
+    size 0.5
+  }
+
+  effect short_plate = reverb {
+    mix 0.25
+    size 0.45
+  }
+
+  // ─────────────────────────────────────────────
   // Rhythms
   // ─────────────────────────────────────────────
 
@@ -246,10 +285,7 @@ song "Aoharu Signal" {
 
     play arpeggio
 
-    effect reverb {
-      mix 0.6
-      size 0.8
-    }
+    effect arp_hall
   }
 
   track arp_drop role harmony {
@@ -258,10 +294,7 @@ song "Aoharu Signal" {
 
     play arpeggio |> repeat 2
 
-    effect reverb {
-      mix 0.5
-      size 0.7
-    }
+    effect pad_hall
   }
 
   track pad role harmony {
@@ -270,10 +303,7 @@ song "Aoharu Signal" {
 
     play pad_chords
 
-    effect reverb {
-      mix 0.5
-      size 0.7
-    }
+    effect pad_hall
   }
 
   track pad_build role harmony {
@@ -282,10 +312,7 @@ song "Aoharu Signal" {
 
     play pad_chords
 
-    effect reverb {
-      mix 0.5
-      size 0.7
-    }
+    effect pad_hall
   }
 
   track fb_chords role harmony {
@@ -313,10 +340,7 @@ song "Aoharu Signal" {
 
     play drop_chords |> trigger_with vox_hits |> gate 50% |> repeat 2
 
-    effect reverb {
-      mix 0.55
-      size 0.7
-    }
+    effect vox_hall
   }
 
   track vox_outro role lead {
@@ -325,10 +349,7 @@ song "Aoharu Signal" {
 
     play drop_chords |> trigger_with vox_hits |> gate 50%
 
-    effect reverb {
-      mix 0.55
-      size 0.7
-    }
+    effect vox_hall
   }
 
   track bass role bass {
@@ -380,10 +401,7 @@ song "Aoharu Signal" {
 
     play light_rim |> repeat 4
 
-    effect reverb {
-      mix 0.25
-      size 0.4
-    }
+    effect tight
   }
 
   // Outro light drums a bit louder (Strudel lightDrums.gain(.6))
@@ -400,10 +418,7 @@ song "Aoharu Signal" {
 
     play light_rim |> repeat 4
 
-    effect reverb {
-      mix 0.3
-      size 0.45
-    }
+    effect plate
   }
 
   track build_kick role drums {
@@ -419,10 +434,7 @@ song "Aoharu Signal" {
 
     play snare_roll
 
-    effect reverb {
-      mix 0.3
-      size 0.5
-    }
+    effect room
   }
 
   track riser role fx {
@@ -451,10 +463,7 @@ song "Aoharu Signal" {
 
     play drop_clap |> repeat 8
 
-    effect reverb {
-      mix 0.3
-      size 0.5
-    }
+    effect room
   }
 
   track drop_hh role drums {
@@ -470,10 +479,7 @@ song "Aoharu Signal" {
 
     play drop_oh |> repeat 8
 
-    effect reverb {
-      mix 0.25
-      size 0.45
-    }
+    effect short_plate
   }
 
   // ─────────────────────────────────────────────

@@ -4,14 +4,14 @@ use crate::ast::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, ChordExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
-    EnvelopeDeclaration, GainExpression, GateExpression, Identifier, InstrumentBody,
-    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
-    NumberLiteral, OctavesExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource,
-    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RepeatExpression, RepeatGroup, RestExpression, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
+    EffectPresetDeclaration, EnvelopeDeclaration, GainExpression, GateExpression, Identifier,
+    InstrumentBody, InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration,
+    NoteExpression, NumberLiteral, OctavesExpression, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatExpression, RepeatGroup, RestExpression, RhythmDeclaration,
+    RhythmItem, SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TrackEffect, TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -25,6 +25,7 @@ const PROJECT_STATEMENT_START: &[TokenKind] = &[
 ];
 const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Tempo,
+    TokenKind::Effect,
     TokenKind::Meter,
     TokenKind::Key,
     TokenKind::Instrument,
@@ -202,6 +203,9 @@ impl Parser {
                 TokenKind::Instrument => self
                     .instrument()
                     .map(|instrument| SongStatement::Instrument(Box::new(instrument))),
+                TokenKind::Effect => self
+                    .effect_preset()
+                    .map(|preset| SongStatement::EffectPreset(Box::new(preset))),
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
                 TokenKind::Track => self.track().map(Box::new).map(SongStatement::Track),
                 TokenKind::Section => self.section(),
@@ -703,7 +707,7 @@ impl Parser {
             (volume, self.layer_body()?)
         };
         let effect = if self.at(TokenKind::Effect) {
-            Some(self.effect()?)
+            Some(self.track_effect()?)
         } else {
             None
         };
@@ -731,8 +735,37 @@ impl Parser {
     /// whole track (every layer) after its events are rendered to audio.
     /// `delay`, `filter`, and `reverb` are the only effect kinds accepted
     /// today.
-    fn effect(&mut self) -> Option<EffectDeclaration> {
+    /// A track's `effect`: `effect <kind> { ... }`, or `effect <name>`
+    /// naming a song-level preset. `delay`/`filter`/`reverb` are keywords,
+    /// so an identifier here can only be a preset name.
+    fn track_effect(&mut self) -> Option<TrackEffect> {
         let start = self.bump().span;
+        if self.at(TokenKind::Identifier) {
+            return self
+                .identifier("expected an effect preset name")
+                .map(TrackEffect::Preset);
+        }
+        self.effect_kind(start).map(TrackEffect::Inline)
+    }
+
+    /// `effect <name> = <kind> { ... }` at song level.
+    fn effect_preset(&mut self) -> Option<EffectPresetDeclaration> {
+        let start = self.bump().span;
+        let name = self.identifier("expected an effect preset name")?;
+        self.required(
+            TokenKind::Equal,
+            "expected `=` after the effect preset name",
+        )?;
+        let kind_start = self.current().span;
+        let effect = self.effect_kind(kind_start)?;
+        Some(EffectPresetDeclaration {
+            span: start.cover(effect.span),
+            name,
+            effect,
+        })
+    }
+
+    fn effect_kind(&mut self, start: SourceSpan) -> Option<EffectDeclaration> {
         let kind_token = self.required_any(
             &[TokenKind::Delay, TokenKind::Filter, TokenKind::Reverb],
             "expected `delay`, `filter`, or `reverb` after `effect`",

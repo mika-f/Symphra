@@ -1,6 +1,6 @@
 use symphra_syntax::ast::{
     ArrangementEntry, ChordPitches, Declaration, DurationExpression, EffectKind, InstrumentBody,
-    PatternBody, ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem,
+    PatternBody, ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem, TrackEffect,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -842,7 +842,9 @@ fn parses_track_effect_delay() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.as_ref().expect("effect should be present");
+    let Some(TrackEffect::Inline(effect)) = track.effect.as_ref() else {
+        panic!("effect should be an inline block");
+    };
     let EffectKind::Delay {
         mix,
         time,
@@ -884,7 +886,9 @@ fn parses_track_effect_filter() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.as_ref().expect("effect should be present");
+    let Some(TrackEffect::Inline(effect)) = track.effect.as_ref() else {
+        panic!("effect should be an inline block");
+    };
     let EffectKind::Filter { cutoff, resonance } = &effect.kind else {
         panic!("effect should be a filter");
     };
@@ -913,7 +917,9 @@ fn parses_track_effect_reverb() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.as_ref().expect("effect should be present");
+    let Some(TrackEffect::Inline(effect)) = track.effect.as_ref() else {
+        panic!("effect should be an inline block");
+    };
     let EffectKind::Reverb { mix, size } = &effect.kind else {
         panic!("effect should be a reverb");
     };
@@ -1824,4 +1830,32 @@ fn rejects_an_arpeggiate_without_a_style() {
             .collect::<Vec<_>>(),
         ["arpeggiate requires a `style`"]
     );
+}
+
+#[test]
+fn parses_effect_presets_and_references() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" {
+  effect hall = reverb { mix 0.5 size 0.7 }
+  track pad role harmony { instrument warm play chords effect hall }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::EffectPreset(preset) = &song.statements[0] else {
+        panic!("first statement should be an effect preset");
+    };
+    assert_eq!(preset.name.text, "hall");
+    assert!(matches!(preset.effect.kind, EffectKind::Reverb { .. }));
+
+    let SongStatement::Track(track) = &song.statements[1] else {
+        panic!("second statement should be a track");
+    };
+    let Some(TrackEffect::Preset(name)) = track.effect.as_ref() else {
+        panic!("the track should reference a preset");
+    };
+    assert_eq!(name.text, "hall");
 }

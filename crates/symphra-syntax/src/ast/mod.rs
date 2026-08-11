@@ -13,9 +13,9 @@ pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, Rat
 pub use statement::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
     ChanceTransformExpression, ChooseSampleExpression, EffectDeclaration, EffectFactor, EffectKind,
-    EnvelopeDeclaration, GainExpression, GateExpression, InstrumentBody, InstrumentDeclaration,
-    LayerUse, LfoDeclaration, MasterDeclaration, PanExpression, PlaySource, PlayStatement,
-    ProjectStatement, RepeatExpression, RhythmDeclaration, RhythmItem, SectionDeclaration,
-    SongStatement, SpeedExpression, TrackBody, TrackDeclaration, TransposeExpression,
-    VolumeExpression,
+    EffectPresetDeclaration, EnvelopeDeclaration, GainExpression, GateExpression, InstrumentBody,
+    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, PanExpression, PlaySource,
+    PlayStatement, ProjectStatement, RepeatExpression, RhythmDeclaration, RhythmItem,
+    SectionDeclaration, SongStatement, SpeedExpression, TrackBody, TrackDeclaration, TrackEffect,
+    TransposeExpression, VolumeExpression,
 };

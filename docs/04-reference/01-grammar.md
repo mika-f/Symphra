@@ -41,6 +41,7 @@ SongStmt =
   | "meter" Integer "/" Integer
   | "key" PitchClass Mode
   | Instrument
+  | EffectPreset
   | Rhythm
   | Pattern
   | Track
@@ -168,7 +169,13 @@ Pipeline stages are listed in [Pipeline stages](./03-pipeline-stages.md).
 ## Effects, sections, master
 
 ```text
+EffectPreset = "effect" Ident "=" EffectBlock
+
 Effect =
+    EffectBlock                    // written into the track
+  | "effect" Ident                 // a song-level preset by name
+
+EffectBlock =
     "effect" "delay" "{" "mix" Number "time" Duration "feedback" Number "}"
   | "effect" "filter" "{" "cutoff" Freq "resonance" Number "}"
   | "effect" "reverb" "{" "mix" Number "size" Number "}"

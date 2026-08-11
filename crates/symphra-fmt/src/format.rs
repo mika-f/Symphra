@@ -4,13 +4,14 @@ use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ArrangementOccurrence, AutomateDeclaration, ChanceTransformExpression,
     ChordExpression, ChordPitches, Declaration, DegreeChoiceAlternative, DurationExpression,
-    EffectDeclaration, EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
-    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
-    NumberLiteral, OctavesExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource,
-    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatGroup,
-    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression,
-    SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
-    StepItem, TrackBody, TrackDeclaration, VelocityExpression, VolumeExpression,
+    EffectDeclaration, EffectFactor, EffectKind, EffectPresetDeclaration, EnvelopeDeclaration,
+    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration,
+    NoteExpression, NumberLiteral, OctavesExpression, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatGroup, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
+    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TrackEffect,
+    VelocityExpression, VolumeExpression,
 };
 
 use crate::printer::{BlankSeparator, Printer};
@@ -271,12 +272,13 @@ fn song_statement_rank(statement: &SongStatement) -> u8 {
         SongStatement::Meter { .. } => 1,
         SongStatement::Key { .. } => 2,
         SongStatement::Instrument(_) => 3,
-        SongStatement::Rhythm(_) => 4,
-        SongStatement::Pattern(_) => 5,
-        SongStatement::Track(_) => 6,
-        SongStatement::Section(_) => 7,
-        SongStatement::Arrangement { .. } => 8,
-        SongStatement::Master(_) => 9,
+        SongStatement::EffectPreset(_) => 4,
+        SongStatement::Rhythm(_) => 5,
+        SongStatement::Pattern(_) => 6,
+        SongStatement::Track(_) => 7,
+        SongStatement::Section(_) => 8,
+        SongStatement::Arrangement { .. } => 9,
+        SongStatement::Master(_) => 10,
     }
 }
 
@@ -287,6 +289,7 @@ fn song_statement_span(statement: &SongStatement) -> SourceSpan {
         | SongStatement::Key { span, .. }
         | SongStatement::Arrangement { span, .. } => *span,
         SongStatement::Instrument(decl) => decl.span,
+        SongStatement::EffectPreset(decl) => decl.span,
         SongStatement::Rhythm(decl) => decl.span,
         SongStatement::Track(decl) => decl.span,
         SongStatement::Section(decl) => decl.span,
@@ -311,6 +314,7 @@ fn print_song_statement(ctx: &mut Ctx<'_>, statement: &SongStatement) {
             ctx.text(mode.span)
         )),
         SongStatement::Instrument(decl) => print_instrument(ctx, decl),
+        SongStatement::EffectPreset(decl) => print_effect_preset(ctx, decl),
         SongStatement::Rhythm(decl) => print_rhythm(ctx, decl),
         SongStatement::Track(decl) => print_track(ctx, decl),
         SongStatement::Section(decl) => print_section(ctx, decl),
@@ -843,7 +847,7 @@ enum TrackField<'a> {
     Volume(&'a VolumeExpression),
     Play(&'a PlayStatement),
     Layer(&'a [LayerUse], SourceSpan),
-    Effect(&'a EffectDeclaration),
+    Effect(&'a TrackEffect),
     Automate(&'a AutomateDeclaration),
 }
 
@@ -853,7 +857,7 @@ fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
         TrackField::Volume(volume) => volume.span,
         TrackField::Play(play) => play.span,
         TrackField::Layer(_, span) => *span,
-        TrackField::Effect(effect) => effect.span,
+        TrackField::Effect(effect) => effect.span(),
         TrackField::Automate(automate) => automate.span,
     }
 }
@@ -906,7 +910,12 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
             )),
             TrackField::Play(play) => print_play(ctx, play),
             TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
-            TrackField::Effect(effect) => print_effect(ctx, effect),
+            TrackField::Effect(effect) => match effect {
+                TrackEffect::Inline(effect) => print_effect(ctx, "effect", effect),
+                TrackEffect::Preset(name) => {
+                    ctx.printer.line(format!("effect {}", ctx.text(name.span)));
+                }
+            },
             TrackField::Automate(automate) => print_automate(ctx, automate),
         },
     );
@@ -933,14 +942,22 @@ fn effect_field_span(field: EffectField<'_>) -> SourceSpan {
     }
 }
 
-fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
-    let (header, items): (&str, Vec<EffectField<'_>>) = match &effect.kind {
+/// Prints a song-level `effect <name> = <kind> { ... }` preset.
+fn print_effect_preset(ctx: &mut Ctx<'_>, decl: &EffectPresetDeclaration) {
+    let header = format!("effect {} =", ctx.text(decl.name.span));
+    print_effect(ctx, &header, &decl.effect);
+}
+
+/// Prints an effect block under `lead`, which is `effect` for a track's own
+/// block and `effect <name> =` for a song-level preset.
+fn print_effect(ctx: &mut Ctx<'_>, lead: &str, effect: &EffectDeclaration) {
+    let (kind, items): (&str, Vec<EffectField<'_>>) = match &effect.kind {
         EffectKind::Delay {
             mix,
             time,
             feedback,
         } => (
-            "effect delay",
+            "delay",
             vec![
                 EffectField::Mix(*mix),
                 EffectField::Time(*time),
@@ -948,20 +965,21 @@ fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
             ],
         ),
         EffectKind::Filter { cutoff, resonance } => (
-            "effect filter",
+            "filter",
             vec![
                 EffectField::Cutoff(cutoff),
                 EffectField::Resonance(*resonance),
             ],
         ),
         EffectKind::Reverb { mix, size } => (
-            "effect reverb",
+            "reverb",
             vec![EffectField::Mix(*mix), EffectField::Size(*size)],
         ),
     };
+    let header = format!("{lead} {kind}");
     print_block(
         ctx,
-        header,
+        &header,
         effect.span,
         &items,
         effect_field_span,

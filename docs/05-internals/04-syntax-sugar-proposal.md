@@ -1,0 +1,805 @@
+# Syntax sugar proposal (Draft 0.1)
+
+Status: **proposal / not implemented**. This document proposes surface syntax
+only. Every construct below is defined as sugar that lowers to constructs the
+compiler already has, so nothing here asks for new audio semantics.
+
+The motivation is `examples/draft-0.1/001-example.sym`: 664 lines for a 20-bar
+song, where the bulk of the text is mechanical repetition rather than musical
+intent.
+
+## Design rules
+
+1. **Sugar only.** Every proposal desugars into existing HIR. No new event
+   kinds, no new scheduling phases, no new DSP.
+2. **Backward compatible.** Existing sources stay valid, with unchanged
+   meaning. Sugar is always optional.
+3. **Sugar lives in the AST, not the parser.** `symphra-fmt` reprints from the
+   AST, so a parser that expanded `* 16` into 16 items would make formatting a
+   destructive rewrite. Sugar therefore gets its own AST nodes, and expansion
+   happens during HIR lowering in `symphra-compiler` — the same place `N bar`
+   durations and `at N:M` already resolve against the song meter.
+4. **Small lexical footprint.** Three new punctuation tokens (`*`, `[`, `]`)
+   and five new keywords total.
+5. **Precise, not clever.** Every expansion is deterministic and writable by
+   hand; the sugar never picks notes the author cannot predict.
+
+## Where the verbosity is
+
+Line counts from `001-example.sym`:
+
+| Region | Lines | Character of the repetition |
+| --- | --- | --- |
+| `arpeggio` | 37 | Same up/down shape over four chords |
+| `snare_roll` | 74 | `cp*2 / cp*4 / cp*8 / cp*16` + a velocity ramp |
+| `lead_line` | 41 | One `note … for 1/8` per note; `for` almost never varies |
+| Drum `steps` patterns | 53 | Cells repeated verbatim, or 7 rests and one hit |
+| Chord patterns | 20 | Sevenths spelled out; `drop_chords` is `pad_chords` +12 |
+| Duplicate tracks | 50 | Five tracks that differ from another track only in volume |
+| `effect reverb` blocks | 36 | The same three or four reverb settings, nine times |
+
+Nine proposals follow, grouped into three tiers by value-to-risk.
+
+---
+
+# Tier 1 — repetition
+
+## S1. Repetition operator `* N`
+
+Any `steps` item, `sequence` item, or `rhythm` cell may be suffixed with
+`* N` (N ≥ 1), meaning N consecutive copies.
+
+```text
+StepItem      = StepAtom [ "*" Integer ]
+SequenceItem  = SequenceAtom [ "*" Integer ]
+RhythmItem    = ( "hit" | "rest" ) [ "*" Integer ]
+
+StepAtom      = <existing step item> | StepGroup | Subdivision
+StepGroup     = "(" StepItem { "," StepItem } ")"
+```
+
+A parenthesised group repeats as a unit, and groups may nest; expansion is a
+straightforward tree walk.
+
+```symphra
+// before                          // after
+drum "hh" velocity 38              drum "hh" velocity 38 * 4
+drum "hh" velocity 38
+drum "hh" velocity 38
+drum "hh" velocity 38
+
+rest rest rest rest                rest * 7
+rest rest rest
+drum "rim" velocity 64             drum "rim" velocity 64
+
+// alternating cells
+(drum "hh" velocity 38, drum "hh" velocity 64) * 4
+```
+
+Desugaring: `Item * N` → N copies of `Item` at the same grid resolution.
+`(a, b) * N` → `a b a b …`. Nothing else changes, so `trigger_with` cell
+counting, `repeat`, and `reverse` all see exactly the pattern the author would
+have typed by hand.
+
+`*` is a new token. It appears nowhere in the current grammar, so there is no
+ambiguity with any existing production.
+
+## S2. Velocity ramps `velocity A..B`
+
+Wherever `velocity N` is accepted, `velocity A..B` is also accepted. It is
+only meaningful under a `* N` repetition; standalone it is a compile error
+(`velocity 70..90` with no repetition has no length to ramp over).
+
+```text
+VelocityExpression = "velocity" Integer [ ".." Integer ]
+```
+
+For a repetition of count `n`, copy `i` (0-based) gets
+
+```text
+velocity(i) = round(A + (B - A) * i / (n - 1))      // n > 1
+velocity(0) = A                                      // n == 1
+```
+
+`..` is an existing token (`range 400hz..9000hz`, `choose_sample 0..3`), so
+this is purely a parser addition.
+
+```symphra
+drum "cp" velocity 86..93 * 8
+// → 86 87 88 89 90 91 92 93
+```
+
+Inside a group, the ramp index is the index of the enclosing repetition:
+`(drum "bd" velocity 90..110, drum "cp") * 4` ramps the kick across the four
+iterations and leaves the clap alone.
+
+## S3. Subdivision groups `[ … ]`
+
+A `steps` cell may be subdivided by a bracketed group: the group's items share
+that one cell, split evenly. This is the piece that makes accelerating fills
+expressible.
+
+```text
+Subdivision = "[" { StepItem } "]"
+```
+
+```symphra
+pattern snare_roll = steps 1bar {
+  [ drum "cp" velocity 70..74  * 2  ]
+  [ drum "cp" velocity 78..84  * 4  ]
+  [ drum "cp" velocity 86..93  * 8  ]
+  [ drum "cp" velocity 94..109 * 16 ]
+}
+```
+
+74 lines → 6, and the density doubling is now visible at a glance.
+
+Groups nest: `[ drum "bd" [ drum "sn" drum "sn" ] ]` is a kick on the first
+half and two snares on the second.
+
+**Desugaring.** At HIR-lowering time (where the meter is known) the pattern is
+flattened onto the least common multiple of all subdivision counts in the
+body. Above: LCM(2, 4, 8, 16) = 16, so `steps 1bar` with four subdivided cells
+flattens to exactly the 64-cell `steps 1/16` pattern in the current example.
+Flattening — rather than introducing a nested-time representation — keeps
+`trigger_with`, `repeat`, and `reverse` operating on a uniform grid exactly as
+they do today.
+
+Guard: reject a body whose flattened grid is finer than `1/128` with a
+diagnostic naming the offending subdivision, rather than emitting a very large
+pattern.
+
+`[` and `]` are new tokens and appear nowhere today. They are deliberately
+*not* `{ }` — braces mean "block" everywhere else in the language, and
+subdivision is an expression, not a block.
+
+## S4. Default duration `sequence step D`
+
+A `sequence` may declare a default note duration; items then omit `for`.
+
+```text
+PatternBody = "sequence" [ "step" Duration ] "{" { SequenceItem } "}"
+            | "steps" Duration "{" { StepItem } "}"
+            | …
+```
+
+An item's explicit `for D` still wins. Without `step`, `for` stays mandatory —
+existing sources are unaffected.
+
+```symphra
+pattern lead_line = sequence step 1/8 {
+  note D5  note D5 for 1/16  note E5 for 1/16  note F#5  note A5  rest  note B5  note A5  note F#5
+  note C#5 note C#5 for 1/16 note E5 for 1/16  note G5  note A5  rest  note B5  note A5  note E5
+  note A4  note A4 for 1/16  note C#5 for 1/16 note E5  note F#5 rest  note A5  note F#5 note E5
+  note B4  note D5  note F#5  note A5 for 1/16 note B5 for 1/16 note A5 note F#5 note E5 note D5
+}
+```
+
+41 lines → 6. Note this also makes `rest` (with no `for`) legal inside a
+`step`-carrying sequence.
+
+`step` is a new keyword (singular; `steps` remains the grid-pattern keyword).
+
+---
+
+# Tier 2 — harmonic material
+
+## S5. Chord symbols `Root:quality`
+
+```text
+ChordExpression = "chord" ( Pitch { Pitch } | Pitch ":" Quality ) [ "for" Duration ] [ Velocity ]
+```
+
+The root is an ordinary pitch literal, so the voicing's octave is explicit and
+predictable — `G3:maj7` is G3 B3 D4 F#4, built upward from the written root.
+
+| Quality | Semitones | Quality | Semitones |
+| --- | --- | --- | --- |
+| `maj` | 0 4 7 | `7` | 0 4 7 10 |
+| `m` / `min` | 0 3 7 | `maj7` | 0 4 7 11 |
+| `dim` | 0 3 6 | `m7` | 0 3 7 10 |
+| `aug` | 0 4 8 | `mmaj7` | 0 3 7 11 |
+| `sus2` | 0 2 7 | `m7b5` | 0 3 6 10 |
+| `sus4` | 0 5 7 | `dim7` | 0 3 6 9 |
+| `6` | 0 4 7 9 | `9` | 0 4 7 10 14 |
+| `m6` | 0 3 7 9 | `maj9` | 0 4 7 11 14 |
+| `add9` | 0 4 7 14 | `m9` | 0 3 7 10 14 |
+
+Lexing note: `:` already exists (`at 2:1`). The quality token is an
+`Identifier` (`maj7`, `m7b5`) or an `Integer` (`7`, `6`, `9`), so the parser
+accepts either after the colon; qualities are validated by table, not
+keyworded, exactly as `sine` / `triangle` waveform names already are.
+
+Enharmonic spelling follows the key signature where it is unambiguous; since
+pitches lower to semitone numbers, spelling is cosmetic (it affects
+diagnostics and the formatter, not the rendered audio).
+
+```symphra
+// before                                  // after
+pattern pad_chords = sequence {            pattern pad_chords = sequence step 1bar {
+  chord G3 B3 D4 F#4 for 1bar                chord G3:maj7
+  chord A3 C#4 E4 G4 for 1bar                chord A3:7
+  chord F#3 A3 C#4 E4 for 1bar               chord F#3:m7
+  chord B3 D4 F#4 A4 for 1bar                chord B3:m7
+}                                          }
+```
+
+## S6. Pattern derivation `pattern x = y |> …`
+
+A pattern body may be another pattern plus pipeline stages.
+
+```text
+PatternBody = … | Identifier { "|>" PatternStage }
+PatternStage = "transpose" … | "gain" … | "gate" … | "repeat" … | "reverse"
+             | "trigger_with" …
+```
+
+Only the pattern-domain stages are allowed; the track-domain stages (`at`,
+`pan`, `speed`, `choose_sample`) stay where they are, since they describe a
+performance, not material. Derivation is acyclic; a cycle is a compile error.
+
+```symphra
+pattern drop_chords = pad_chords |> transpose 12 st
+```
+
+Six lines → one, and the relationship ("the drop is the pad an octave up") is
+now stated instead of implied.
+
+## S7. Arpeggiator `arpeggiate`
+
+```text
+PatternBody = … | "arpeggiate" Identifier "{" ArpField { ArpField } "}"
+ArpField    = "style" ArpStyle | "step" Duration | "octaves" Integer
+ArpStyle    = "up" | "down" | "up_down" | "down_up" | "as_written"
+```
+
+Semantics, per event of the source pattern:
+
+- A **rest** passes through unchanged.
+- A **note** passes through unchanged.
+- A **chord** of duration `d` becomes `k = d / step` notes (a non-integer `k`
+  is a compile error), each inheriting the chord's velocity.
+
+The tone pool is the chord's pitches in ascending order, extended upward by
+octave repetition as far as the style needs (or capped at
+`tones × octaves` and wrapped, when `octaves` is given).
+
+| Style | Pool index sequence for `k` notes |
+| --- | --- |
+| `as_written` | `0, 1, 2, …` |
+| `up` | `0, 1, 2, …` wrapping at the pool cap |
+| `down` | the `up` sequence reversed |
+| `up_down` | `0 … t-1`, then `t-2, t-3, …`, where `t = ceil((k + 2) / 2)` |
+| `down_up` | the `up_down` sequence reflected |
+
+`up_down` never repeats its turning notes, which is the shape the current
+example writes out by hand:
+
+```symphra
+pattern arpeggio = arpeggiate drop_chords {
+  style up_down
+  step 1/8
+}
+```
+
+For `chord G4 B4 D5 F#5 for 1bar` with `step 1/8`: `k = 8`, `t = 5`, pool
+`G4 B4 D5 F#5 G5 …`, indices `0 1 2 3 4 3 2 1` →
+`G4 B4 D5 F#5 G5 F#5 D5 B4` — byte-for-byte the existing `arpeggio`, for all
+four chords. 37 lines → 4.
+
+`arpeggiate`, `style`, and `octaves` are new keywords; style names are
+validated identifiers.
+
+---
+
+# Tier 3 — arrangement and mix
+
+## S8. Per-reference track overrides
+
+Five tracks in the example exist only because a track is played at a different
+volume in a different section. Overriding at the reference site removes them.
+
+```text
+SectionTrack = "play" "track" Identifier [ "{" { TrackOverride } "}" ]
+TrackOverride = "volume" Level | Effect | AutomateCutoff
+```
+
+```symphra
+section outro bars 4 {
+  parallel exact {
+    play track arp
+    play track pad
+    play track vox        { volume -14 db }
+    play track light_hh   { volume -8 db }
+    play track light_rim  { volume -7 db  effect reverb { mix 0.3 size 0.45 } }
+  }
+}
+```
+
+This is consistent with how sections already work: a track referenced from two
+sections is already scheduled once per reference, so an override is per
+reference, not a mutation of the declaration.
+
+For an override reused across several sections, a derived declaration is the
+alternative spelling:
+
+```text
+Track = "track" Identifier "=" Identifier "{" { TrackOverride } "}"
+```
+
+Distinguishable from the existing form by a single token of lookahead (`=`
+versus `role`).
+
+## S9. `repeat fit`
+
+Most `repeat N` stages in the example exist to fill a section, and N is just
+"section bars ÷ pattern bars". That is the reason `arp` and `arp_drop` are two
+tracks.
+
+```text
+RepeatExpression = "repeat" ( Integer | "fit" )
+```
+
+`fit` resolves per section reference to `section.bars / pattern.bars`;
+non-integer, or a track not reachable from any section, is a compile error.
+
+```symphra
+play arpeggio |> repeat fit    // 1 in a 4-bar section, 2 in the 8-bar drop
+```
+
+`fit` is a new keyword.
+
+## S10. Named effect presets
+
+```text
+SongStmt = … | "effect" Identifier "=" EffectKindBlock
+Effect   = "effect" ( EffectKindBlock | Identifier )
+```
+
+The reference form is unambiguous because `delay` / `filter` / `reverb` are
+keywords: an identifier after `effect` can only be a preset name.
+
+```symphra
+effect pad_hall = reverb { mix 0.5  size 0.7 }
+effect room     = reverb { mix 0.3  size 0.5 }
+
+track pad role harmony {
+  instrument warm_pad
+  volume -10 db
+  play pad_chords
+  effect pad_hall
+}
+```
+
+No new keywords. Nine reverb blocks collapse to four declarations plus nine
+one-line references.
+
+---
+
+## Lexical additions, in full
+
+| Addition | Kind | Conflicts |
+| --- | --- | --- |
+| `*` | token `Star` | none — unused today |
+| `[` `]` | tokens `LeftBracket` / `RightBracket` | none — unused today |
+| `step` | keyword | none (`steps` is a distinct keyword) |
+| `arpeggiate`, `style`, `octaves`, `fit` | keywords | none |
+| `up`, `down`, `up_down`, `down_up`, `as_written` | validated identifiers | none |
+| Chord qualities (`maj7`, `m7`, `7`, …) | validated identifiers/integers after `:` | none |
+
+## Suggested implementation order
+
+Each row is a self-contained vertical slice (syntax → AST → HIR → formatter →
+LSP), in the style of the slices recorded in
+[Implementation status](/internals/implementation-status/).
+
+| Order | Proposal | Why here |
+| --- | --- | --- |
+| 1 | S1 `* N` | Largest win per unit of work; touches one item parser per body kind |
+| 2 | S2 `velocity A..B` | Trivial once S1 exists, and pointless before it |
+| 3 | S3 `[ … ]` | Needs the LCM flattening pass; the only structurally new lowering |
+| 4 | S4 `sequence step D` | Independent, one optional field |
+| 5 | S6 pattern derivation | Reuses the existing pipeline lowering wholesale |
+| 6 | S5 chord symbols | Self-contained table; no lowering changes beyond expansion |
+| 7 | S7 `arpeggiate` | Depends on S5/S6 being settled to be worth writing |
+| 8 | S10 effect presets | Pure name resolution |
+| 9 | S8 overrides, S9 `repeat fit` | Touch section scheduling; least isolated |
+
+## Fidelity notes and open questions
+
+1. **The `snare_roll` bar-4 ramp is not byte-identical.** The handwritten
+   velocities are `94…108` then `110`; `velocity 94..109 * 16` gives
+   `94…109`. The final hit differs by 1. Either accept it, or keep the last
+   hit explicit: `[ drum "cp" velocity 94..108 * 15  drum "cp" velocity 110 ]`.
+2. **Ramp curve.** Linear only, above. Is an eased ramp
+   (`velocity 70..110 curve exp`) wanted, or is that automation's job?
+3. **Ramps beyond velocity.** `gain`, `speed`, and `cutoff` have the same
+   shape. Worth generalizing now, or after velocity proves the design?
+4. **`up_down` turning rule.** The proposal never repeats the top or bottom
+   note. Some arpeggiators do. If both are wanted, `up_down` /
+   `up_down_hold` rather than a flag.
+5. **`octaves` default.** Currently "extend as far as the style needs". The
+   alternative is a default of 1 with wrapping, which would make
+   `arpeggiate` on the example's chords produce `G4 B4 D5 F#5 G4 F#5 D5 B4` —
+   not what the example plays. The proposal takes the unbounded default for
+   that reason; it is worth a second opinion.
+6. **Should `[ … ]` also work in `sequence` bodies?** Sequences carry explicit
+   durations already, so subdivision has no obvious meaning there. Proposed:
+   `steps` only.
+7. **`rhythm` bodies and `[ … ]`.** Rhythms are a uniform grid by definition,
+   so only `* N` (S1) applies. Confirm that is enough.
+
+---
+
+## The example, rewritten
+
+`001-example.sym` under this proposal. Instruments, tracks, sections, and
+`master` are unchanged except where a proposal applies.
+
+The rewrite is **355 lines**. The original is 664, of which 18 are the file's
+header comment block (not reproduced here), so the like-for-like comparison is
+**646 → 355, a 45% reduction** — with the removed lines being almost entirely
+mechanical repetition.
+
+```symphra
+project {
+  seed 20260811
+  sample_rate 48khz
+  output stereo
+}
+
+song "Aoharu Signal" {
+  tempo 150bpm
+  meter 4/4
+  key D major
+
+  // ── Instruments (unchanged) ──────────────────
+
+  instrument fb_saw = synth supersaw {
+    voices 5
+    detune 0.4
+    spread 0.7
+
+    envelope {
+      attack 10ms
+      decay 150ms
+      sustain 0.3
+      release 100ms
+    }
+  }
+
+  instrument bass_saw = synth supersaw {
+    voices 1
+    detune 0
+    spread 0
+
+    envelope {
+      attack 10ms
+      decay 100ms
+      sustain 0.6
+      release 50ms
+    }
+  }
+
+  instrument music_box = soundfont {
+    source "assets/TimGM6mb.sf2"
+    preset "MusicBox"
+  }
+
+  instrument warm_pad = soundfont {
+    source "assets/TimGM6mb.sf2"
+    preset "Warm Pad"
+  }
+
+  instrument voice_oohs = soundfont {
+    source "assets/TimGM6mb.sf2"
+    preset "Voice Oohs"
+  }
+
+  instrument lead_tone = triangle {
+    envelope {
+      attack 10ms
+      decay 80ms
+      sustain 0.4
+      release 80ms
+    }
+  }
+
+  instrument tr909 = drum_machine {
+    bank "assets/RolandTR909"
+  }
+
+  instrument riser_noise = sampled {
+    source "assets/riser.wav"
+    root C4
+  }
+
+  // ── Effect presets (S10) ─────────────────────
+
+  effect arp_hall  = reverb { mix 0.6  size 0.8 }
+  effect arp_room  = reverb { mix 0.5  size 0.7 }
+  effect vox_hall  = reverb { mix 0.55 size 0.7 }
+  effect room      = reverb { mix 0.3  size 0.5 }
+  effect tight     = reverb { mix 0.25 size 0.4 }
+
+  // ── Rhythms (S1) ─────────────────────────────
+
+  rhythm chord_stabs resolution 1/8 {
+    hit rest*2 hit rest*2 hit rest
+    hit rest*2 hit rest*2 hit hit
+  }
+
+  rhythm vox_hits resolution 1/8 {
+    rest hit rest*2 hit hit rest*2
+  }
+
+  rhythm bass_pulse resolution 1/16 {
+    hit rest*4 hit hit rest*3 hit rest*5
+  }
+
+  // ── Harmonic material (S4, S5, S6, S7) ───────
+
+  pattern pad_chords = sequence step 1bar {
+    chord G3:maj7
+    chord A3:7
+    chord F#3:m7
+    chord B3:m7
+  }
+
+  pattern drop_chords = pad_chords |> transpose 12 st
+
+  pattern bass_roots = sequence step 1bar {
+    note G2  note A2  note F#2  note B2
+  }
+
+  pattern arpeggio = arpeggiate drop_chords {
+    style up_down
+    step 1/8
+  }
+
+  pattern lead_line = sequence step 1/8 {
+    note D5  note D5 for 1/16  note E5 for 1/16  note F#5  note A5  rest  note B5  note A5  note F#5
+    note C#5 note C#5 for 1/16 note E5 for 1/16  note G5  note A5  rest  note B5  note A5  note E5
+    note A4  note A4 for 1/16  note C#5 for 1/16 note E5  note F#5 rest  note A5  note F#5 note E5
+    note B4  note D5  note F#5  note A5 for 1/16 note B5 for 1/16 note A5 note F#5 note E5 note D5
+  }
+
+  // ── Drum / riser patterns (S1, S2, S3) ───────
+
+  pattern light_hh      = steps 1/4 { drum "hh" velocity 38 * 4 }
+  pattern light_rim     = steps 1/8 { rest * 7  drum "rim" velocity 64 }
+  pattern four_on_floor = steps 1/4 { drum "bd" velocity 115 * 4 }
+  pattern drop_clap     = steps 1/4 { (rest, drum "cp" velocity 96) * 2 }
+  pattern drop_hh       = steps 1/8 { (drum "hh" velocity 38, drum "hh" velocity 64) * 4 }
+  pattern drop_oh       = steps 1/8 { rest * 7  drum "oh" velocity 70 }
+
+  pattern snare_roll = steps 1bar {
+    [ drum "cp" velocity 70..74  * 2  ]
+    [ drum "cp" velocity 78..84  * 4  ]
+    [ drum "cp" velocity 86..93  * 8  ]
+    [ drum "cp" velocity 94..109 * 16 ]
+  }
+
+  pattern riser_hold = sequence { note C4 for 4bar }
+
+  // ── Tracks — pitched (S8, S9, S10) ───────────
+
+  track arp role harmony {
+    instrument music_box
+    volume -8 db
+
+    play arpeggio |> repeat fit
+
+    effect arp_hall
+  }
+
+  track pad role harmony {
+    instrument warm_pad
+    volume -10 db
+
+    play pad_chords
+
+    effect arp_room
+  }
+
+  track fb_chords role harmony {
+    instrument fb_saw
+    volume -6 db
+
+    play drop_chords |> trigger_with chord_stabs |> gate 90% |> repeat fit
+
+    effect filter {
+      cutoff 1400hz
+      resonance 0.55
+    }
+
+    automate cutoff {
+      lfo sine {
+        range 1400hz..5200hz
+        rate 2 cycles/bar
+      }
+    }
+  }
+
+  track vox role lead {
+    instrument voice_oohs
+    volume -9 db
+
+    play drop_chords |> trigger_with vox_hits |> gate 50% |> repeat fit
+
+    effect vox_hall
+  }
+
+  track bass role bass {
+    instrument bass_saw
+    volume -3 db
+
+    play bass_roots |> trigger_with bass_pulse |> gate 85% |> repeat fit
+
+    effect filter {
+      cutoff 500hz
+      resonance 0.2
+    }
+  }
+
+  track lead role lead {
+    volume -5 db
+
+    layer {
+      use lead_tone {
+        play lead_line |> gate 85% |> repeat fit
+      }
+
+      use lead_tone {
+        play lead_line |> gate 85% |> transpose 12 st |> gain 0.2 |> repeat fit
+      }
+    }
+
+    effect delay {
+      mix 0.25
+      time 1/4
+      feedback 0.2
+    }
+  }
+
+  // ── Tracks — drums / riser ───────────────────
+
+  track light_hh role drums {
+    instrument tr909
+    volume -12 db
+
+    play light_hh |> repeat fit
+  }
+
+  track light_rim role drums {
+    instrument tr909
+    volume -10 db
+
+    play light_rim |> repeat fit
+
+    effect tight
+  }
+
+  track build_kick role drums {
+    instrument tr909
+    volume -2 db
+
+    play four_on_floor |> repeat fit
+  }
+
+  track snare_roll role drums {
+    instrument tr909
+    volume -6 db
+
+    play snare_roll
+
+    effect room
+  }
+
+  track riser role fx {
+    instrument riser_noise
+    volume -12 db
+
+    play riser_hold
+
+    effect filter {
+      cutoff 400hz
+      resonance 0.15
+    }
+
+    automate cutoff {
+      lfo triangle {
+        range 400hz..9000hz
+        rate 0.25 cycles/bar
+      }
+    }
+  }
+
+  track drop_clap role drums {
+    instrument tr909
+    volume -4 db
+
+    play drop_clap |> repeat fit
+
+    effect room
+  }
+
+  track drop_hh role drums {
+    instrument tr909
+    volume -10 db
+
+    play drop_hh |> repeat fit
+  }
+
+  track drop_oh role drums {
+    instrument tr909
+    volume -9 db
+
+    play drop_oh |> repeat fit
+
+    effect tight
+  }
+
+  // ── Arrangement ──────────────────────────────
+
+  section intro bars 4 {
+    parallel exact {
+      play track arp
+      play track pad
+      play track light_hh
+      play track light_rim
+    }
+  }
+
+  section build bars 4 {
+    parallel exact {
+      play track arp
+      play track pad       { volume -7 db }
+      play track build_kick
+      play track snare_roll
+      play track riser
+    }
+  }
+
+  section drop bars 8 {
+    parallel exact {
+      play track fb_chords
+      play track vox
+      play track bass
+      play track lead
+      play track arp       { volume -14 db  effect arp_room }
+      play track drop_clap
+      play track drop_hh
+      play track drop_oh
+    }
+  }
+
+  section outro bars 4 {
+    parallel exact {
+      play track arp
+      play track pad
+      play track vox       { volume -14 db }
+      play track light_hh  { volume -8 db }
+      play track light_rim { volume -7 db  effect reverb { mix 0.3 size 0.45 } }
+    }
+  }
+
+  arrangement {
+    play intro
+    play build
+    play drop
+    play outro
+  }
+
+  master {
+    limiter {
+      ceiling -0.3 db
+    }
+  }
+}
+```
+
+Note one behavioral difference in the rewrite: `vox` in the outro plays
+`|> repeat fit` (1 in a 4-bar section) where the original `vox_outro` had no
+`repeat`, and `vox` in the drop has `repeat 2` — `fit` covers both, which is
+what removed the duplicate track.

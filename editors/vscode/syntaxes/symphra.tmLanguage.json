@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "name": "Symphra",
+  "name": "symphra",
   "scopeName": "source.symphra",
   "fileTypes": [
     "sym"
@@ -69,9 +69,15 @@
       "comment": "A natural-note letter, an optional # or b accidental, and a decimal octave that may be negative (e.g. C4, C#4, Eb4, C-1, C#-1). An accidental not directly followed by octave digits (e.g. `C#` at end of line) is left for #comments to claim.",
       "match": "\\b([A-G])(#|b)?(-?\\d+)\\b",
       "captures": {
-        "1": { "name": "constant.language.pitch.symphra" },
-        "2": { "name": "keyword.operator.accidental.symphra" },
-        "3": { "name": "constant.language.pitch.symphra" }
+        "1": {
+          "name": "constant.language.pitch.symphra"
+        },
+        "2": {
+          "name": "keyword.operator.accidental.symphra"
+        },
+        "3": {
+          "name": "constant.language.pitch.symphra"
+        }
       }
     },
     "numbers": {

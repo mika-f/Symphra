@@ -1,6 +1,6 @@
 use super::{
     DurationExpression, FrequencyLiteral, Identifier, NumberLiteral, PatternDeclaration,
-    QuotedString, RateLiteral,
+    QuotedString, RateLiteral, RepeatGroup,
 };
 use crate::SourceSpan;
 
@@ -13,10 +13,17 @@ pub struct RhythmDeclaration {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RhythmItem {
-    Hit { span: SourceSpan },
-    Rest { span: SourceSpan },
+    Hit {
+        span: SourceSpan,
+    },
+    Rest {
+        span: SourceSpan,
+    },
+    /// `hit * 4`, or `(hit, rest) * 4`. Same sugar as a repeated step or
+    /// sequence item; see [`RepeatGroup`].
+    Repeat(RepeatGroup<RhythmItem>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -25,8 +32,36 @@ pub struct TrackDeclaration {
     pub role: Identifier,
     pub volume: Option<Box<VolumeExpression>>,
     pub body: TrackBody,
-    pub effect: Option<EffectDeclaration>,
+    pub effect: Option<TrackEffect>,
     pub automate: Option<AutomateDeclaration>,
+    pub span: SourceSpan,
+}
+
+/// A track's `effect`: either the block itself, or the name of a song-level
+/// `effect <name> = <kind> { ... }` preset. `delay`/`filter`/`reverb` are
+/// keywords, so an identifier after `effect` can only be a preset name.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrackEffect {
+    Inline(EffectDeclaration),
+    Preset(Identifier),
+}
+
+impl TrackEffect {
+    #[must_use]
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Self::Inline(effect) => effect.span,
+            Self::Preset(name) => name.span,
+        }
+    }
+}
+
+/// `effect <name> = <kind> { ... }` at song level: an effect configuration
+/// given a name so several tracks can share it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EffectPresetDeclaration {
+    pub name: Identifier,
+    pub effect: EffectDeclaration,
     pub span: SourceSpan,
 }
 
@@ -189,10 +224,18 @@ pub struct GainExpression {
     pub span: SourceSpan,
 }
 
+/// `repeat N`, or `repeat fit` — repeat as many times as it takes to fill
+/// the section the track is played by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepeatExpression {
-    pub count: u32,
+    pub count: RepeatCount,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepeatCount {
+    Fixed(u32),
+    Fit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -374,7 +417,22 @@ pub struct SectionDeclaration {
     pub name: Identifier,
     pub bars: u32,
     pub exact: bool,
-    pub tracks: Vec<Identifier>,
+    pub tracks: Vec<SectionTrack>,
+    pub span: SourceSpan,
+}
+
+/// One `play track <name>` in a section, optionally with a `{ ... }` block
+/// overriding what that track's declaration says for this section only.
+///
+/// The overrides are the parts of a track that describe its place in the
+/// mix rather than what it plays, which is why the same track can be
+/// louder in one section without a second declaration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionTrack {
+    pub name: Identifier,
+    pub volume: Option<VolumeExpression>,
+    pub effect: Option<TrackEffect>,
+    pub automate: Option<AutomateDeclaration>,
     pub span: SourceSpan,
 }
 
@@ -422,6 +480,7 @@ pub enum SongStatement {
         span: SourceSpan,
     },
     Instrument(Box<InstrumentDeclaration>),
+    EffectPreset(Box<EffectPresetDeclaration>),
     Rhythm(RhythmDeclaration),
     Track(Box<TrackDeclaration>),
     Section(SectionDeclaration),

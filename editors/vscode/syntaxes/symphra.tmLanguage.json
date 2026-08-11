@@ -86,7 +86,7 @@
         },
         {
           "name": "keyword.control.statement.symphra",
-          "match": "\\b(seed|sample_rate|output|tempo|meter|key|sample|weight|source|root|pack|bank|drum|preset|with|resolution|hit|role|volume|play|trigger_with|gate|transpose|gain|repeat|reverse|pan|alternate|chance|speed|retrigger|choose_sample|at|degree|octave|note|rest|chord|for|velocity|bar|layer|use|effect|delay|mix|time|feedback|filter|cutoff|resonance|reverb|size|automate|lfo|range|rate|cycles|bars|parallel|exact|ceiling|envelope|attack|decay|sustain|release|voices|detune|spread)\\b"
+          "match": "\\b(seed|sample_rate|output|tempo|meter|key|sample|weight|source|root|pack|bank|drum|preset|with|resolution|hit|role|volume|play|trigger_with|gate|transpose|gain|repeat|fit|reverse|pan|alternate|chance|speed|retrigger|choose_sample|at|degree|octave|note|rest|chord|for|velocity|bar|step|layer|use|effect|delay|mix|time|feedback|filter|cutoff|resonance|reverb|size|automate|lfo|range|rate|cycles|bars|parallel|exact|ceiling|envelope|attack|decay|sustain|release|voices|detune|spread)\\b"
         }
       ]
     },
@@ -99,6 +99,10 @@
         {
           "name": "punctuation.section.parens.symphra",
           "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.brackets.symphra",
+          "match": "[\\[\\]]"
         },
         {
           "name": "keyword.operator.assignment.symphra",
@@ -118,7 +122,7 @@
         },
         {
           "name": "keyword.operator.arithmetic.symphra",
-          "match": "[/+-]"
+          "match": "[/+*-]"
         },
         {
           "name": "punctuation.separator.colon.symphra",

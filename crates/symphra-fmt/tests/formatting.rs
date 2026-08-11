@@ -978,3 +978,226 @@ fn is_idempotent_across_every_grammar_construct() {
         );
     }
 }
+
+#[test]
+fn keeps_repetitions_instead_of_expanding_them() {
+    let input = r#"song "S" {
+  rhythm pulse resolution 1/8 { hit rest*3 (hit,rest)*2 }
+  pattern kit = steps 1/8 { drum "hh" velocity 38*4 (rest,drum "cp" velocity 96)*2 }
+  pattern melody = sequence { note C4 for 1/4*2 (rest for 1/4) * 3 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  rhythm pulse resolution 1/8 { hit rest * 3 (hit, rest) * 2 }
+
+  pattern kit = steps 1/8 {
+    drum "hh" velocity 38 * 4
+    (rest, drum "cp" velocity 96) * 2
+  }
+
+  pattern melody = sequence {
+    note C4 for 1/4 * 2
+    rest for 1/4 * 3
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_velocity_ramps() {
+    let input = r#"song "S" {
+  pattern roll = steps 1/16 { drum "cp" velocity 70..110*4 }
+  pattern line = sequence { note C4 for 1/8 velocity 40..90 * 2 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern roll = steps 1/16 {
+    drum "cp" velocity 70..110 * 4
+  }
+
+  pattern line = sequence {
+    note C4 for 1/8 velocity 40..90 * 2
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_subdivisions_and_bar_step_resolutions() {
+    let input = r#"song "S" {
+  pattern kit = steps 1bar { [drum "cp" velocity 70..74*2] [ drum "bd"   [drum "sn" rest] ] }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern kit = steps 1bar {
+    [drum "cp" velocity 70..74 * 2]
+    [drum "bd" [drum "sn" rest]]
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_a_sequence_step_default_duration() {
+    let input = r#"song "S" {
+  pattern line = sequence step 1bar { note C4 note D4 for 1/16 rest }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern line = sequence step 1bar {
+    note C4
+    note D4 for 1/16
+    rest
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn expands_a_section_track_override_that_carries_an_effect_block() {
+    let input = r#"song "S" {
+  section outro bars 4 {
+    parallel { play track lead { volume -12 db effect reverb { mix 0.3 size 0.5 } } }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  section outro bars 4 {
+    parallel {
+      play track lead {
+        volume -12 db
+        effect reverb {
+          mix 0.3
+          size 0.5
+        }
+      }
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_a_derived_pattern() {
+    let input = r#"song "S" {
+  pattern pad = sequence step 1bar { chord G3 B3 D4 }
+  pattern drop = pad|>transpose 12 st|>repeat 2|>reverse
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern pad = sequence step 1bar {
+    chord G3 B3 D4
+  }
+
+  pattern drop = pad |> transpose 12 st |> repeat 2 |> reverse
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_chord_symbols() {
+    let input = r#"song "S" {
+  pattern pad = sequence step 1bar { chord G3:maj7 chord A3:7 velocity 90 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern pad = sequence step 1bar {
+    chord G3:maj7
+    chord A3:7 velocity 90
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_an_arpeggiate_pattern() {
+    let input = r#"song "S" {
+  pattern arp = arpeggiate chords { style up_down step 1/8 octaves 2 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern arp = arpeggiate chords {
+    style up_down
+    step 1/8
+    octaves 2
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_effect_presets_and_references() {
+    let input = r#"song "S" {
+  track pad role harmony { instrument warm play chords effect hall }
+  effect hall = reverb { mix 0.5 size 0.7 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  effect hall = reverb {
+    mix 0.5
+    size 0.7
+  }
+
+  track pad role harmony {
+    instrument warm
+    play chords
+    effect hall
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_section_track_overrides_and_repeat_fit() {
+    let input = r#"song "S" {
+  track lead role lead { instrument tone play line |> repeat fit }
+  section outro bars 4 {
+    parallel exact { play track pad play track lead { volume -12 db effect hall } }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track lead role lead {
+    instrument tone
+    play line |> repeat fit
+  }
+
+  section outro bars 4 {
+    parallel exact {
+      play track pad
+      play track lead { volume -12 db  effect hall }
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

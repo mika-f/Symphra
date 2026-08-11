@@ -1,6 +1,7 @@
 use symphra_syntax::ast::{
-    ArrangementEntry, Declaration, DurationExpression, EffectKind, InstrumentBody, PatternBody,
-    ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem,
+    ArrangementEntry, ChordPitches, Declaration, DurationExpression, EffectKind, InstrumentBody,
+    PatternBody, ProjectStatement, RepeatCount, RhythmItem, SequenceItem, SongStatement, StepItem,
+    TrackBody, TrackEffect,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -114,11 +115,11 @@ fn parses_the_draft_example() {
         panic!("fourth sequence item should be a note");
     };
     assert_eq!(note.pitch.text, "G4");
-    let DurationExpression::Fraction {
+    let Some(DurationExpression::Fraction {
         numerator,
         denominator,
         ..
-    } = note.duration
+    }) = note.duration
     else {
         panic!("note duration should be a fraction");
     };
@@ -417,6 +418,8 @@ fn parses_drum_steps() {
             StepItem::Sample { .. } => panic!("unexpected sample"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+            StepItem::Repeat(_) => panic!("unexpected repetition"),
+            StepItem::Subdivide { .. } => panic!("unexpected subdivision"),
         })
         .collect::<Vec<_>>();
     assert_eq!(names, vec![Some("bd"), None, Some("hh")]);
@@ -438,10 +441,7 @@ fn parses_sample_steps() {
         panic!("statement should be a pattern");
     };
     let PatternBody::Steps {
-        resolution_numerator,
-        resolution_denominator,
-        items,
-        ..
+        resolution, items, ..
     } = &pattern.body
     else {
         panic!("pattern should contain steps");
@@ -456,12 +456,19 @@ fn parses_sample_steps() {
             StepItem::Drum { .. } => panic!("unexpected drum"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+            StepItem::Repeat(_) => panic!("unexpected repetition"),
+            StepItem::Subdivide { .. } => panic!("unexpected subdivision"),
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        (*resolution_numerator, *resolution_denominator, indices),
-        (1, 8, vec![Some(1), None, Some(3)])
-    );
+    assert!(matches!(
+        resolution,
+        DurationExpression::Fraction {
+            numerator: 1,
+            denominator: 8,
+            ..
+        }
+    ));
+    assert_eq!(indices, vec![Some(1), None, Some(3)]);
 }
 
 #[test]
@@ -493,6 +500,8 @@ fn parses_drum_and_sample_step_velocity() {
             StepItem::Degree { .. } => panic!("unexpected degree"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+            StepItem::Repeat(_) => panic!("unexpected repetition"),
+            StepItem::Subdivide { .. } => panic!("unexpected subdivision"),
         })
         .collect::<Vec<_>>();
     assert_eq!(velocities, vec![Some(90), Some(40), None]);
@@ -737,7 +746,7 @@ fn parses_tracks_with_rhythm_triggers() {
             Some(95),
             Some((12, "st")),
             Some(0.30),
-            Some(4),
+            Some(RepeatCount::Fixed(4)),
             true,
             Some(symphra_syntax::ast::PanExpression::Alternate {
                 left_percent: 30,
@@ -834,7 +843,9 @@ fn parses_track_effect_delay() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.as_ref().expect("effect should be present");
+    let Some(TrackEffect::Inline(effect)) = track.effect.as_ref() else {
+        panic!("effect should be an inline block");
+    };
     let EffectKind::Delay {
         mix,
         time,
@@ -876,7 +887,9 @@ fn parses_track_effect_filter() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.as_ref().expect("effect should be present");
+    let Some(TrackEffect::Inline(effect)) = track.effect.as_ref() else {
+        panic!("effect should be an inline block");
+    };
     let EffectKind::Filter { cutoff, resonance } = &effect.kind else {
         panic!("effect should be a filter");
     };
@@ -905,7 +918,9 @@ fn parses_track_effect_reverb() {
     let SongStatement::Track(track) = &song.statements[0] else {
         panic!("statement should be a track");
     };
-    let effect = track.effect.as_ref().expect("effect should be present");
+    let Some(TrackEffect::Inline(effect)) = track.effect.as_ref() else {
+        panic!("effect should be an inline block");
+    };
     let EffectKind::Reverb { mix, size } = &effect.kind else {
         panic!("effect should be a reverb");
     };
@@ -1115,11 +1130,11 @@ fn parses_chord_pitches_and_duration() {
     let SequenceItem::Chord(chord) = &items[0] else {
         panic!("sequence item should be a chord");
     };
-    let DurationExpression::Fraction {
+    let Some(DurationExpression::Fraction {
         numerator,
         denominator,
         ..
-    } = chord.duration
+    }) = chord.duration
     else {
         panic!("chord duration should be a fraction");
     };
@@ -1127,6 +1142,7 @@ fn parses_chord_pitches_and_duration() {
         (
             chord
                 .pitches
+                .spelled()
                 .iter()
                 .map(|pitch| pitch.text.as_str())
                 .collect::<Vec<_>>(),
@@ -1164,7 +1180,7 @@ fn parses_bar_durations_for_notes_chords_and_rests() {
     let SequenceItem::Note(note) = &items[0] else {
         panic!("first item should be a note");
     };
-    let DurationExpression::Bars { count, .. } = note.duration else {
+    let Some(DurationExpression::Bars { count, .. }) = note.duration else {
         panic!("note duration should be bars");
     };
     assert_eq!(count, 1);
@@ -1172,7 +1188,7 @@ fn parses_bar_durations_for_notes_chords_and_rests() {
     let SequenceItem::Chord(chord) = &items[1] else {
         panic!("second item should be a chord");
     };
-    let DurationExpression::Bars { count, .. } = chord.duration else {
+    let Some(DurationExpression::Bars { count, .. }) = chord.duration else {
         panic!("chord duration should be bars");
     };
     assert_eq!(count, 2);
@@ -1180,7 +1196,7 @@ fn parses_bar_durations_for_notes_chords_and_rests() {
     let SequenceItem::Rest(rest) = &items[2] else {
         panic!("third item should be a rest");
     };
-    let DurationExpression::Bars { count, .. } = rest.duration else {
+    let Some(DurationExpression::Bars { count, .. }) = rest.duration else {
         panic!("rest duration should be bars");
     };
     assert_eq!(count, 1);
@@ -1282,7 +1298,7 @@ fn parses_section_with_exact_parallel_block() {
         section
             .tracks
             .iter()
-            .map(|track| track.text.as_str())
+            .map(|track| track.name.text.as_str())
             .collect::<Vec<_>>(),
         vec!["chords", "bass"]
     );
@@ -1371,5 +1387,540 @@ fn parses_master_limiter_ceiling() {
     assert_eq!(
         (master.ceiling.decibels, master.ceiling.unit.text.as_str()),
         (-0.3, "db")
+    );
+}
+
+/// `* N` repetition sugar is kept in the AST rather than expanded here, so
+/// the formatter can reprint what the author wrote; the compiler expands it
+/// during lowering.
+#[test]
+fn parses_a_repeated_step_item() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { drum "hh" velocity 38 * 4 rest } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let items = step_items(&parsed);
+    assert_eq!(items.len(), 2);
+    let StepItem::Repeat(group) = &items[0] else {
+        panic!("first item should be a repetition");
+    };
+    assert_eq!(group.count, 4);
+    let [StepItem::Drum { name, velocity, .. }] = group.items.as_slice() else {
+        panic!("repetition should hold one drum item");
+    };
+    assert_eq!(name.value, "hh");
+    assert_eq!(velocity.map(|velocity| velocity.value), Some(38));
+    assert!(matches!(items[1], StepItem::Rest { .. }));
+}
+
+#[test]
+fn parses_a_repetition_group_of_step_items() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { (drum "hh", rest) * 2 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let items = step_items(&parsed);
+    let [StepItem::Repeat(group)] = items else {
+        panic!("body should be one repetition");
+    };
+    assert_eq!(group.count, 2);
+    assert_eq!(group.items.len(), 2);
+    assert!(matches!(group.items[0], StepItem::Drum { .. }));
+    assert!(matches!(group.items[1], StepItem::Rest { .. }));
+}
+
+#[test]
+fn parses_nested_repetition_groups() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { (rest * 2, drum "hh") * 3 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let items = step_items(&parsed);
+    let [StepItem::Repeat(outer)] = items else {
+        panic!("body should be one repetition");
+    };
+    assert_eq!(outer.count, 3);
+    let StepItem::Repeat(inner) = &outer.items[0] else {
+        panic!("first element should itself be a repetition");
+    };
+    assert_eq!(inner.count, 2);
+}
+
+#[test]
+fn parses_repeated_rhythm_cells() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"S\" { rhythm pulse resolution 1/8 { hit rest * 3 (hit, rest) * 2 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Rhythm(rhythm) = &song.statements[0] else {
+        panic!("statement should be a rhythm");
+    };
+    assert!(matches!(rhythm.items[0], RhythmItem::Hit { .. }));
+    let RhythmItem::Repeat(rests) = &rhythm.items[1] else {
+        panic!("second item should be a repetition");
+    };
+    assert_eq!(rests.count, 3);
+    let RhythmItem::Repeat(group) = &rhythm.items[2] else {
+        panic!("third item should be a repetition group");
+    };
+    assert_eq!((group.count, group.items.len()), (2, 2));
+}
+
+#[test]
+fn parses_a_repeated_sequence_item() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"S\" { pattern melody = sequence { note C4 for 1/4 * 2 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should contain a sequence");
+    };
+    let [SequenceItem::Repeat(group)] = items.as_slice() else {
+        panic!("body should be one repetition");
+    };
+    assert_eq!(group.count, 2);
+    assert!(matches!(group.items[0], SequenceItem::Note(_)));
+}
+
+#[test]
+fn rejects_malformed_repetitions() {
+    for (source, message) in [
+        (
+            r#"song "S" { pattern kit = steps 1/8 { drum "hh" * 0 } }"#,
+            "repetition count must be at least 1",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { drum "hh" * } }"#,
+            "expected a repetition count after `*`",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { (drum "hh", rest) } }"#,
+            "expected `*` after a repetition group",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { () * 2 } }"#,
+            "a repetition group must contain at least one item",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { choose { sample 0 weight 1 } * 2 } }"#,
+            "`choose` cannot be repeated with `*`",
+        ),
+    ] {
+        let parsed = parse(SourceId(0), source);
+        assert_eq!(
+            parsed
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            [message],
+            "unexpected diagnostics for {source}"
+        );
+    }
+}
+
+fn step_items(parsed: &symphra_syntax::ParsedSource) -> &[StepItem] {
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+    items
+}
+
+#[test]
+fn parses_a_velocity_ramp() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/16 { drum "cp" velocity 70..110 * 4 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let [StepItem::Repeat(group)] = step_items(&parsed) else {
+        panic!("body should be one repetition");
+    };
+    let [StepItem::Drum { velocity, .. }] = group.items.as_slice() else {
+        panic!("repetition should hold one drum item");
+    };
+    let velocity = velocity.expect("drum should carry a velocity");
+    assert_eq!((velocity.value, velocity.ramp_to), (70, Some(110)));
+}
+
+#[test]
+fn rejects_a_velocity_ramp_without_an_end() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/16 { drum "cp" velocity 70.. * 4 } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["expected the end of a velocity ramp"]
+    );
+}
+
+#[test]
+fn parses_a_bar_step_resolution_and_subdivisions() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1bar { [ drum "cp" * 2 ] [ drum "bd" [ drum "sn" rest ] ] } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps {
+        resolution, items, ..
+    } = &pattern.body
+    else {
+        panic!("pattern should contain steps");
+    };
+    assert!(matches!(
+        resolution,
+        DurationExpression::Bars { count: 1, .. }
+    ));
+
+    let [
+        StepItem::Subdivide { items: first, .. },
+        StepItem::Subdivide { items: second, .. },
+    ] = items.as_slice()
+    else {
+        panic!("both cells should be subdivisions");
+    };
+    assert!(matches!(first.as_slice(), [StepItem::Repeat(_)]));
+    assert!(matches!(
+        second.as_slice(),
+        [StepItem::Drum { .. }, StepItem::Subdivide { .. }]
+    ));
+}
+
+#[test]
+fn rejects_an_empty_subdivision() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { [] } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["a subdivision must contain at least one item"]
+    );
+}
+
+#[test]
+fn parses_a_sequence_step_default_duration() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern line = sequence step 1/8 { note C4  note D4 for 1/16  rest } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { step, items, .. } = &pattern.body else {
+        panic!("pattern should contain a sequence");
+    };
+    assert!(matches!(
+        step,
+        Some(DurationExpression::Fraction {
+            numerator: 1,
+            denominator: 8,
+            ..
+        })
+    ));
+
+    let [
+        SequenceItem::Note(first),
+        SequenceItem::Note(second),
+        SequenceItem::Rest(rest),
+    ] = items.as_slice()
+    else {
+        panic!("body should be two notes and a rest");
+    };
+    assert!(first.duration.is_none());
+    assert!(matches!(
+        second.duration,
+        Some(DurationExpression::Fraction {
+            denominator: 16,
+            ..
+        })
+    ));
+    assert!(rest.duration.is_none());
+}
+
+#[test]
+fn rejects_a_missing_duration_without_a_sequence_step() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern line = sequence { note C4 } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["expected `for` after note pitch"]
+    );
+}
+
+#[test]
+fn parses_a_derived_pattern() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern drop = pad |> transpose 12 st |> repeat 2 |> reverse }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Derived {
+        source,
+        transpose,
+        repeat,
+        reverse,
+        ..
+    } = &pattern.body
+    else {
+        panic!("pattern should be derived");
+    };
+    assert_eq!(source.text, "pad");
+    assert_eq!(
+        transpose.as_ref().map(|transpose| transpose.semitones),
+        Some(12)
+    );
+    assert_eq!(
+        repeat.as_ref().map(|repeat| repeat.count),
+        Some(RepeatCount::Fixed(2))
+    );
+    assert!(reverse);
+}
+
+#[test]
+fn rejects_a_performance_stage_in_a_pattern_derivation() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern drop = pad |> gain 0.5 }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["expected `transpose`, `repeat`, or `reverse` after `|>`"]
+    );
+}
+
+#[test]
+fn parses_chord_symbols() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern pad = sequence step 1bar { chord G3:maj7  chord A3:7  chord F#3 A3 C#4 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should contain a sequence");
+    };
+    let [
+        SequenceItem::Chord(first),
+        SequenceItem::Chord(second),
+        SequenceItem::Chord(third),
+    ] = items.as_slice()
+    else {
+        panic!("body should be three chords");
+    };
+
+    let ChordPitches::Symbol { root, quality } = &first.pitches else {
+        panic!("first chord should be a symbol");
+    };
+    assert_eq!((root.text.as_str(), quality.text.as_str()), ("G3", "maj7"));
+
+    let ChordPitches::Symbol { quality, .. } = &second.pitches else {
+        panic!("second chord should be a symbol");
+    };
+    assert_eq!(quality.text, "7", "an integer quality is still a quality");
+
+    assert!(matches!(third.pitches, ChordPitches::Explicit(_)));
+}
+
+#[test]
+fn parses_an_arpeggiate_pattern() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern arp = arpeggiate chords { style up_down  step 1/8  octaves 2 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Arpeggiate {
+        source,
+        style,
+        step,
+        octaves,
+        ..
+    } = &pattern.body
+    else {
+        panic!("pattern should be an arpeggio");
+    };
+    assert_eq!(
+        (source.text.as_str(), style.text.as_str()),
+        ("chords", "up_down")
+    );
+    assert!(matches!(
+        step,
+        DurationExpression::Fraction {
+            numerator: 1,
+            denominator: 8,
+            ..
+        }
+    ));
+    assert_eq!(octaves.map(|octaves| octaves.count), Some(2));
+}
+
+#[test]
+fn rejects_an_arpeggiate_without_a_style() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern arp = arpeggiate chords { step 1/8 } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["arpeggiate requires a `style`"]
+    );
+}
+
+#[test]
+fn parses_effect_presets_and_references() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" {
+  effect hall = reverb { mix 0.5 size 0.7 }
+  track pad role harmony { instrument warm play chords effect hall }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::EffectPreset(preset) = &song.statements[0] else {
+        panic!("first statement should be an effect preset");
+    };
+    assert_eq!(preset.name.text, "hall");
+    assert!(matches!(preset.effect.kind, EffectKind::Reverb { .. }));
+
+    let SongStatement::Track(track) = &song.statements[1] else {
+        panic!("second statement should be a track");
+    };
+    let Some(TrackEffect::Preset(name)) = track.effect.as_ref() else {
+        panic!("the track should reference a preset");
+    };
+    assert_eq!(name.text, "hall");
+}
+
+#[test]
+fn parses_section_track_overrides_and_repeat_fit() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" {
+  track lead role lead { instrument tone  play line |> repeat fit }
+  section outro bars 4 {
+    parallel exact {
+      play track lead { volume -12 db  effect hall }
+      play track pad
+    }
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("first statement should be a track");
+    };
+    let TrackBody::Single { play, .. } = &track.body else {
+        panic!("track should have a single body");
+    };
+    assert_eq!(
+        play.repeat.map(|repeat| repeat.count),
+        Some(RepeatCount::Fit)
+    );
+
+    let SongStatement::Section(section) = &song.statements[1] else {
+        panic!("second statement should be a section");
+    };
+    let [overridden, plain] = section.tracks.as_slice() else {
+        panic!("section should reference two tracks");
+    };
+    assert_eq!(overridden.name.text, "lead");
+    assert_eq!(
+        overridden.volume.as_ref().map(|volume| volume.decibels),
+        Some(-12.0)
+    );
+    assert!(matches!(overridden.effect, Some(TrackEffect::Preset(_))));
+    assert_eq!(plain.name.text, "pad");
+    assert!(plain.volume.is_none() && plain.effect.is_none());
+}
+
+#[test]
+fn rejects_repeat_fit_on_a_pattern_derivation() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern drop = pad |> repeat fit }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["`repeat fit` needs a section, so it belongs on a play, not a pattern"]
     );
 }

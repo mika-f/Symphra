@@ -3,14 +3,15 @@ use std::fmt::Write as _;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ArrangementOccurrence, AutomateDeclaration, ChanceTransformExpression,
-    ChordExpression, Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration,
-    EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
-    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, VolumeExpression,
+    ChordExpression, ChordPitches, Declaration, DegreeChoiceAlternative, DurationExpression,
+    EffectDeclaration, EffectFactor, EffectKind, EffectPresetDeclaration, EnvelopeDeclaration,
+    Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration,
+    NoteExpression, NumberLiteral, OctavesExpression, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatCount, RepeatGroup, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SectionTrack,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TrackEffect, VelocityExpression, VolumeExpression,
 };
 
 use crate::printer::{BlankSeparator, Printer};
@@ -271,12 +272,13 @@ fn song_statement_rank(statement: &SongStatement) -> u8 {
         SongStatement::Meter { .. } => 1,
         SongStatement::Key { .. } => 2,
         SongStatement::Instrument(_) => 3,
-        SongStatement::Rhythm(_) => 4,
-        SongStatement::Pattern(_) => 5,
-        SongStatement::Track(_) => 6,
-        SongStatement::Section(_) => 7,
-        SongStatement::Arrangement { .. } => 8,
-        SongStatement::Master(_) => 9,
+        SongStatement::EffectPreset(_) => 4,
+        SongStatement::Rhythm(_) => 5,
+        SongStatement::Pattern(_) => 6,
+        SongStatement::Track(_) => 7,
+        SongStatement::Section(_) => 8,
+        SongStatement::Arrangement { .. } => 9,
+        SongStatement::Master(_) => 10,
     }
 }
 
@@ -287,6 +289,7 @@ fn song_statement_span(statement: &SongStatement) -> SourceSpan {
         | SongStatement::Key { span, .. }
         | SongStatement::Arrangement { span, .. } => *span,
         SongStatement::Instrument(decl) => decl.span,
+        SongStatement::EffectPreset(decl) => decl.span,
         SongStatement::Rhythm(decl) => decl.span,
         SongStatement::Track(decl) => decl.span,
         SongStatement::Section(decl) => decl.span,
@@ -311,6 +314,7 @@ fn print_song_statement(ctx: &mut Ctx<'_>, statement: &SongStatement) {
             ctx.text(mode.span)
         )),
         SongStatement::Instrument(decl) => print_instrument(ctx, decl),
+        SongStatement::EffectPreset(decl) => print_effect_preset(ctx, decl),
         SongStatement::Rhythm(decl) => print_rhythm(ctx, decl),
         SongStatement::Track(decl) => print_track(ctx, decl),
         SongStatement::Section(decl) => print_section(ctx, decl),
@@ -373,19 +377,74 @@ fn print_section_parallel(ctx: &mut Ctx<'_>, decl: &SectionDeclaration) {
     } else {
         "parallel"
     };
-    let items: Vec<&Identifier> = decl.tracks.iter().collect();
+    let items: Vec<&SectionTrack> = decl.tracks.iter().collect();
     print_block(
         ctx,
         header,
         decl.span,
         &items,
-        |track: &Identifier| track.span,
+        |track: &SectionTrack| track.span,
         |_| 0,
         Reorder::No,
-        |ctx, track| {
-            ctx.printer
-                .line(format!("play track {}", ctx.text(track.span)));
-        },
+        print_section_track,
+    );
+}
+
+/// Prints `play track <name>`, with its override block when it has one.
+///
+/// A short override — only a volume and a preset reference, with no comments
+/// inside — stays on the reference's own line, the way `rhythm` bodies stay
+/// compact. It reads as a modifier on the reference rather than a block, and
+/// keeping it inline is what makes overriding shorter than declaring a second
+/// track in the first place.
+fn print_section_track(ctx: &mut Ctx<'_>, track: &SectionTrack) {
+    let header = format!("play track {}", ctx.text(track.name.span));
+    if track.volume.is_none() && track.effect.is_none() && track.automate.is_none() {
+        ctx.printer.line(header);
+        return;
+    }
+    let inline = track.automate.is_none()
+        && !matches!(track.effect, Some(TrackEffect::Inline(_)))
+        && !ctx.cursor.has_comment_before(track.span.end);
+    if inline {
+        let mut line = header;
+        line.push_str(" {");
+        if let Some(volume) = &track.volume {
+            let _ = write!(
+                line,
+                " volume {} {}",
+                volume.decibels,
+                ctx.text(volume.unit.span)
+            );
+        }
+        if let Some(TrackEffect::Preset(name)) = &track.effect {
+            let _ = write!(line, "  effect {}", ctx.text(name.span));
+        }
+        line.push_str(" }");
+        let _ = ctx.cursor.take_leading(track.span.end, track.span.start);
+        ctx.printer.line(line);
+        return;
+    }
+    let mut items = Vec::new();
+    if let Some(volume) = &track.volume {
+        items.push(TrackField::Volume(volume));
+    }
+    if let Some(effect) = &track.effect {
+        items.push(TrackField::Effect(effect));
+    }
+    if let Some(automate) = &track.automate {
+        items.push(TrackField::Automate(automate));
+    }
+    let items: Vec<&TrackField<'_>> = items.iter().collect();
+    print_block(
+        ctx,
+        &header,
+        track.span,
+        &items,
+        |field: &TrackField<'_>| track_field_span(field),
+        |_| 0,
+        Reorder::No,
+        print_track_field,
     );
 }
 
@@ -734,14 +793,36 @@ fn vst3_field_span(field: Vst3Field<'_>) -> SourceSpan {
 fn rhythm_item_span(item: &RhythmItem) -> SourceSpan {
     match item {
         RhythmItem::Hit { span } | RhythmItem::Rest { span } => *span,
+        RhythmItem::Repeat(group) => group.span,
     }
 }
 
-fn rhythm_item_text(item: &RhythmItem) -> &'static str {
+fn rhythm_item_text(item: &RhythmItem) -> String {
     match item {
-        RhythmItem::Hit { .. } => "hit",
-        RhythmItem::Rest { .. } => "rest",
+        RhythmItem::Hit { .. } => "hit".to_owned(),
+        RhythmItem::Rest { .. } => "rest".to_owned(),
+        RhythmItem::Repeat(group) => format_repeat(group, rhythm_item_text),
     }
+}
+
+/// Reprints a `* N` repetition: `hit * 4` for a single item, and
+/// `(hit, rest) * 4` for a group.
+///
+/// A one-element group written as `(hit) * 4` normalizes to the ungrouped
+/// spelling; the parentheses carry no meaning there, and the AST does not
+/// record whether the author typed them.
+fn format_repeat<T>(group: &RepeatGroup<T>, element: impl Fn(&T) -> String) -> String {
+    let count = group.count;
+    if let [only] = group.items.as_slice() {
+        return format!("{} * {count}", element(only));
+    }
+    let items = group
+        .items
+        .iter()
+        .map(element)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({items}) * {count}")
 }
 
 /// Prints a rhythm as a single compact line when its body has no comments:
@@ -821,7 +902,7 @@ enum TrackField<'a> {
     Volume(&'a VolumeExpression),
     Play(&'a PlayStatement),
     Layer(&'a [LayerUse], SourceSpan),
-    Effect(&'a EffectDeclaration),
+    Effect(&'a TrackEffect),
     Automate(&'a AutomateDeclaration),
 }
 
@@ -831,7 +912,7 @@ fn track_field_span(field: &TrackField<'_>) -> SourceSpan {
         TrackField::Volume(volume) => volume.span,
         TrackField::Play(play) => play.span,
         TrackField::Layer(_, span) => *span,
-        TrackField::Effect(effect) => effect.span,
+        TrackField::Effect(effect) => effect.span(),
         TrackField::Automate(automate) => automate.span,
     }
 }
@@ -873,21 +954,30 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
         |field: &TrackField<'_>| track_field_span(field),
         |_| 0,
         Reorder::No,
-        |ctx, field| match field {
-            TrackField::Instrument(instrument) => ctx
-                .printer
-                .line(format!("instrument {}", ctx.text(instrument.span))),
-            TrackField::Volume(volume) => ctx.printer.line(format!(
-                "volume {} {}",
-                volume.decibels,
-                ctx.text(volume.unit.span)
-            )),
-            TrackField::Play(play) => print_play(ctx, play),
-            TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
-            TrackField::Effect(effect) => print_effect(ctx, effect),
-            TrackField::Automate(automate) => print_automate(ctx, automate),
-        },
+        print_track_field,
     );
+}
+
+fn print_track_field(ctx: &mut Ctx<'_>, field: &TrackField<'_>) {
+    match field {
+        TrackField::Instrument(instrument) => ctx
+            .printer
+            .line(format!("instrument {}", ctx.text(instrument.span))),
+        TrackField::Volume(volume) => ctx.printer.line(format!(
+            "volume {} {}",
+            volume.decibels,
+            ctx.text(volume.unit.span)
+        )),
+        TrackField::Play(play) => print_play(ctx, play),
+        TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
+        TrackField::Effect(effect) => match effect {
+            TrackEffect::Inline(effect) => print_effect(ctx, "effect", effect),
+            TrackEffect::Preset(name) => {
+                ctx.printer.line(format!("effect {}", ctx.text(name.span)));
+            }
+        },
+        TrackField::Automate(automate) => print_automate(ctx, automate),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -911,14 +1001,22 @@ fn effect_field_span(field: EffectField<'_>) -> SourceSpan {
     }
 }
 
-fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
-    let (header, items): (&str, Vec<EffectField<'_>>) = match &effect.kind {
+/// Prints a song-level `effect <name> = <kind> { ... }` preset.
+fn print_effect_preset(ctx: &mut Ctx<'_>, decl: &EffectPresetDeclaration) {
+    let header = format!("effect {} =", ctx.text(decl.name.span));
+    print_effect(ctx, &header, &decl.effect);
+}
+
+/// Prints an effect block under `lead`, which is `effect` for a track's own
+/// block and `effect <name> =` for a song-level preset.
+fn print_effect(ctx: &mut Ctx<'_>, lead: &str, effect: &EffectDeclaration) {
+    let (kind, items): (&str, Vec<EffectField<'_>>) = match &effect.kind {
         EffectKind::Delay {
             mix,
             time,
             feedback,
         } => (
-            "effect delay",
+            "delay",
             vec![
                 EffectField::Mix(*mix),
                 EffectField::Time(*time),
@@ -926,20 +1024,21 @@ fn print_effect(ctx: &mut Ctx<'_>, effect: &EffectDeclaration) {
             ],
         ),
         EffectKind::Filter { cutoff, resonance } => (
-            "effect filter",
+            "filter",
             vec![
                 EffectField::Cutoff(cutoff),
                 EffectField::Resonance(*resonance),
             ],
         ),
         EffectKind::Reverb { mix, size } => (
-            "effect reverb",
+            "reverb",
             vec![EffectField::Mix(*mix), EffectField::Size(*size)],
         ),
     };
+    let header = format!("{lead} {kind}");
     print_block(
         ctx,
-        header,
+        &header,
         effect.span,
         &items,
         effect_field_span,
@@ -1099,7 +1198,7 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
         let _ = write!(line, " |> gain {}", gain.factor);
     }
     if let Some(repeat) = &play.repeat {
-        let _ = write!(line, " |> repeat {}", repeat.count);
+        let _ = write!(line, " |> repeat {}", repeat_text(repeat.count));
     }
     if play.reverse {
         line.push_str(" |> reverse");
@@ -1172,6 +1271,7 @@ fn sequence_item_span(item: &SequenceItem) -> SourceSpan {
         SequenceItem::Note(note) => note.span,
         SequenceItem::Chord(chord) => chord.span,
         SequenceItem::Rest(rest) => rest.span,
+        SequenceItem::Repeat(group) => group.span,
     }
 }
 
@@ -1182,14 +1282,75 @@ fn step_item_span(item: &StepItem) -> SourceSpan {
         | StepItem::Drum { span, .. }
         | StepItem::Rest { span }
         | StepItem::Choose { span, .. }
-        | StepItem::ChooseDegrees { span, .. } => *span,
+        | StepItem::ChooseDegrees { span, .. }
+        | StepItem::Subdivide { span, .. } => *span,
+        StepItem::Repeat(group) => group.span,
     }
+}
+
+#[derive(Clone, Copy)]
+enum ArpeggiateField<'a> {
+    Style(&'a Identifier),
+    Step(&'a DurationExpression),
+    Octaves(&'a OctavesExpression),
+}
+
+fn arpeggiate_field_span(field: ArpeggiateField<'_>) -> SourceSpan {
+    match field {
+        ArpeggiateField::Style(style) => style.span,
+        ArpeggiateField::Step(step) => step.span(),
+        ArpeggiateField::Octaves(octaves) => octaves.span,
+    }
+}
+
+/// Prints `pattern <name> = arpeggiate <source> { ... }`, split out of
+/// [`print_pattern`] so that function stays readable as pattern bodies grow.
+fn print_arpeggiate(
+    ctx: &mut Ctx<'_>,
+    decl: &PatternDeclaration,
+    source: &Identifier,
+    fields: (&Identifier, &DurationExpression, Option<&OctavesExpression>),
+    span: SourceSpan,
+) {
+    let (style, step, octaves) = fields;
+    let header = format!(
+        "pattern {} = arpeggiate {}",
+        ctx.text(decl.name.span),
+        ctx.text(source.span)
+    );
+    let mut items = vec![ArpeggiateField::Style(style), ArpeggiateField::Step(step)];
+    if let Some(octaves) = octaves {
+        items.push(ArpeggiateField::Octaves(octaves));
+    }
+    print_block(
+        ctx,
+        &header,
+        span,
+        &items,
+        arpeggiate_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            ArpeggiateField::Style(style) => {
+                ctx.printer.line(format!("style {}", ctx.text(style.span)));
+            }
+            ArpeggiateField::Step(step) => {
+                ctx.printer.line(format!("step {}", format_duration(step)));
+            }
+            ArpeggiateField::Octaves(octaves) => {
+                ctx.printer.line(format!("octaves {}", octaves.count));
+            }
+        },
+    );
 }
 
 fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
     match &decl.body {
-        PatternBody::Sequence { items, .. } => {
-            let header = format!("pattern {} = sequence", ctx.text(decl.name.span));
+        PatternBody::Sequence { step, items, .. } => {
+            let step = step.map_or_else(String::new, |step| {
+                format!(" step {}", format_duration(&step))
+            });
+            let header = format!("pattern {} = sequence{step}", ctx.text(decl.name.span));
             let items: Vec<&SequenceItem> = items.iter().collect();
             print_block(
                 ctx,
@@ -1202,17 +1363,48 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
                 print_sequence_item,
             );
         }
-        PatternBody::Steps {
-            resolution_numerator,
-            resolution_denominator,
-            items,
+        PatternBody::Arpeggiate {
+            source,
+            style,
+            step,
+            octaves,
+            span,
+        } => print_arpeggiate(ctx, decl, source, (style, step, octaves.as_ref()), *span),
+        PatternBody::Derived {
+            source,
+            transpose,
+            repeat,
+            reverse,
             ..
         } => {
-            let header = format!(
-                "pattern {} = steps {}/{}",
+            let mut line = format!(
+                "pattern {} = {}",
                 ctx.text(decl.name.span),
-                resolution_numerator,
-                resolution_denominator
+                ctx.text(source.span)
+            );
+            if let Some(transpose) = transpose {
+                let _ = write!(
+                    line,
+                    " |> transpose {} {}",
+                    transpose.semitones,
+                    ctx.text(transpose.unit.span)
+                );
+            }
+            if let Some(repeat) = repeat {
+                let _ = write!(line, " |> repeat {}", repeat_text(repeat.count));
+            }
+            if *reverse {
+                line.push_str(" |> reverse");
+            }
+            ctx.printer.line(line);
+        }
+        PatternBody::Steps {
+            resolution, items, ..
+        } => {
+            let header = format!(
+                "pattern {} = steps {}",
+                ctx.text(decl.name.span),
+                format_duration(resolution)
             );
             let items: Vec<&StepItem> = items.iter().collect();
             print_block(
@@ -1230,12 +1422,39 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
 }
 
 fn print_sequence_item(ctx: &mut Ctx<'_>, item: &SequenceItem) {
+    let line = sequence_item_text(ctx, item);
+    ctx.printer.line(line);
+}
+
+fn sequence_item_text(ctx: &Ctx<'_>, item: &SequenceItem) -> String {
     match item {
-        SequenceItem::Note(note) => print_note(ctx, note),
-        SequenceItem::Chord(chord) => print_chord(ctx, chord),
-        SequenceItem::Rest(rest) => ctx
-            .printer
-            .line(format!("rest for {}", format_duration(&rest.duration))),
+        SequenceItem::Note(note) => note_text(ctx, note),
+        SequenceItem::Chord(chord) => chord_text(ctx, chord),
+        SequenceItem::Rest(rest) => format!("rest{}", format_for(rest.duration.as_ref())),
+        SequenceItem::Repeat(group) => format_repeat(group, |item| sequence_item_text(ctx, item)),
+    }
+}
+
+/// `velocity 90`, or the ramp form `velocity 70..110`.
+fn velocity_text(velocity: &VelocityExpression) -> String {
+    match velocity.ramp_to {
+        Some(end) => format!("velocity {}..{end}", velocity.value),
+        None => format!("velocity {}", velocity.value),
+    }
+}
+
+/// ` for <duration>`, or nothing when the item takes its sequence's `step`.
+fn format_for(duration: Option<&DurationExpression>) -> String {
+    duration.map_or_else(String::new, |duration| {
+        format!(" for {}", format_duration(duration))
+    })
+}
+
+/// `repeat 2`'s count, or the `fit` that stands in for one.
+fn repeat_text(count: RepeatCount) -> String {
+    match count {
+        RepeatCount::Fixed(count) => count.to_string(),
+        RepeatCount::Fit => "fit".to_owned(),
     }
 }
 
@@ -1250,54 +1469,85 @@ fn format_duration(duration: &DurationExpression) -> String {
     }
 }
 
-fn print_note(ctx: &mut Ctx<'_>, note: &NoteExpression) {
+fn note_text(ctx: &Ctx<'_>, note: &NoteExpression) -> String {
     let mut line = format!(
-        "note {} for {}",
+        "note {}{}",
         ctx.text(note.pitch.span),
-        format_duration(&note.duration)
+        format_for(note.duration.as_ref())
     );
     if let Some(velocity) = &note.velocity {
-        let _ = write!(line, " velocity {}", velocity.value);
+        let _ = write!(line, " {}", velocity_text(velocity));
     }
-    ctx.printer.line(line);
+    line
 }
 
-fn print_chord(ctx: &mut Ctx<'_>, chord: &ChordExpression) {
-    let pitches = chord
-        .pitches
-        .iter()
-        .map(|pitch| ctx.text(pitch.span))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut line = format!("chord {pitches} for {}", format_duration(&chord.duration));
-    if let Some(velocity) = &chord.velocity {
-        let _ = write!(line, " velocity {}", velocity.value);
-    }
-    ctx.printer.line(line);
-}
-
-fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
-    match item {
-        StepItem::Degree { degree, octave, .. } => {
-            ctx.printer.line(format!("degree {degree} octave {octave}"));
+fn chord_text(ctx: &Ctx<'_>, chord: &ChordExpression) -> String {
+    let pitches = match &chord.pitches {
+        ChordPitches::Explicit(pitches) => pitches
+            .iter()
+            .map(|pitch| ctx.text(pitch.span))
+            .collect::<Vec<_>>()
+            .join(" "),
+        ChordPitches::Symbol { root, quality } => {
+            format!("{}:{}", ctx.text(root.span), ctx.text(quality.span))
         }
+    };
+    let mut line = format!("chord {pitches}{}", format_for(chord.duration.as_ref()));
+    if let Some(velocity) = &chord.velocity {
+        let _ = write!(line, " {}", velocity_text(velocity));
+    }
+    line
+}
+
+/// Renders every step item that fits on one line. `choose` blocks are the
+/// exception, and the parser rejects them inside a repetition for exactly
+/// that reason, so a repetition never has to render one inline.
+fn step_item_text(ctx: &Ctx<'_>, item: &StepItem) -> String {
+    match item {
+        StepItem::Degree { degree, octave, .. } => format!("degree {degree} octave {octave}"),
         StepItem::Sample {
             index, velocity, ..
         } => {
             let mut line = format!("sample {index}");
             if let Some(velocity) = velocity {
-                let _ = write!(line, " velocity {}", velocity.value);
+                let _ = write!(line, " {}", velocity_text(velocity));
             }
-            ctx.printer.line(line);
+            line
         }
         StepItem::Drum { name, velocity, .. } => {
             let mut line = format!("drum {}", ctx.text(name.span));
             if let Some(velocity) = velocity {
-                let _ = write!(line, " velocity {}", velocity.value);
+                let _ = write!(line, " {}", velocity_text(velocity));
             }
+            line
+        }
+        StepItem::Rest { .. } => "rest".to_owned(),
+        StepItem::Repeat(group) => format_repeat(group, |item| step_item_text(ctx, item)),
+        StepItem::Subdivide { items, .. } => {
+            let items = items
+                .iter()
+                .map(|item| step_item_text(ctx, item))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("[{items}]")
+        }
+        StepItem::Choose { .. } | StepItem::ChooseDegrees { .. } => {
+            unreachable!("choose is not repeatable, and is printed as a block")
+        }
+    }
+}
+
+fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
+    match item {
+        StepItem::Degree { .. }
+        | StepItem::Sample { .. }
+        | StepItem::Drum { .. }
+        | StepItem::Rest { .. }
+        | StepItem::Repeat(_)
+        | StepItem::Subdivide { .. } => {
+            let line = step_item_text(ctx, item);
             ctx.printer.line(line);
         }
-        StepItem::Rest { .. } => ctx.printer.line("rest"),
         StepItem::Choose { alternatives, span } => {
             let items: Vec<&SampleChoiceAlternative> = alternatives.iter().collect();
             print_block(

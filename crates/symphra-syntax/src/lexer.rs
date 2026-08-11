@@ -73,11 +73,14 @@ impl Lexer<'_> {
                 self.comment(start);
             }
             '{' => self.push(TokenKind::LeftBrace, start),
+            '[' => self.push(TokenKind::LeftBracket, start),
+            ']' => self.push(TokenKind::RightBracket, start),
             '}' => self.push(TokenKind::RightBrace, start),
             '=' => self.push(TokenKind::Equal, start),
             '/' => self.push(TokenKind::Slash, start),
             '+' => self.push(TokenKind::Plus, start),
             '-' => self.push(TokenKind::Minus, start),
+            '*' => self.push(TokenKind::Star, start),
             '%' => self.push(TokenKind::Percent, start),
             '(' => self.push(TokenKind::LeftParen, start),
             ')' => self.push(TokenKind::RightParen, start),

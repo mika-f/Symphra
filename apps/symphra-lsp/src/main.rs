@@ -1483,7 +1483,7 @@ fn visit_name_references(song: &SongDeclaration, mut visit: impl FnMut(NamedKind
             }
             SongStatement::Section(section) => {
                 for track in &section.tracks {
-                    visit(NamedKind::Track, track);
+                    visit(NamedKind::Track, &track.name);
                 }
             }
             SongStatement::Track(track) => match &track.body {
@@ -1832,8 +1832,14 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
             let PatternBody::Sequence { items, .. } = &source_pattern.body else {
                 continue;
             };
-            for (item, step) in items.iter().zip(&pattern.steps) {
-                match (item, step) {
+            // Repetitions have to be expanded here the same way the compiler
+            // expanded them, or every pitch after a `* N` would line up with
+            // the wrong lowered step.
+            let Some(items) = symphra_compiler::expand::sequence_items(items) else {
+                continue;
+            };
+            for (expanded, step) in items.into_iter().zip(&pattern.steps) {
+                match (expanded.item, step) {
                     (
                         SequenceItem::Note(source_note),
                         symphra_compiler::hir::PatternStep::Note(note),
@@ -1844,7 +1850,9 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
                         SequenceItem::Chord(source_chord),
                         symphra_compiler::hir::PatternStep::Chord(chord),
                     ) => {
-                        for (source_pitch, note) in source_chord.pitches.iter().zip(&chord.notes) {
+                        for (source_pitch, note) in
+                            source_chord.pitches.spelled().iter().zip(&chord.notes)
+                        {
                             pitches.push((source_pitch.span, note.midi_pitch));
                         }
                     }

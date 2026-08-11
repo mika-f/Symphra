@@ -2,15 +2,16 @@ mod literal;
 
 use crate::ast::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
-    ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
+    ChanceTransformExpression, ChooseSampleExpression, ChordExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
-    EnvelopeDeclaration, GainExpression, GateExpression, Identifier, InstrumentBody,
-    InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
+    EffectPresetDeclaration, EnvelopeDeclaration, GainExpression, GateExpression, Identifier,
+    InstrumentBody, InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration,
+    NoteExpression, NumberLiteral, OctavesExpression, PanExpression, PatternBody,
+    PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
+    QuotedString, RateLiteral, RepeatCount, RepeatExpression, RepeatGroup, RestExpression,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression,
+    SectionDeclaration, SectionTrack, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackBody, TrackDeclaration, TrackEffect, TransposeExpression,
     VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
@@ -25,6 +26,7 @@ const PROJECT_STATEMENT_START: &[TokenKind] = &[
 ];
 const SONG_STATEMENT_START: &[TokenKind] = &[
     TokenKind::Tempo,
+    TokenKind::Effect,
     TokenKind::Meter,
     TokenKind::Key,
     TokenKind::Instrument,
@@ -40,6 +42,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
 const RHYTHM_ITEM_START: &[TokenKind] = &[
     TokenKind::Hit,
     TokenKind::Rest,
+    TokenKind::LeftParen,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -47,15 +50,32 @@ const SEQUENCE_ITEM_START: &[TokenKind] = &[
     TokenKind::Note,
     TokenKind::Chord,
     TokenKind::Rest,
+    TokenKind::LeftParen,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
 const STEP_ITEM_START: &[TokenKind] = &[
+    TokenKind::LeftBracket,
     TokenKind::Degree,
     TokenKind::Sample,
     TokenKind::Drum,
     TokenKind::Choose,
     TokenKind::Rest,
+    TokenKind::LeftParen,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+/// Where to resync after a malformed item inside a `( ... )` repetition
+/// group: the next element, the group's own end, or the enclosing body's.
+const GROUP_ITEM_RECOVERY: &[TokenKind] = &[
+    TokenKind::Comma,
+    TokenKind::RightParen,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+/// Where to resync after a malformed item inside a `[ ... ]` subdivision.
+const SUBDIVISION_ITEM_RECOVERY: &[TokenKind] = &[
+    TokenKind::RightBracket,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -75,6 +95,7 @@ pub fn parse(source: SourceId, input: &str) -> ParsedSource {
         tokens: lexed.tokens,
         cursor: 0,
         diagnostics: lexed.diagnostics,
+        sequence_step: false,
     };
     let declarations = parser.source_file();
     ParsedSource {
@@ -91,6 +112,9 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
+    /// Whether the `sequence` body currently being parsed declared a
+    /// `step` default, which makes each item's `for <duration>` optional.
+    sequence_step: bool,
 }
 
 impl Parser {
@@ -180,6 +204,9 @@ impl Parser {
                 TokenKind::Instrument => self
                     .instrument()
                     .map(|instrument| SongStatement::Instrument(Box::new(instrument))),
+                TokenKind::Effect => self
+                    .effect_preset()
+                    .map(|preset| SongStatement::EffectPreset(Box::new(preset))),
                 TokenKind::Rhythm => self.rhythm().map(SongStatement::Rhythm),
                 TokenKind::Track => self.track().map(Box::new).map(SongStatement::Track),
                 TokenKind::Section => self.section(),
@@ -492,7 +519,7 @@ impl Parser {
         }))
     }
 
-    fn parallel_block(&mut self) -> Option<(bool, Vec<Identifier>)> {
+    fn parallel_block(&mut self) -> Option<(bool, Vec<SectionTrack>)> {
         self.required(TokenKind::Parallel, "expected `parallel` in section")?;
         let exact = if self.at(TokenKind::Exact) {
             self.bump();
@@ -504,10 +531,10 @@ impl Parser {
         let mut tracks = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             if self.at(TokenKind::Play) {
-                self.bump();
+                let start = self.bump().span;
                 self.required(TokenKind::Track, "expected `track` after `play`")?;
-                let track = self.identifier("expected a track name after `play track`")?;
-                tracks.push(track);
+                let name = self.identifier("expected a track name after `play track`")?;
+                tracks.push(self.section_track(start, name)?);
             } else {
                 self.error("expected `play track <name>` in parallel block");
                 self.recover_to(PARALLEL_PLAY_START);
@@ -515,6 +542,46 @@ impl Parser {
         }
         self.required(TokenKind::RightBrace, "expected `}` to close parallel")?;
         Some((exact, tracks))
+    }
+
+    /// Parses the optional `{ ... }` after `play track <name>`: a volume,
+    /// an effect, and an automation block that replace the track's own for
+    /// this section.
+    fn section_track(&mut self, start: SourceSpan, name: Identifier) -> Option<SectionTrack> {
+        if !self.at(TokenKind::LeftBrace) {
+            return Some(SectionTrack {
+                span: start.cover(name.span),
+                name,
+                volume: None,
+                effect: None,
+                automate: None,
+            });
+        }
+        self.bump();
+        let mut volume = None;
+        let mut effect = None;
+        let mut automate = None;
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            match self.current().kind {
+                TokenKind::Volume => volume = Some(self.volume()?),
+                TokenKind::Effect => effect = Some(self.track_effect()?),
+                TokenKind::Automate => automate = Some(self.automate()?),
+                _ => {
+                    self.error("expected `volume`, `effect`, or `automate` in a track override");
+                    return None;
+                }
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close the override")?
+            .span;
+        Some(SectionTrack {
+            span: start.cover(end),
+            name,
+            volume,
+            effect,
+            automate,
+        })
     }
 
     fn rhythm(&mut self) -> Option<RhythmDeclaration> {
@@ -530,19 +597,7 @@ impl Parser {
         self.required(TokenKind::LeftBrace, "expected `{` after rhythm resolution")?;
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let item = match self.current().kind {
-                TokenKind::Hit => Some(RhythmItem::Hit {
-                    span: self.bump().span,
-                }),
-                TokenKind::Rest => Some(RhythmItem::Rest {
-                    span: self.bump().span,
-                }),
-                _ => {
-                    self.error("expected `hit` or `rest` in rhythm");
-                    None
-                }
-            };
-            if let Some(item) = item {
+            if let Some(item) = self.rhythm_item() {
                 items.push(item);
             } else {
                 self.recover_to(RHYTHM_ITEM_START);
@@ -558,6 +613,114 @@ impl Parser {
             items,
             span: start.cover(end),
         })
+    }
+
+    /// One rhythm cell: `hit`, `rest`, or either of those repeated —
+    /// `hit * 4`, `(hit, rest) * 4`.
+    fn rhythm_item(&mut self) -> Option<RhythmItem> {
+        let start = self.current().span;
+        if self.at(TokenKind::LeftParen) {
+            let (items, count, span) = self.repetition_group(Self::rhythm_item, start)?;
+            return Some(RhythmItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        let item = match self.current().kind {
+            TokenKind::Hit => RhythmItem::Hit {
+                span: self.bump().span,
+            },
+            TokenKind::Rest => RhythmItem::Rest {
+                span: self.bump().span,
+            },
+            _ => {
+                self.error("expected `hit`, `rest`, or `(` in rhythm");
+                return None;
+            }
+        };
+        self.repeated(item, start, RhythmItem::Repeat)
+    }
+
+    /// Wraps `item` in a repetition when a `* N` suffix follows it, and
+    /// returns it unchanged otherwise.
+    fn repeated<T>(
+        &mut self,
+        item: T,
+        start: SourceSpan,
+        wrap: fn(RepeatGroup<T>) -> T,
+    ) -> Option<T> {
+        if !self.at(TokenKind::Star) {
+            return Some(item);
+        }
+        let (count, span) = self.repetition_count(start)?;
+        Some(wrap(RepeatGroup {
+            items: vec![item],
+            count,
+            span,
+        }))
+    }
+
+    /// Parses `( item, item, ... ) * N`, with `item` parsed by `element`.
+    /// The `* N` suffix is mandatory: a bare group would be indistinguishable
+    /// from writing its elements out, so requiring the count keeps the
+    /// parenthesis from becoming decorative.
+    fn repetition_group<T>(
+        &mut self,
+        element: fn(&mut Self) -> Option<T>,
+        start: SourceSpan,
+    ) -> Option<(Vec<T>, u32, SourceSpan)> {
+        self.bump();
+        let mut items = Vec::new();
+        while !self.at_any(&[TokenKind::RightParen, TokenKind::Eof]) {
+            if let Some(item) = element(self) {
+                items.push(item);
+            } else {
+                self.recover_to(GROUP_ITEM_RECOVERY);
+            }
+            if self.at(TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.required(
+            TokenKind::RightParen,
+            "expected `)` to close a repetition group",
+        )?;
+        if items.is_empty() {
+            self.error("a repetition group must contain at least one item");
+            return None;
+        }
+        if !self.at(TokenKind::Star) {
+            self.error("expected `*` after a repetition group");
+            return None;
+        }
+        let (count, span) = self.repetition_count(start)?;
+        Some((items, count, span))
+    }
+
+    /// Parses the `* N` suffix itself, starting at the `*`.
+    fn repetition_count(&mut self, start: SourceSpan) -> Option<(u32, SourceSpan)> {
+        self.bump();
+        let count = self.required(TokenKind::Integer, "expected a repetition count after `*`")?;
+        let value = self.parse_u32(&count)?;
+        if value == 0 {
+            self.diagnostics.push(Diagnostic::syntax(
+                "repetition count must be at least 1",
+                count.span,
+            ));
+            return None;
+        }
+        Some((value, start.cover(count.span)))
+    }
+
+    /// Reports and consumes a `* N` suffix on an item that cannot carry one.
+    fn reject_repetition(&mut self, message: &str) {
+        if !self.at(TokenKind::Star) {
+            return;
+        }
+        self.error(message);
+        self.bump();
+        if self.at(TokenKind::Integer) {
+            self.bump();
+        }
     }
 
     fn track(&mut self) -> Option<TrackDeclaration> {
@@ -585,7 +748,7 @@ impl Parser {
             (volume, self.layer_body()?)
         };
         let effect = if self.at(TokenKind::Effect) {
-            Some(self.effect()?)
+            Some(self.track_effect()?)
         } else {
             None
         };
@@ -613,8 +776,37 @@ impl Parser {
     /// whole track (every layer) after its events are rendered to audio.
     /// `delay`, `filter`, and `reverb` are the only effect kinds accepted
     /// today.
-    fn effect(&mut self) -> Option<EffectDeclaration> {
+    /// A track's `effect`: `effect <kind> { ... }`, or `effect <name>`
+    /// naming a song-level preset. `delay`/`filter`/`reverb` are keywords,
+    /// so an identifier here can only be a preset name.
+    fn track_effect(&mut self) -> Option<TrackEffect> {
         let start = self.bump().span;
+        if self.at(TokenKind::Identifier) {
+            return self
+                .identifier("expected an effect preset name")
+                .map(TrackEffect::Preset);
+        }
+        self.effect_kind(start).map(TrackEffect::Inline)
+    }
+
+    /// `effect <name> = <kind> { ... }` at song level.
+    fn effect_preset(&mut self) -> Option<EffectPresetDeclaration> {
+        let start = self.bump().span;
+        let name = self.identifier("expected an effect preset name")?;
+        self.required(
+            TokenKind::Equal,
+            "expected `=` after the effect preset name",
+        )?;
+        let kind_start = self.current().span;
+        let effect = self.effect_kind(kind_start)?;
+        Some(EffectPresetDeclaration {
+            span: start.cover(effect.span),
+            name,
+            effect,
+        })
+    }
+
+    fn effect_kind(&mut self, start: SourceSpan) -> Option<EffectDeclaration> {
         let kind_token = self.required_any(
             &[TokenKind::Delay, TokenKind::Filter, TokenKind::Reverb],
             "expected `delay`, `filter`, or `reverb` after `effect`",
@@ -1278,9 +1470,19 @@ impl Parser {
 
     fn repeat(&mut self) -> Option<RepeatExpression> {
         let start = self.bump().span;
-        let value = self.required(TokenKind::Integer, "expected a count after `repeat`")?;
+        if self.at(TokenKind::Fit) {
+            let end = self.bump().span;
+            return Some(RepeatExpression {
+                count: RepeatCount::Fit,
+                span: start.cover(end),
+            });
+        }
+        let value = self.required(
+            TokenKind::Integer,
+            "expected a count or `fit` after `repeat`",
+        )?;
         Some(RepeatExpression {
-            count: self.parse_u32(&value)?,
+            count: RepeatCount::Fixed(self.parse_u32(&value)?),
             span: start.cover(value.span),
         })
     }
@@ -1292,36 +1494,42 @@ impl Parser {
         if self.at(TokenKind::Steps) {
             return self.steps_pattern(start, name);
         }
+        if self.at(TokenKind::Arpeggiate) {
+            return self.arpeggiate_pattern(start, name);
+        }
+        if self.at(TokenKind::Identifier) {
+            return self.derived_pattern(start, name);
+        }
         self.required(
             TokenKind::Sequence,
-            "expected `sequence` or `steps` pattern body",
+            "expected `sequence`, `steps`, or a pattern name as a pattern body",
         )?;
+        let step = if self.at(TokenKind::Step) {
+            self.bump();
+            Some(self.duration_expr("step")?)
+        } else {
+            None
+        };
         let body_start = self
             .required(TokenKind::LeftBrace, "expected `{` after `sequence`")?
             .span;
+        self.sequence_step = step.is_some();
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let item = match self.current().kind {
-                TokenKind::Note => self.note().map(SequenceItem::Note),
-                TokenKind::Chord => self.chord().map(SequenceItem::Chord),
-                TokenKind::Rest => self.rest().map(SequenceItem::Rest),
-                _ => {
-                    self.error("expected a note, chord, or rest in sequence");
-                    None
-                }
-            };
-            if let Some(item) = item {
+            if let Some(item) = self.sequence_item() {
                 items.push(item);
             } else {
                 self.recover_to(SEQUENCE_ITEM_START);
             }
         }
+        self.sequence_step = false;
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close sequence")?
             .span;
         Some(PatternDeclaration {
             name,
             body: PatternBody::Sequence {
+                step,
                 items,
                 span: body_start.cover(end),
             },
@@ -1329,57 +1537,150 @@ impl Parser {
         })
     }
 
+    /// One sequence item: a note, chord, or rest, optionally repeated —
+    /// `note C4 for 1/8 * 4`, `(note C4 for 1/8, rest for 1/8) * 2`.
+    fn sequence_item(&mut self) -> Option<SequenceItem> {
+        let start = self.current().span;
+        if self.at(TokenKind::LeftParen) {
+            let (items, count, span) = self.repetition_group(Self::sequence_item, start)?;
+            return Some(SequenceItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        let item = match self.current().kind {
+            TokenKind::Note => self.note().map(SequenceItem::Note),
+            TokenKind::Chord => self.chord().map(SequenceItem::Chord),
+            TokenKind::Rest => self.rest().map(SequenceItem::Rest),
+            _ => {
+                self.error("expected a note, chord, rest, or `(` in sequence");
+                None
+            }
+        }?;
+        self.repeated(item, start, SequenceItem::Repeat)
+    }
+
+    /// Parses `pattern <name> = arpeggiate <source> { style S step D
+    /// [octaves N] }`.
+    fn arpeggiate_pattern(
+        &mut self,
+        start: SourceSpan,
+        name: Identifier,
+    ) -> Option<PatternDeclaration> {
+        self.bump();
+        let source = self.identifier("expected a pattern name after `arpeggiate`")?;
+        self.required(
+            TokenKind::LeftBrace,
+            "expected `{` after the source pattern",
+        )?;
+        let mut style = None;
+        let mut step = None;
+        let mut octaves = None;
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            match self.current().kind {
+                TokenKind::Style => {
+                    self.bump();
+                    style = Some(self.identifier("expected an arpeggio style")?);
+                }
+                TokenKind::Step => {
+                    self.bump();
+                    step = Some(self.duration_expr("step")?);
+                }
+                TokenKind::Octaves => {
+                    let keyword = self.bump().span;
+                    let count = self.required(TokenKind::Integer, "expected an octave count")?;
+                    octaves = Some(OctavesExpression {
+                        count: self.parse_u32(&count)?,
+                        span: keyword.cover(count.span),
+                    });
+                }
+                _ => {
+                    self.error("expected `style`, `step`, or `octaves` in arpeggiate");
+                    return None;
+                }
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close arpeggiate")?
+            .span;
+        let Some(style) = style else {
+            self.error("arpeggiate requires a `style`");
+            return None;
+        };
+        let Some(step) = step else {
+            self.error("arpeggiate requires a `step`");
+            return None;
+        };
+        Some(PatternDeclaration {
+            name,
+            body: PatternBody::Arpeggiate {
+                source,
+                style,
+                step,
+                octaves,
+                span: start.cover(end),
+            },
+            span: start.cover(end),
+        })
+    }
+
+    /// Parses `pattern <name> = <source> { |> stage }`.
+    ///
+    /// Only `transpose`, `repeat`, and `reverse` are accepted. The other
+    /// play stages describe a performance rather than material: `gain`
+    /// scales amplitude, which a pattern has no notion of (its analogue,
+    /// velocity, is a different quantity); `pan`, `speed`, `chance`, and
+    /// `choose_sample` are track-domain; and `trigger_with`/`gate` are left
+    /// out until their pattern-level meaning is pinned down.
+    fn derived_pattern(
+        &mut self,
+        start: SourceSpan,
+        name: Identifier,
+    ) -> Option<PatternDeclaration> {
+        let source = self.identifier("expected a pattern name")?;
+        let mut transpose = None;
+        let mut repeat = None;
+        let mut reverse = false;
+        let mut end = source.span;
+        while self.at(TokenKind::PipeGreater) {
+            self.bump();
+            match self.current().kind {
+                TokenKind::Transpose => end = self.play_transpose(&mut transpose)?,
+                TokenKind::Repeat => {
+                    end = self.play_repeat(&mut repeat)?;
+                    if matches!(repeat.map(|repeat| repeat.count), Some(RepeatCount::Fit)) {
+                        self.error(
+                            "`repeat fit` needs a section, so it belongs on a play, not a pattern",
+                        );
+                        return None;
+                    }
+                }
+                TokenKind::Reverse => end = self.reverse(&mut reverse),
+                _ => {
+                    self.error("expected `transpose`, `repeat`, or `reverse` after `|>`");
+                    return None;
+                }
+            }
+        }
+        Some(PatternDeclaration {
+            name,
+            body: PatternBody::Derived {
+                source,
+                transpose,
+                repeat,
+                reverse,
+                span: start.cover(end),
+            },
+            span: start.cover(end),
+        })
+    }
+
     fn steps_pattern(&mut self, start: SourceSpan, name: Identifier) -> Option<PatternDeclaration> {
         self.bump();
-        let numerator = self.required(TokenKind::Integer, "expected step resolution numerator")?;
-        self.required(TokenKind::Slash, "expected `/` in step resolution")?;
-        let denominator =
-            self.required(TokenKind::Integer, "expected step resolution denominator")?;
+        let resolution = self.duration_expr("step resolution")?;
         let body_start = self
             .required(TokenKind::LeftBrace, "expected `{` after step resolution")?
             .span;
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let item = match self.current().kind {
-                TokenKind::Degree => self.degree_step(),
-                TokenKind::Sample => {
-                    let sample = self.bump().span;
-                    self.required(TokenKind::Integer, "expected sample index")
-                        .and_then(|index| {
-                            self.parse_u32(&index).map(|index_value| {
-                                let velocity = self.velocity();
-                                let end = velocity.map_or(index.span, |velocity| velocity.span);
-                                StepItem::Sample {
-                                    index: index_value,
-                                    velocity,
-                                    span: sample.cover(end),
-                                }
-                            })
-                        })
-                }
-                TokenKind::Drum => {
-                    let drum = self.bump().span;
-                    self.string("expected a quoted drum voice name")
-                        .map(|name| {
-                            let velocity = self.velocity();
-                            let end = velocity.map_or(name.span, |velocity| velocity.span);
-                            StepItem::Drum {
-                                span: drum.cover(end),
-                                name,
-                                velocity,
-                            }
-                        })
-                }
-                TokenKind::Rest => Some(StepItem::Rest {
-                    span: self.bump().span,
-                }),
-                TokenKind::Choose => self.choice(),
-                _ => {
-                    self.error("expected a degree, sample, drum, rest, or choose in steps");
-                    None
-                }
-            };
-            if let Some(item) = item {
+            if let Some(item) = self.step_item() {
                 items.push(item);
             } else {
                 self.recover_to(STEP_ITEM_START);
@@ -1391,11 +1692,103 @@ impl Parser {
         Some(PatternDeclaration {
             name,
             body: PatternBody::Steps {
-                resolution_numerator: self.parse_u32(&numerator)?,
-                resolution_denominator: self.parse_u32(&denominator)?,
+                resolution,
                 items,
                 span: body_start.cover(end),
             },
+            span: start.cover(end),
+        })
+    }
+
+    /// One grid cell: a degree, sample, drum, rest, or `choose` block, with
+    /// everything but `choose` optionally repeated — `drum "hh" * 4`,
+    /// `(rest, drum "cp") * 2`.
+    ///
+    /// `choose` is deliberately not repeatable. It is the one block-shaped
+    /// step item, and each copy would re-roll independently, so `choose { ...
+    /// } * 4` reads like one repeated decision but is not.
+    fn step_item(&mut self) -> Option<StepItem> {
+        let start = self.current().span;
+        if self.at(TokenKind::LeftParen) {
+            let (items, count, span) = self.repetition_group(Self::step_item, start)?;
+            return Some(StepItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        if self.at(TokenKind::LeftBracket) {
+            let subdivision = self.subdivision(start)?;
+            return self.repeated(subdivision, start, StepItem::Repeat);
+        }
+        if self.at(TokenKind::Choose) {
+            let item = self.choice();
+            self.reject_repetition("`choose` cannot be repeated with `*`");
+            return item;
+        }
+        let item = match self.current().kind {
+            TokenKind::Degree => self.degree_step(),
+            TokenKind::Sample => {
+                let sample = self.bump().span;
+                self.required(TokenKind::Integer, "expected sample index")
+                    .and_then(|index| {
+                        self.parse_u32(&index).map(|index_value| {
+                            let velocity = self.velocity();
+                            let end = velocity.map_or(index.span, |velocity| velocity.span);
+                            StepItem::Sample {
+                                index: index_value,
+                                velocity,
+                                span: sample.cover(end),
+                            }
+                        })
+                    })
+            }
+            TokenKind::Drum => {
+                let drum = self.bump().span;
+                self.string("expected a quoted drum voice name")
+                    .map(|name| {
+                        let velocity = self.velocity();
+                        let end = velocity.map_or(name.span, |velocity| velocity.span);
+                        StepItem::Drum {
+                            span: drum.cover(end),
+                            name,
+                            velocity,
+                        }
+                    })
+            }
+            TokenKind::Rest => Some(StepItem::Rest {
+                span: self.bump().span,
+            }),
+            _ => {
+                self.error("expected a degree, sample, drum, rest, choose, `(`, or `[` in steps");
+                None
+            }
+        }?;
+        self.repeated(item, start, StepItem::Repeat)
+    }
+
+    /// Parses `[ a b c ]`: items that split one grid cell evenly between
+    /// them. Unlike a repetition group the elements are not comma-separated,
+    /// because a subdivision reads as a run of cells, not as an argument
+    /// list.
+    fn subdivision(&mut self, start: SourceSpan) -> Option<StepItem> {
+        self.bump();
+        let mut items = Vec::new();
+        while !self.at_any(&[TokenKind::RightBracket, TokenKind::Eof]) {
+            if let Some(item) = self.step_item() {
+                items.push(item);
+            } else {
+                self.recover_to(SUBDIVISION_ITEM_RECOVERY);
+            }
+        }
+        let end = self
+            .required(
+                TokenKind::RightBracket,
+                "expected `]` to close a subdivision",
+            )?
+            .span;
+        if items.is_empty() {
+            self.error("a subdivision must contain at least one item");
+            return None;
+        }
+        Some(StepItem::Subdivide {
+            items,
             span: start.cover(end),
         })
     }
@@ -1552,10 +1945,13 @@ impl Parser {
     fn note(&mut self) -> Option<NoteExpression> {
         let start = self.bump().span;
         let pitch = self.identifier("expected note pitch")?;
-        self.required(TokenKind::For, "expected `for` after note pitch")?;
-        let duration = self.duration_expr("note")?;
+        let duration = self.item_duration("note", "expected `for` after note pitch")?;
         let velocity = self.velocity();
-        let end = velocity.map_or(duration.span(), |velocity| velocity.span);
+        let end = match (duration, velocity) {
+            (_, Some(velocity)) => velocity.span,
+            (Some(duration), None) => duration.span(),
+            (None, None) => pitch.span,
+        };
         Some(NoteExpression {
             pitch,
             duration,
@@ -1566,25 +1962,68 @@ impl Parser {
 
     fn rest(&mut self) -> Option<RestExpression> {
         let start = self.bump().span;
-        self.required(TokenKind::For, "expected `for` after `rest`")?;
-        let duration = self.duration_expr("rest")?;
+        let duration = self.item_duration("rest", "expected `for` after `rest`")?;
         Some(RestExpression {
-            span: start.cover(duration.span()),
+            span: start.cover(duration.map_or(start, |duration| duration.span())),
             duration,
         })
     }
 
+    /// Parses a sequence item's `for <duration>`, which may be omitted when
+    /// the enclosing `sequence` declared a `step` default.
+    #[expect(
+        clippy::option_option,
+        reason = "the outer None is a parse failure, the inner one an omitted `for`"
+    )]
+    fn item_duration(
+        &mut self,
+        context: &str,
+        missing: &str,
+    ) -> Option<Option<DurationExpression>> {
+        if !self.at(TokenKind::For) {
+            if self.sequence_step {
+                return Some(None);
+            }
+            self.error(missing);
+            return None;
+        }
+        self.bump();
+        self.duration_expr(context).map(Some)
+    }
+
+    /// Parses `chord C4 E4 G4 ...` or the symbol form `chord C4:maj7`,
+    /// which names the same notes by root and quality.
     fn chord(&mut self) -> Option<ChordExpression> {
         let start = self.bump().span;
-        let mut pitches = vec![self.identifier("expected first chord pitch")?];
-        pitches.push(self.identifier("expected second chord pitch")?);
-        while self.at(TokenKind::Identifier) {
-            pitches.push(self.identifier("expected chord pitch")?);
-        }
-        self.required(TokenKind::For, "expected `for` after chord pitches")?;
-        let duration = self.duration_expr("chord")?;
+        let root = self.identifier("expected first chord pitch")?;
+        let pitches = if self.at(TokenKind::Colon) {
+            self.bump();
+            let quality = self.required_any(
+                &[TokenKind::Identifier, TokenKind::Integer],
+                "expected a chord quality after `:`",
+            )?;
+            ChordPitches::Symbol {
+                root,
+                quality: Identifier {
+                    text: quality.text,
+                    span: quality.span,
+                },
+            }
+        } else {
+            let mut pitches = vec![root];
+            pitches.push(self.identifier("expected second chord pitch")?);
+            while self.at(TokenKind::Identifier) {
+                pitches.push(self.identifier("expected chord pitch")?);
+            }
+            ChordPitches::Explicit(pitches)
+        };
+        let duration = self.item_duration("chord", "expected `for` after chord pitches")?;
         let velocity = self.velocity();
-        let end = velocity.map_or(duration.span(), |velocity| velocity.span);
+        let end = match (duration, velocity) {
+            (_, Some(velocity)) => velocity.span,
+            (Some(duration), None) => duration.span(),
+            (None, None) => pitches.span().unwrap_or(start),
+        };
         Some(ChordExpression {
             pitches,
             duration,
@@ -1624,10 +2063,21 @@ impl Parser {
             return None;
         }
         let start = self.bump().span;
-        let value = self.required(TokenKind::Integer, "expected velocity from 0 to 127")?;
+        let token = self.required(TokenKind::Integer, "expected velocity from 0 to 127")?;
+        let value = self.parse_u32(&token)?;
+        if !self.at(TokenKind::DotDot) {
+            return Some(VelocityExpression {
+                value,
+                ramp_to: None,
+                span: start.cover(token.span),
+            });
+        }
+        self.bump();
+        let end = self.required(TokenKind::Integer, "expected the end of a velocity ramp")?;
         Some(VelocityExpression {
-            value: self.parse_u32(&value)?,
-            span: start.cover(value.span),
+            value,
+            ramp_to: Some(self.parse_u32(&end)?),
+            span: start.cover(end.span),
         })
     }
 

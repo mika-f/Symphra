@@ -3,6 +3,27 @@
 Effects are **track-scoped**: they process that track’s rendered audio before
 it is summed into the master bus. A track may declare **at most one** effect.
 
+## Presets
+
+An effect can be declared once at song level and referenced by name, so
+several tracks can share one setting:
+
+```symphra
+song "S" {
+  effect hall = reverb { mix 0.5  size 0.7 }
+
+  track pad role harmony {
+    instrument warm_pad
+    play pad_chords
+    effect hall
+  }
+}
+```
+
+`delay`, `filter`, and `reverb` are keywords, so an identifier after `effect`
+is always a preset name. Presets may be declared anywhere in the song — a
+track can reference one declared below it.
+
 ## Delay
 
 ```symphra

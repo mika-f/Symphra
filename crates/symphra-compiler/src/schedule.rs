@@ -222,7 +222,14 @@ fn schedule_declared_track(
     if let Some(percent) = track.gate_percent {
         apply_gate(&mut scheduled, percent)?;
     }
-    apply_repeat(&mut scheduled, track.repeat_count)?;
+    let repeat = match track.repeat {
+        hir::Repeat::Fixed(count) => count,
+        // Resolved into a count when the section playing the track is
+        // lowered; reaching here means the track is scheduled outside any
+        // section, which the compiler rejects.
+        hir::Repeat::Fit => return Err(ScheduleError::UnresolvedRepeatFit),
+    };
+    apply_repeat(&mut scheduled, repeat)?;
     if let Some(chance) = track.chance {
         apply_chance(&mut scheduled, chance, seed)?;
     }
@@ -968,6 +975,8 @@ pub enum ScheduleError {
     TriggeredPatternTooLong,
     #[error("transposed pitch must be within the MIDI range 0 to 127")]
     TransposedPitchOutOfRange,
+    #[error("`repeat fit` needs a section to fill")]
+    UnresolvedRepeatFit,
     #[error("repeat produces too many events")]
     RepeatTooLarge,
     #[error("repeat count must be greater than zero")]

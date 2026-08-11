@@ -65,6 +65,49 @@ Without `exact`, tracks may be shorter than the section window (remaining time
 is silence for that track). With `exact`, a length mismatch is a schedule-time
 error.
 
+### Per-section overrides
+
+A `play track` reference may override what that track's declaration says, for
+that section only:
+
+```symphra
+section outro bars 4 {
+  parallel exact {
+    play track pad
+    play track vox       { volume -14 db }
+    play track light_rim { volume -7 db  effect plate }
+  }
+}
+```
+
+`volume`, `effect`, and `automate cutoff` may be overridden. An override
+replaces the declaration's value rather than adding to it, and the play
+pipeline's own `gain` stage still applies on top of the new volume.
+
+This is what a second track declaration used to be for. The one visible
+difference from writing that second declaration by hand is that `chance`
+rolls are seeded from track identity, so an overridden reference rolls like
+the separate track it stands in for — the same as today, where a track
+played in two sections already rolls differently in each.
+
+### Filling a section with `repeat fit`
+
+`repeat N` on a play usually just means "as many times as this section is
+long". `repeat fit` says that directly:
+
+```symphra
+track light_hh role drums {
+  instrument tr909
+  volume -12 db
+  play light_hh |> repeat fit    // 4 in a 4-bar section, 8 in an 8-bar one
+}
+```
+
+`fit` resolves per section reference to `section bars ÷ pattern bars`. The
+pattern must divide the section evenly, its length must not depend on a
+`choose` roll, and the track must be played by a section — `fit` has nothing
+to fill otherwise.
+
 ### Reuse
 
 The same section may be played multiple times in the arrangement. Each

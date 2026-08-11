@@ -15,7 +15,7 @@ compiler tests are authoritative.
 | String | `"Aoharu Signal"`, `"assets/x.wav"` |
 | Pitch | `C4`, `F#3`, `Bb2`, `C-1` |
 | Rate / unit literals | `48khz`, `150bpm`, `10ms`, `-6db`, `1400hz` |
-| Operators | `=`, `|>`, `..`, `:`, `/`, `%`, `{`, `}`, `(`, `)`, `,` |
+| Operators | `=`, `|>`, `..`, `:`, `/`, `*`, `%`, `{`, `}`, `(`, `)`, `[`, `]`, `,` |
 | Comment | `// line comment` |
 
 ## Top level
@@ -41,6 +41,7 @@ SongStmt =
   | "meter" Integer "/" Integer
   | "key" PitchClass Mode
   | Instrument
+  | EffectPreset
   | Rhythm
   | Pattern
   | Track
@@ -78,27 +79,57 @@ EnvelopeBlock = "{" "envelope" "{"
 
 ```text
 Rhythm =
-  "rhythm" Ident "resolution" Duration "{" { "hit" | "rest" } "}"
+  "rhythm" Ident "resolution" Duration "{" { RhythmItem } "}"
+
+RhythmItem = ("hit" | "rest" | Group) [Repeat]
 
 Pattern =
   "pattern" Ident "=" PatternBody
 
 PatternBody =
-    "sequence" "{" { SequenceItem } "}"
+    "sequence" ["step" Duration] "{" { SequenceItem } "}"
   | "steps" Duration "{" { StepItem } "}"
+  | Ident { "|>" DerivationStage }        // another pattern, transformed
+  | "arpeggiate" Ident "{" ArpField { ArpField } "}"
 
-SequenceItem =
-    "note" Pitch "for" Duration ["velocity" Integer]
-  | "chord" Pitch { Pitch } "for" Duration ["velocity" Integer]
-  | "rest" "for" Duration
+ArpField =
+    "style" ("up" | "down" | "up_down" | "down_up" | "as_written")
+  | "step" Duration
+  | "octaves" Integer
+
+DerivationStage =
+    "transpose" Integer Ident
+  | "repeat" Integer
+  | "reverse"
+
+SequenceItem = SequenceAtom [Repeat]
+
+SequenceAtom =
+    "note" Pitch [For] [Velocity]
+  | "chord" ( Pitch { Pitch } | Pitch ":" Quality ) [For] [Velocity]
+  | "rest" [For]
+  | Group
+
+For = "for" Duration          // required unless the sequence has a `step`
 
 StepItem =
+    "choose" "{" ChooseAlt { ChooseAlt } "}"     // not repeatable
+  | StepAtom [Repeat]
+
+StepAtom =
     "rest"
   | Sequence-like note/chord forms (as accepted by steps)
-  | "sample" Integer ["velocity" Integer]
-  | "drum" String ["velocity" Integer]
+  | "sample" Integer [Velocity]
+  | "drum" String [Velocity]
   | "degree" Integer "octave" Integer
-  | "choose" "{" ChooseAlt { ChooseAlt } "}"
+  | Group
+  | Subdivision
+
+Subdivision = "[" StepItem { StepItem } "]"       // splits one cell evenly
+
+Group    = "(" Item { "," Item } ")"             // Repeat is mandatory
+Repeat   = "*" Integer                           // Integer >= 1
+Velocity = "velocity" Integer [".." Integer]     // ramp needs a Repeat
 
 ChooseAlt =
   (SampleOrDrum | "sequence" "{" … "}") "weight" Integer
@@ -138,7 +169,13 @@ Pipeline stages are listed in [Pipeline stages](./03-pipeline-stages.md).
 ## Effects, sections, master
 
 ```text
+EffectPreset = "effect" Ident "=" EffectBlock
+
 Effect =
+    EffectBlock                    // written into the track
+  | "effect" Ident                 // a song-level preset by name
+
+EffectBlock =
     "effect" "delay" "{" "mix" Number "time" Duration "feedback" Number "}"
   | "effect" "filter" "{" "cutoff" Freq "resonance" Number "}"
   | "effect" "reverb" "{" "mix" Number "size" Number "}"
@@ -153,8 +190,13 @@ AutomateCutoff =
 
 Section =
   "section" Ident "bars" Integer "{"
-    "parallel" ["exact"] "{" { "play" "track" Ident } "}"
+    "parallel" ["exact"] "{" { SectionTrack } "}"
   "}"
+
+SectionTrack =
+  "play" "track" Ident ["{" { TrackOverride } "}"]
+
+TrackOverride = "volume" Level | Effect | AutomateCutoff
 
 Arrangement =
   "arrangement" "{" { ArrEntry } "}"
@@ -175,8 +217,9 @@ Master =
 `track` `role` `volume` `layer` `use` `play` `trigger_with` `gate` `transpose`
 `gain` `repeat` `reverse` `pan` `alternate` `chance` `speed` `retrigger`
 `choose_sample` `at` `pattern` `arrangement` `with` `sequence` `steps`
-`degree` `octave` `note` `chord` `rest` `for` `velocity` `bar` `effect`
+`degree` `octave` `note` `chord` `rest` `for` `velocity` `bar` `step` `effect`
+`arpeggiate` `style` `octaves`
 `delay` `mix` `time` `feedback` `filter` `cutoff` `resonance` `reverb` `size`
 `automate` `lfo` `range` `rate` `cycles` `section` `bars` `parallel` `exact`
-`master` `limiter` `ceiling` `synth` `supersaw` `envelope` `attack` `decay`
+`master` `limiter` `ceiling` `fit` `synth` `supersaw` `envelope` `attack` `decay`
 `sustain` `release` `voices` `detune` `spread` `choose` `weight`

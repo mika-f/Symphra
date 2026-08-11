@@ -4,24 +4,28 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, Declaration,
+    ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind,
-    EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody, MasterDeclaration,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
+    EffectPresetDeclaration, EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody,
+    MasterDeclaration, OctavesExpression, PanExpression, PatternBody, PatternDeclaration,
+    PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RepeatCount, RepeatExpression, RhythmDeclaration, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SectionTrack, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TrackEffect,
+    TransposeExpression, VolumeExpression,
 };
 
+use crate::expand::Repetition;
 use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
     Duration, Effect, Envelope, FilterAutomation, FilterEffect, InstrumentKind, Key, LfoWaveform,
     MasterLimiter, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
-    PitchClass, Program, Project, Rest, ReverbEffect, Rhythm, RhythmItem, SampleChoice,
+    PitchClass, Program, Project, Repeat, Rest, ReverbEffect, Rhythm, RhythmItem, SampleChoice,
     SampleRange, SampleSelector, SampleTrigger, Section, SectionOccurrence, Song, Speed,
     TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
+pub mod expand;
 pub mod hir;
 mod schedule;
 
@@ -37,6 +41,237 @@ fn rhythm_cell_count(duration: Duration, resolution: Duration) -> Option<u64> {
     } else {
         Some(dividend / divisor)
     }
+}
+
+/// Splits one grid cell between the `cells` items of a `[ ... ]`
+/// subdivision. Prefers dividing the numerator so nested subdivisions do not
+/// grow the denominator faster than they have to; `None` when the split
+/// cannot be represented (an empty subdivision, or a denominator past
+/// `u32`).
+fn divide_duration(duration: Duration, cells: usize) -> Option<Duration> {
+    let cells = u32::try_from(cells).ok().filter(|cells| *cells > 0)?;
+    if duration.numerator.is_multiple_of(cells) {
+        return Some(Duration {
+            numerator: duration.numerator / cells,
+            denominator: duration.denominator,
+        });
+    }
+    Some(Duration {
+        numerator: duration.numerator,
+        denominator: duration.denominator.checked_mul(cells)?,
+    })
+}
+
+/// Transposes every pitched event in a pattern step, reporting `false`
+/// when any of them would leave the MIDI range.
+fn transpose_step(step: &mut PatternStep, semitones: i32) -> bool {
+    let pitches: Vec<&mut u8> = match step {
+        PatternStep::Note(note) => vec![&mut note.midi_pitch],
+        PatternStep::Chord(chord) => chord
+            .notes
+            .iter_mut()
+            .map(|note| &mut note.midi_pitch)
+            .collect(),
+        PatternStep::DegreeChoice(choice) => choice
+            .alternatives
+            .iter_mut()
+            .map(|alternative| &mut alternative.note.midi_pitch)
+            .collect(),
+        PatternStep::Sample(_) | PatternStep::Choice(_) | PatternStep::Rest(_) => Vec::new(),
+    };
+    for pitch in pitches {
+        let Some(transposed) = transposed_pitch(*pitch, semitones) else {
+            return false;
+        };
+        *pitch = transposed;
+    }
+    true
+}
+
+/// Semitone offsets above the root for each chord quality a `root:quality`
+/// symbol may name.
+///
+/// Deliberately a closed table rather than a parsed formula: the point of
+/// the symbol form is that its expansion is predictable, and a quality
+/// nobody has agreed the spelling of is better rejected than guessed.
+fn chord_intervals(quality: &str) -> Option<&'static [i32]> {
+    Some(match quality {
+        "maj" => &[0, 4, 7],
+        "m" | "min" => &[0, 3, 7],
+        "dim" => &[0, 3, 6],
+        "aug" => &[0, 4, 8],
+        "sus2" => &[0, 2, 7],
+        "sus4" => &[0, 5, 7],
+        "6" => &[0, 4, 7, 9],
+        "m6" => &[0, 3, 7, 9],
+        "add9" => &[0, 4, 7, 14],
+        "7" => &[0, 4, 7, 10],
+        "maj7" => &[0, 4, 7, 11],
+        "m7" => &[0, 3, 7, 10],
+        "mmaj7" => &[0, 3, 7, 11],
+        "m7b5" => &[0, 3, 6, 10],
+        "dim7" => &[0, 3, 6, 9],
+        "9" => &[0, 4, 7, 10, 14],
+        "maj9" => &[0, 4, 7, 11, 14],
+        "m9" => &[0, 3, 7, 10, 14],
+        _ => return None,
+    })
+}
+
+/// What a section needs from the song around it to resolve its track
+/// references and per-reference overrides.
+struct SectionContext<'a, 'b> {
+    track_defs: &'a [&'b TrackDeclaration],
+    effect_presets: &'a [&'b EffectPresetDeclaration],
+    patterns: &'a [Pattern],
+    meter: Option<&'a Meter>,
+}
+
+/// A zero-length duration, the identity for [`add_durations`].
+const ZERO_DURATION: Duration = Duration {
+    numerator: 0,
+    denominator: 1,
+};
+
+/// One pattern step's length, or `None` for a `choose` whose alternatives
+/// are sequences of different lengths — that step's duration is not known
+/// until the roll happens during scheduling.
+fn step_duration(step: &PatternStep) -> Option<Duration> {
+    match step {
+        PatternStep::Note(note) => Some(note.duration),
+        PatternStep::Chord(chord) => Some(chord.duration),
+        PatternStep::Rest(rest) => Some(rest.duration),
+        PatternStep::Sample(sample) => Some(sample.duration),
+        PatternStep::DegreeChoice(choice) => {
+            choice.alternatives.first().map(|first| first.note.duration)
+        }
+        PatternStep::Choice(choice) => {
+            let mut lengths = choice.alternatives.iter().map(|alternative| {
+                alternative
+                    .samples
+                    .iter()
+                    .try_fold(ZERO_DURATION, |total, sample| {
+                        add_durations(total, sample.duration)
+                    })
+            });
+            let first = lengths.next()??;
+            lengths.all(|length| length == Some(first)).then_some(first)
+        }
+    }
+}
+
+/// A pattern's total length, or `None` when any step's length depends on a
+/// weighted roll.
+fn pattern_duration(pattern: &Pattern) -> Option<Duration> {
+    pattern.steps.iter().try_fold(ZERO_DURATION, |total, step| {
+        add_durations(total, step_duration(step)?)
+    })
+}
+
+/// Adds two whole-note fractions, reduced so repeated addition stays inside
+/// `u32`.
+fn add_durations(left: Duration, right: Duration) -> Option<Duration> {
+    if left.denominator == 0 || right.denominator == 0 {
+        return None;
+    }
+    let denominator = u64::from(left.denominator) * u64::from(right.denominator);
+    let numerator = u64::from(left.numerator) * u64::from(right.denominator)
+        + u64::from(right.numerator) * u64::from(left.denominator);
+    let divisor = gcd(numerator, denominator).max(1);
+    Some(Duration {
+        numerator: u32::try_from(numerator / divisor).ok()?,
+        denominator: u32::try_from(denominator / divisor).ok()?,
+    })
+}
+
+fn gcd(left: u64, right: u64) -> u64 {
+    let (mut left, mut right) = (left, right);
+    while right != 0 {
+        let next = left % right;
+        left = right;
+        right = next;
+    }
+    left
+}
+
+/// Whether a section's `play track` reference carries any override at all.
+fn overrides_anything(reference: &SectionTrack) -> bool {
+    reference.volume.is_some() || reference.effect.is_some() || reference.automate.is_some()
+}
+
+/// The parts of `arpeggiate <source> { ... }`, bundled so lowering takes a
+/// spec rather than five loose parameters.
+struct ArpeggioSpec<'a> {
+    source: &'a Identifier,
+    style: &'a Identifier,
+    step: &'a DurationExpression,
+    octaves: Option<&'a OctavesExpression>,
+    span: SourceSpan,
+}
+
+/// The order an [`ArpeggioStyle`] walks a chord's tones in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArpeggioStyle {
+    Up,
+    Down,
+    UpDown,
+    DownUp,
+    AsWritten,
+}
+
+impl ArpeggioStyle {
+    fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "up" => Self::Up,
+            "down" => Self::Down,
+            "up_down" => Self::UpDown,
+            "down_up" => Self::DownUp,
+            "as_written" => Self::AsWritten,
+            _ => return None,
+        })
+    }
+
+    /// Pool indices for `count` notes, wrapping at `cap` tones when the
+    /// arpeggio was given an `octaves` limit.
+    ///
+    /// `up_down` climbs to `ceil((count + 2) / 2)` and turns around without
+    /// repeating the top or bottom note, which is the shape a hand-written
+    /// up-down arpeggio has; `down_up` is that sequence reflected.
+    fn indices(self, count: usize, cap: Option<usize>) -> Vec<usize> {
+        let raw: Vec<usize> = match self {
+            Self::Up | Self::AsWritten => (0..count).collect(),
+            Self::Down => (0..count).rev().collect(),
+            Self::UpDown | Self::DownUp => {
+                let turn = (count + 2).div_ceil(2);
+                let mut indices = Vec::with_capacity(count);
+                for index in 0..turn.min(count) {
+                    indices.push(index);
+                }
+                let mut index = turn.saturating_sub(2);
+                while indices.len() < count {
+                    indices.push(index);
+                    index = index.saturating_sub(1);
+                }
+                if self == Self::DownUp {
+                    let top = turn.saturating_sub(1);
+                    indices = indices.into_iter().map(|index| top - index).collect();
+                }
+                indices
+            }
+        };
+        match cap {
+            Some(cap) if cap > 0 => raw.into_iter().map(|index| index % cap).collect(),
+            _ => raw,
+        }
+    }
+}
+
+/// The `index`th tone of a chord's pool: its tones in order, then the same
+/// tones an octave up, and so on.
+fn pool_pitch(tones: &[u8], index: usize) -> Option<u8> {
+    let tone = *tones.get(index % tones.len())?;
+    let octave = i32::try_from(index / tones.len()).ok()?;
+    transposed_pitch(tone, octave.checked_mul(12)?)
 }
 
 fn transposed_pitch(midi_pitch: u8, semitones: i32) -> Option<u8> {
@@ -87,6 +322,7 @@ struct SongSettings {
 /// classification loop.
 struct SongStatements<'a> {
     settings: SongSettings,
+    effect_presets: Vec<&'a EffectPresetDeclaration>,
     pattern_declarations: Vec<&'a PatternDeclaration>,
     rhythm_defs: Vec<&'a RhythmDeclaration>,
     track_defs: Vec<&'a TrackDeclaration>,
@@ -204,6 +440,8 @@ impl Compiler {
         statements: &'a [SongStatement],
     ) -> SongStatements<'a> {
         let mut settings = SongSettings::default();
+        let mut effect_presets = Vec::new();
+        let mut effect_preset_names = HashSet::new();
         let mut pattern_declarations = Vec::new();
         let mut pattern_names = HashSet::new();
         let mut rhythm_defs = Vec::new();
@@ -228,6 +466,11 @@ impl Compiler {
                             instrument.name.text.as_str(),
                             self.instrument_kind(&instrument.body),
                         ));
+                    }
+                }
+                SongStatement::EffectPreset(preset) => {
+                    if self.declare_name(&mut effect_preset_names, &preset.name, "effect preset") {
+                        effect_presets.push(preset.as_ref());
                     }
                 }
                 SongStatement::Rhythm(rhythm) => {
@@ -265,6 +508,7 @@ impl Compiler {
 
         SongStatements {
             settings,
+            effect_presets,
             pattern_declarations,
             rhythm_defs,
             track_defs,
@@ -279,6 +523,7 @@ impl Compiler {
         let id = self.id();
         let SongStatements {
             settings,
+            effect_presets,
             pattern_declarations,
             rhythm_defs,
             track_defs,
@@ -293,21 +538,43 @@ impl Compiler {
             .iter()
             .filter_map(|rhythm| self.rhythm(rhythm))
             .collect::<Vec<_>>();
-        let mut patterns = pattern_declarations
-            .iter()
-            .map(|pattern| self.pattern(pattern, settings.key.as_ref(), settings.meter.as_ref()))
-            .collect::<Vec<_>>();
+        // Lowered in declaration order, and each one can see the patterns
+        // before it: that is what makes `pattern b = a |> ...` resolvable
+        // without a second pass, and cyclic by construction impossible.
+        let mut patterns: Vec<Pattern> = Vec::with_capacity(pattern_declarations.len());
+        for declaration in &pattern_declarations {
+            let pattern = self.pattern(
+                declaration,
+                settings.key.as_ref(),
+                settings.meter.as_ref(),
+                &patterns,
+            );
+            patterns.push(pattern);
+        }
         let tracks = self.build_tracks(
             &track_defs,
             &mut patterns,
             &rhythms,
             &instruments,
             settings.meter.as_ref(),
+            &effect_presets,
         );
+        let mut tracks = tracks;
+        let mut variants = Vec::new();
+        let section_context = SectionContext {
+            track_defs: &track_defs,
+            effect_presets: &effect_presets,
+            patterns: &patterns,
+            meter: settings.meter.as_ref(),
+        };
+        // Sections resolve their overrides against the declared tracks only;
+        // the variants they synthesize are appended afterwards so a later
+        // section never matches an earlier one's copy by name.
         let sections = section_defs
             .iter()
-            .filter_map(|section| self.section(section, &tracks, settings.meter.as_ref()))
+            .filter_map(|section| self.section(section, &tracks, &mut variants, &section_context))
             .collect::<Vec<_>>();
+        tracks.extend(variants);
         self.check_arrangement_track_combination(
             arrangement.as_ref(),
             !tracks.is_empty(),
@@ -316,6 +583,22 @@ impl Compiler {
         let arrangement = arrangement.and_then(|(entries, span)| {
             self.arrangement(entries, span, &patterns, &instruments, &sections)
         });
+        // Every `repeat fit` reachable from an arrangement was resolved into
+        // a count while its section was lowered. One left over belongs to a
+        // track no section plays, so there is nothing for it to fill.
+        if !matches!(arrangement, Some(Arrangement::Sections(_))) {
+            for declaration in &track_defs {
+                if tracks
+                    .iter()
+                    .any(|track| track.name == declaration.name.text && track.repeat == Repeat::Fit)
+                {
+                    self.error(
+                        "`repeat fit` needs the track to be played by a section",
+                        declaration.span,
+                    );
+                }
+            }
+        }
         let master = master_decl.and_then(|declaration| self.master(declaration));
         match (settings.tempo_bpm, settings.meter, settings.key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
@@ -409,8 +692,10 @@ impl Compiler {
         &mut self,
         declaration: &SectionDeclaration,
         tracks: &[TrackDefinition],
-        meter: Option<&Meter>,
+        variants: &mut Vec<TrackDefinition>,
+        context: &SectionContext<'_, '_>,
     ) -> Option<Section> {
+        let meter = context.meter;
         let bars = meter.and_then(|meter| {
             let Some(numerator) = declaration.bars.checked_mul(meter.numerator) else {
                 self.error("section bars is out of range", declaration.span);
@@ -432,17 +717,34 @@ impl Compiler {
             );
             any_missing = true;
         }
-        for name in &declaration.tracks {
+        for reference in &declaration.tracks {
             let matches = tracks
                 .iter()
-                .filter(|track| track.name == name.text)
-                .map(|track| track.id)
+                .filter(|track| track.name == reference.name.text)
+                .cloned()
                 .collect::<Vec<_>>();
             if matches.is_empty() {
-                self.error("section references an unknown track", name.span);
+                self.error("section references an unknown track", reference.name.span);
                 any_missing = true;
+                continue;
+            }
+            let needs_variant = overrides_anything(reference)
+                || matches.iter().any(|track| track.repeat == Repeat::Fit);
+            // A failed override has already been reported; falling back to
+            // the declaration's own tracks keeps the section itself intact,
+            // so the arrangement referencing it is not reported as broken
+            // too.
+            let overridden = if needs_variant {
+                bars.and_then(|bars| self.overridden_tracks(reference, &matches, context, bars))
             } else {
-                track_ids.extend(matches);
+                None
+            };
+            match overridden {
+                Some(overridden) => {
+                    track_ids.extend(overridden.iter().map(|track| track.id));
+                    variants.extend(overridden);
+                }
+                None => track_ids.extend(matches.iter().map(|track| track.id)),
             }
         }
         if any_missing {
@@ -457,6 +759,150 @@ impl Compiler {
         })
     }
 
+    /// Builds the per-section variants of an overridden track: a copy of
+    /// each matching track definition (a layered track lowers to one per
+    /// layer) with this section's volume, effect, and automation in place of
+    /// the declaration's.
+    ///
+    /// A variant is a separate track with its own id, exactly as a
+    /// hand-written duplicate declaration would be. That matters for
+    /// `chance`, whose rolls are seeded from the track identity — the same
+    /// as today, where a track played in two sections already rolls
+    /// differently in each.
+    fn overridden_tracks(
+        &mut self,
+        reference: &SectionTrack,
+        matches: &[TrackDefinition],
+        context: &SectionContext<'_, '_>,
+        bars: Duration,
+    ) -> Option<Vec<TrackDefinition>> {
+        let declaration = context
+            .track_defs
+            .iter()
+            .find(|track| track.name.text == reference.name.text)?;
+        let scale = self.volume_scale(reference.volume.as_ref(), declaration)?;
+        let effect = if reference.effect.is_some() || reference.automate.is_some() {
+            let effect_declaration =
+                self.resolve_effect(reference.effect.as_ref(), context.effect_presets)?;
+            Some(
+                self.effect(
+                    effect_declaration,
+                    reference.automate.as_ref(),
+                    context.meter,
+                )
+                .ok()?,
+            )
+        } else {
+            None
+        };
+        let mut variants = Vec::with_capacity(matches.len());
+        for track in matches {
+            let repeat = match track.repeat {
+                Repeat::Fixed(count) => Repeat::Fixed(count),
+                Repeat::Fit => Repeat::Fixed(self.fit_count(track, bars, context, reference)?),
+            };
+            variants.push(TrackDefinition {
+                id: self.id(),
+                gain: track.gain * scale,
+                effect: effect.unwrap_or(track.effect),
+                repeat,
+                ..track.clone()
+            });
+        }
+        Some(variants)
+    }
+
+    /// Resolves `repeat fit` for one section: how many times the track's
+    /// pattern fits into the section's length.
+    fn fit_count(
+        &mut self,
+        track: &TrackDefinition,
+        bars: Duration,
+        context: &SectionContext<'_, '_>,
+        reference: &SectionTrack,
+    ) -> Option<u16> {
+        let pattern = context
+            .patterns
+            .iter()
+            .find(|pattern| pattern.id == track.pattern)?;
+        let Some(length) = pattern_duration(pattern) else {
+            self.error(
+                "`repeat fit` needs a pattern whose length is fixed",
+                reference.span,
+            );
+            return None;
+        };
+        let count = rhythm_cell_count(bars, length).and_then(|count| u16::try_from(count).ok());
+        match count {
+            Some(count) if count > 0 => Some(count),
+            _ => {
+                self.error(
+                    "`repeat fit` needs the pattern to divide the section's length evenly",
+                    reference.span,
+                );
+                None
+            }
+        }
+    }
+
+    /// How much a section's `volume` override changes a track's gain: the
+    /// new volume divided by the declaration's, so the play pipeline's own
+    /// `gain` stage stays multiplied in.
+    fn volume_scale(
+        &mut self,
+        volume: Option<&VolumeExpression>,
+        declaration: &TrackDeclaration,
+    ) -> Option<f32> {
+        let Some(volume) = volume else {
+            return Some(1.0);
+        };
+        let overridden = self.volume_amplitude(volume)?;
+        let declared = match declaration.volume.as_deref() {
+            Some(declared) => self.volume_amplitude(declared)?,
+            None => 1.0,
+        };
+        Some(overridden / declared)
+    }
+
+    fn volume_amplitude(&mut self, volume: &VolumeExpression) -> Option<f32> {
+        if volume.unit.text != "db" {
+            self.error("volume unit must be `db`", volume.unit.span);
+            return None;
+        }
+        if !volume.decibels.is_finite() {
+            self.error("volume must be finite", volume.span);
+            return None;
+        }
+        Some(10.0_f32.powf(volume.decibels / 20.0))
+    }
+
+    /// Resolves a track's `effect` to the block it names, following a
+    /// song-level preset reference.
+    #[expect(
+        clippy::option_option,
+        reason = "the outer None is a resolution failure, the inner one an absent effect"
+    )]
+    fn resolve_effect<'a>(
+        &mut self,
+        effect: Option<&'a TrackEffect>,
+        effect_presets: &[&'a EffectPresetDeclaration],
+    ) -> Option<Option<&'a EffectDeclaration>> {
+        match effect {
+            None => Some(None),
+            Some(TrackEffect::Inline(effect)) => Some(Some(effect)),
+            Some(TrackEffect::Preset(name)) => {
+                let Some(found) = effect_presets
+                    .iter()
+                    .find(|preset| preset.name.text == name.text)
+                else {
+                    self.error("track references an unknown effect preset", name.span);
+                    return None;
+                };
+                Some(Some(&found.effect))
+            }
+        }
+    }
+
     fn build_tracks(
         &mut self,
         track_defs: &[&TrackDeclaration],
@@ -464,11 +910,12 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
+        effect_presets: &[&EffectPresetDeclaration],
     ) -> Vec<TrackDefinition> {
         let mut tracks = Vec::with_capacity(track_defs.len());
         for track in track_defs {
             for (definition, synthesized) in
-                self.track(track, patterns, rhythms, instruments, meter)
+                self.track(track, patterns, rhythms, instruments, meter, effect_presets)
             {
                 if let Some(pattern) = synthesized {
                     patterns.push(pattern);
@@ -537,19 +984,38 @@ impl Compiler {
             declaration.span,
             "rhythm resolution",
         )?;
+        let items = self.expanded(expand::rhythm_items(&declaration.items), declaration.span)?;
         Some(Rhythm {
             id: self.id(),
             name: declaration.name.text.clone(),
             resolution,
-            items: declaration
-                .items
-                .iter()
-                .map(|item| match item {
+            items: items
+                .into_iter()
+                .map(|expanded| match expanded.item {
                     symphra_syntax::ast::RhythmItem::Hit { .. } => RhythmItem::Hit,
                     symphra_syntax::ast::RhythmItem::Rest { .. } => RhythmItem::Rest,
+                    symphra_syntax::ast::RhythmItem::Repeat(_) => {
+                        unreachable!("repetitions are expanded before lowering")
+                    }
                 })
                 .collect(),
         })
+    }
+
+    /// Reports the one way expansion can fail — a body whose `* N`
+    /// repetitions multiply out past [`expand::MAX_EXPANDED_ITEMS`] — and
+    /// otherwise hands back the expanded items.
+    fn expanded<T>(&mut self, expanded: Option<Vec<T>>, span: SourceSpan) -> Option<Vec<T>> {
+        if expanded.is_none() {
+            self.error(
+                &format!(
+                    "repetitions expand to more than {} items",
+                    expand::MAX_EXPANDED_ITEMS
+                ),
+                span,
+            );
+        }
+        expanded
     }
 
     /// Lowers a track declaration into one `TrackDefinition` per layer: the
@@ -567,15 +1033,15 @@ impl Compiler {
         rhythms: &[Rhythm],
         instruments: &[(&str, Option<InstrumentKind>)],
         meter: Option<&Meter>,
+        effect_presets: &[&EffectPresetDeclaration],
     ) -> Vec<(TrackDefinition, Option<Pattern>)> {
         // Resolved once per declaration (not per layer) so an invalid effect
         // is reported once, not once per `use`.
+        let effect_declaration = self
+            .resolve_effect(declaration.effect.as_ref(), effect_presets)
+            .flatten();
         let effect = self
-            .effect(
-                declaration.effect.as_ref(),
-                declaration.automate.as_ref(),
-                meter,
-            )
+            .effect(effect_declaration, declaration.automate.as_ref(), meter)
             .ok()
             .flatten();
         match &declaration.body {
@@ -693,7 +1159,7 @@ impl Compiler {
                         gate_percent,
                         transpose_semitones,
                         gain,
-                        repeat_count,
+                        repeat: repeat_count,
                         reverse: play.reverse,
                         pan,
                         chance,
@@ -943,16 +1409,19 @@ impl Compiler {
         Some(speed)
     }
 
-    fn repeat_count(&mut self, play: &PlayStatement) -> Option<u16> {
+    fn repeat_count(&mut self, play: &PlayStatement) -> Option<Repeat> {
         match play.repeat {
-            Some(repeat) => match u16::try_from(repeat.count) {
-                Ok(count) if count > 0 => Some(count),
-                _ => {
-                    self.error("repeat must be from 1 to 65535", repeat.span);
-                    None
-                }
+            Some(repeat) => match repeat.count {
+                RepeatCount::Fit => Some(Repeat::Fit),
+                RepeatCount::Fixed(count) => match u16::try_from(count) {
+                    Ok(count) if count > 0 => Some(Repeat::Fixed(count)),
+                    _ => {
+                        self.error("repeat must be from 1 to 65535", repeat.span);
+                        None
+                    }
+                },
             },
-            None => Some(1),
+            None => Some(Repeat::Fixed(1)),
         }
     }
 
@@ -1634,21 +2103,48 @@ impl Compiler {
         declaration: &PatternDeclaration,
         key: Option<&Key>,
         meter: Option<&Meter>,
+        declared: &[Pattern],
     ) -> Pattern {
         let id = self.id();
         let steps = match &declaration.body {
-            PatternBody::Sequence { items, .. } => self.sequence_steps(items, meter),
+            PatternBody::Sequence { step, items, span } => {
+                self.sequence_steps(items, step.as_ref(), *span, meter)
+            }
             PatternBody::Steps {
-                resolution_numerator,
-                resolution_denominator,
+                resolution,
                 items,
                 span,
-            } => self.steps(
-                *resolution_numerator,
-                *resolution_denominator,
-                items,
+            } => self.steps(resolution, items, *span, key, meter),
+            PatternBody::Arpeggiate {
+                source,
+                style,
+                step,
+                octaves,
+                span,
+            } => self.arpeggiated_steps(
+                &ArpeggioSpec {
+                    source,
+                    style,
+                    step,
+                    octaves: octaves.as_ref(),
+                    span: *span,
+                },
+                meter,
+                declared,
+            ),
+            PatternBody::Derived {
+                source,
+                transpose,
+                repeat,
+                reverse,
+                span,
+            } => self.derived_steps(
+                source,
+                transpose.as_ref(),
+                repeat.as_ref(),
+                *reverse,
                 *span,
-                key,
+                declared,
             ),
         };
         Pattern {
@@ -1661,15 +2157,29 @@ impl Compiler {
     fn sequence_steps(
         &mut self,
         items: &[SequenceItem],
+        step: Option<&DurationExpression>,
+        span: SourceSpan,
         meter: Option<&Meter>,
     ) -> Vec<PatternStep> {
+        let Some(items) = self.expanded(expand::sequence_items(items), span) else {
+            return Vec::new();
+        };
         items
-            .iter()
-            .filter_map(|item| match item {
+            .into_iter()
+            .filter_map(|expanded| match expanded.item {
+                SequenceItem::Repeat(_) => {
+                    unreachable!("repetitions are expanded before lowering")
+                }
                 SequenceItem::Note(note) => {
                     let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
-                    let duration = self.item_duration(&note.duration, meter, note.span, "note");
-                    let velocity = self.velocity(note.velocity.as_ref());
+                    let duration = self.sequence_duration(
+                        note.duration.as_ref(),
+                        step,
+                        meter,
+                        note.span,
+                        "note",
+                    );
+                    let velocity = self.velocity(note.velocity.as_ref(), expanded.position);
                     let (Some(midi_pitch), Some(duration), Some(velocity)) =
                         (midi_pitch, duration, velocity)
                     else {
@@ -1683,13 +2193,15 @@ impl Compiler {
                     }))
                 }
                 SequenceItem::Chord(chord) => {
-                    let midi_pitches = chord
-                        .pitches
-                        .iter()
-                        .map(|pitch| self.pitch(&pitch.text, pitch.span))
-                        .collect::<Option<Vec<_>>>();
-                    let duration = self.item_duration(&chord.duration, meter, chord.span, "chord");
-                    let velocity = self.velocity(chord.velocity.as_ref());
+                    let midi_pitches = self.chord_pitches(&chord.pitches);
+                    let duration = self.sequence_duration(
+                        chord.duration.as_ref(),
+                        step,
+                        meter,
+                        chord.span,
+                        "chord",
+                    );
+                    let velocity = self.velocity(chord.velocity.as_ref(), expanded.position);
                     let (Some(midi_pitches), Some(duration), Some(velocity)) =
                         (midi_pitches, duration, velocity)
                     else {
@@ -1708,7 +2220,7 @@ impl Compiler {
                     }))
                 }
                 SequenceItem::Rest(rest) => self
-                    .item_duration(&rest.duration, meter, rest.span, "rest")
+                    .sequence_duration(rest.duration.as_ref(), step, meter, rest.span, "rest")
                     .map(|duration| {
                         PatternStep::Rest(Rest {
                             id: self.id(),
@@ -1721,18 +2233,290 @@ impl Compiler {
 
     fn steps(
         &mut self,
-        numerator: u32,
-        denominator: u32,
+        resolution: &DurationExpression,
         items: &[StepItem],
         span: SourceSpan,
         key: Option<&Key>,
+        meter: Option<&Meter>,
     ) -> Vec<PatternStep> {
-        let Some(duration) = self.duration(numerator, denominator, span, "step") else {
+        let Some(duration) = self.item_duration(resolution, meter, span, "step") else {
             return Vec::new();
         };
-        items
-            .iter()
-            .filter_map(|item| match item {
+        // Counted once for the whole body, subdivisions included, so a
+        // nested blow-up is rejected before any of it is built.
+        if expand::step_event_count(items).is_none() {
+            self.error(
+                &format!(
+                    "repetitions expand to more than {} items",
+                    expand::MAX_EXPANDED_ITEMS
+                ),
+                span,
+            );
+            return Vec::new();
+        }
+        self.step_events(items, duration, span, key)
+    }
+
+    /// Lowers `pattern <name> = arpeggiate <source> { ... }`: every chord in
+    /// the source pattern becomes a run of single notes on a `step` grid,
+    /// while notes and rests pass through unchanged.
+    fn arpeggiated_steps(
+        &mut self,
+        spec: &ArpeggioSpec<'_>,
+        meter: Option<&Meter>,
+        declared: &[Pattern],
+    ) -> Vec<PatternStep> {
+        let ArpeggioSpec {
+            source,
+            style,
+            step,
+            octaves,
+            span,
+        } = *spec;
+        let Some(found) = declared.iter().find(|pattern| pattern.name == source.text) else {
+            self.error(
+                "arpeggiate references a pattern that is not declared above it",
+                source.span,
+            );
+            return Vec::new();
+        };
+        let Some(style) = ArpeggioStyle::parse(&style.text) else {
+            self.error(
+                "arpeggio style must be `up`, `down`, `up_down`, `down_up`, or `as_written`",
+                style.span,
+            );
+            return Vec::new();
+        };
+        let Some(step) = self.item_duration(step, meter, span, "step") else {
+            return Vec::new();
+        };
+        let octaves = match octaves {
+            Some(octaves) if octaves.count == 0 => {
+                self.error("octaves must be at least 1", octaves.span);
+                return Vec::new();
+            }
+            Some(octaves) => Some(octaves.count as usize),
+            None => None,
+        };
+
+        let source_steps = found.steps.clone();
+        let mut steps = Vec::with_capacity(source_steps.len());
+        for source_step in source_steps {
+            match source_step {
+                PatternStep::Chord(chord) => {
+                    let Some(count) = rhythm_cell_count(chord.duration, step) else {
+                        self.error(
+                            "arpeggiate step must divide every chord's duration evenly",
+                            span,
+                        );
+                        return Vec::new();
+                    };
+                    let Ok(count) = usize::try_from(count) else {
+                        self.error("arpeggiate produces too many notes", span);
+                        return Vec::new();
+                    };
+                    let mut tones = chord
+                        .notes
+                        .iter()
+                        .map(|note| note.midi_pitch)
+                        .collect::<Vec<_>>();
+                    if style != ArpeggioStyle::AsWritten {
+                        tones.sort_unstable();
+                    }
+                    for index in style.indices(count, octaves.map(|octaves| octaves * tones.len()))
+                    {
+                        let Some(pitch) = pool_pitch(&tones, index) else {
+                            self.error("arpeggio reaches past the MIDI range 0 to 127", span);
+                            return Vec::new();
+                        };
+                        steps.push(PatternStep::Note(Note {
+                            id: self.id(),
+                            midi_pitch: pitch,
+                            duration: step,
+                            velocity: chord.velocity,
+                        }));
+                    }
+                }
+                PatternStep::Sample(_) | PatternStep::Choice(_) => {
+                    self.error("arpeggiate needs a pitched pattern", source.span);
+                    return Vec::new();
+                }
+                other => steps.push(self.renumbered(other)),
+            }
+            if steps.len() > expand::MAX_EXPANDED_ITEMS {
+                self.error("arpeggiate produces too many notes", span);
+                return Vec::new();
+            }
+        }
+        steps
+    }
+
+    /// Lowers `pattern <name> = <source> |> ...`: the source pattern's
+    /// steps, copied with fresh node ids (so seeded `choose` rolls stay
+    /// distinct between the two patterns), then transformed.
+    ///
+    /// Stage order matches the play pipeline's: transpose, then repeat,
+    /// then reverse.
+    fn derived_steps(
+        &mut self,
+        source: &Identifier,
+        transpose: Option<&TransposeExpression>,
+        repeat: Option<&RepeatExpression>,
+        reverse: bool,
+        span: SourceSpan,
+        declared: &[Pattern],
+    ) -> Vec<PatternStep> {
+        let Some(found) = declared.iter().find(|pattern| pattern.name == source.text) else {
+            self.error(
+                "pattern derivation references a pattern that is not declared above it",
+                source.span,
+            );
+            return Vec::new();
+        };
+        let mut steps = found
+            .steps
+            .clone()
+            .into_iter()
+            .map(|step| self.renumbered(step))
+            .collect::<Vec<_>>();
+
+        if let Some(transpose) = transpose {
+            for step in &mut steps {
+                if !transpose_step(step, transpose.semitones) {
+                    self.error(
+                        "transposed pitch must be within the MIDI range 0 to 127",
+                        transpose.span,
+                    );
+                    return Vec::new();
+                }
+            }
+        }
+        if let Some(repeat) = repeat {
+            let RepeatCount::Fixed(count) = repeat.count else {
+                unreachable!("the parser rejects `repeat fit` on a pattern derivation")
+            };
+            if count == 0 {
+                self.error("repeat count must be greater than zero", repeat.span);
+                return Vec::new();
+            }
+            let once = steps.clone();
+            for _ in 1..count {
+                let copy = once
+                    .iter()
+                    .map(|step| self.renumbered(step.clone()))
+                    .collect::<Vec<_>>();
+                steps.extend(copy);
+            }
+            if steps.len() > expand::MAX_EXPANDED_ITEMS {
+                self.error(
+                    &format!(
+                        "repetitions expand to more than {} items",
+                        expand::MAX_EXPANDED_ITEMS
+                    ),
+                    span,
+                );
+                return Vec::new();
+            }
+        }
+        if reverse {
+            steps.reverse();
+        }
+        steps
+    }
+
+    /// Gives a copied step (and everything inside it) fresh node ids.
+    fn renumbered(&mut self, step: PatternStep) -> PatternStep {
+        match step {
+            PatternStep::Note(note) => PatternStep::Note(Note {
+                id: self.id(),
+                ..note
+            }),
+            PatternStep::Chord(chord) => PatternStep::Chord(Chord {
+                notes: chord
+                    .notes
+                    .into_iter()
+                    .map(|note| ChordNote {
+                        id: self.id(),
+                        ..note
+                    })
+                    .collect(),
+                ..chord
+            }),
+            PatternStep::Sample(sample) => PatternStep::Sample(SampleTrigger {
+                id: self.id(),
+                ..sample
+            }),
+            PatternStep::Rest(rest) => PatternStep::Rest(Rest {
+                id: self.id(),
+                ..rest
+            }),
+            PatternStep::Choice(choice) => PatternStep::Choice(SampleChoice {
+                id: self.id(),
+                alternatives: choice
+                    .alternatives
+                    .into_iter()
+                    .map(|alternative| WeightedSampleSequence {
+                        samples: alternative
+                            .samples
+                            .into_iter()
+                            .map(|sample| SampleTrigger {
+                                id: self.id(),
+                                ..sample
+                            })
+                            .collect(),
+                        ..alternative
+                    })
+                    .collect(),
+            }),
+            PatternStep::DegreeChoice(choice) => PatternStep::DegreeChoice(DegreeChoice {
+                id: self.id(),
+                alternatives: choice
+                    .alternatives
+                    .into_iter()
+                    .map(|alternative| WeightedNote {
+                        note: Note {
+                            id: self.id(),
+                            ..alternative.note
+                        },
+                        ..alternative
+                    })
+                    .collect(),
+            }),
+        }
+    }
+
+    /// Lowers one level of a `steps` body at `duration` per cell, recursing
+    /// into `[ ... ]` subdivisions with the cell duration split between
+    /// their items.
+    fn step_events(
+        &mut self,
+        items: &[StepItem],
+        duration: Duration,
+        span: SourceSpan,
+        key: Option<&Key>,
+    ) -> Vec<PatternStep> {
+        let Some(items) = self.expanded(expand::step_items(items), span) else {
+            return Vec::new();
+        };
+        let mut steps = Vec::with_capacity(items.len());
+        for expanded in items {
+            if let StepItem::Subdivide {
+                items: nested,
+                span: nested_span,
+            } = expanded.item
+            {
+                let cells = expand::step_items(nested).map_or(0, |cells| cells.len());
+                let Some(divided) = divide_duration(duration, cells) else {
+                    self.error("subdivision splits a step too finely", *nested_span);
+                    continue;
+                };
+                steps.extend(self.step_events(nested, divided, *nested_span, key));
+                continue;
+            }
+            let step = match expanded.item {
+                StepItem::Repeat(_) | StepItem::Subdivide { .. } => {
+                    unreachable!("repetitions are expanded, and subdivisions handled above")
+                }
                 StepItem::Degree {
                     degree,
                     octave,
@@ -1749,14 +2533,16 @@ impl Compiler {
                     }),
                 StepItem::Sample {
                     index, velocity, ..
-                } => self.velocity(velocity.as_ref()).map(|velocity| {
-                    PatternStep::Sample(SampleTrigger {
-                        id: self.id(),
-                        selector: SampleSelector::Index(*index),
-                        duration,
-                        velocity,
-                    })
-                }),
+                } => self
+                    .velocity(velocity.as_ref(), expanded.position)
+                    .map(|velocity| {
+                        PatternStep::Sample(SampleTrigger {
+                            id: self.id(),
+                            selector: SampleSelector::Index(*index),
+                            duration,
+                            velocity,
+                        })
+                    }),
                 StepItem::Drum {
                     name,
                     velocity,
@@ -1766,14 +2552,15 @@ impl Compiler {
                         self.error("drum voice name must not be empty", *span);
                         None
                     } else {
-                        self.velocity(velocity.as_ref()).map(|velocity| {
-                            PatternStep::Sample(SampleTrigger {
-                                id: self.id(),
-                                selector: SampleSelector::Named(name.value.clone()),
-                                duration,
-                                velocity,
+                        self.velocity(velocity.as_ref(), expanded.position)
+                            .map(|velocity| {
+                                PatternStep::Sample(SampleTrigger {
+                                    id: self.id(),
+                                    selector: SampleSelector::Named(name.value.clone()),
+                                    duration,
+                                    velocity,
+                                })
                             })
-                        })
                     }
                 }
                 StepItem::Rest { .. } => Some(PatternStep::Rest(Rest {
@@ -1792,8 +2579,10 @@ impl Compiler {
                 StepItem::ChooseDegrees { alternatives, span } => Some(PatternStep::DegreeChoice(
                     self.degree_choice(alternatives, *span, duration, key),
                 )),
-            })
-            .collect()
+            };
+            steps.extend(step);
+        }
+        steps
     }
 
     fn sample_choice_alternatives(
@@ -1974,22 +2763,83 @@ impl Compiler {
         self.duration(numerator, denominator, span, item)
     }
 
+    /// Resolves a chord's notes: the pitches as written, or the pitches a
+    /// `root:quality` symbol names.
+    fn chord_pitches(&mut self, pitches: &ChordPitches) -> Option<Vec<u8>> {
+        match pitches {
+            ChordPitches::Explicit(pitches) => pitches
+                .iter()
+                .map(|pitch| self.pitch(&pitch.text, pitch.span))
+                .collect(),
+            ChordPitches::Symbol { root, quality } => {
+                let root_pitch = self.pitch(&root.text, root.span)?;
+                let Some(intervals) = chord_intervals(&quality.text) else {
+                    self.error("unknown chord quality", quality.span);
+                    return None;
+                };
+                intervals
+                    .iter()
+                    .map(|interval| {
+                        let pitch = transposed_pitch(root_pitch, *interval);
+                        if pitch.is_none() {
+                            self.error(
+                                "chord reaches past the MIDI range 0 to 127",
+                                root.span.cover(quality.span),
+                            );
+                        }
+                        pitch
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Resolves a sequence item's duration: its own `for <duration>`, or
+    /// the `sequence step <duration>` default when it omitted one. An item
+    /// with neither is rejected — the parser normally catches this, but a
+    /// recovered parse can still reach here.
+    fn sequence_duration(
+        &mut self,
+        duration: Option<&DurationExpression>,
+        step: Option<&DurationExpression>,
+        meter: Option<&Meter>,
+        span: SourceSpan,
+        item: &str,
+    ) -> Option<Duration> {
+        let Some(duration) = duration.or(step) else {
+            self.error(
+                &format!("{item} needs a duration, or a `step` on its sequence"),
+                span,
+            );
+            return None;
+        };
+        self.item_duration(duration, meter, span, item)
+    }
+
+    /// Resolves an item's velocity at `position`, the place it sits in the
+    /// repetition that produced it. A plain `velocity N` ignores the
+    /// position; a `velocity A..B` ramp interpolates across the repetition's
+    /// copies, and needs one to ramp across.
     fn velocity(
         &mut self,
         velocity: Option<&symphra_syntax::ast::VelocityExpression>,
+        position: Repetition,
     ) -> Option<u8> {
         let Some(velocity) = velocity else {
             return Some(DEFAULT_VELOCITY);
         };
-        if let Some(value) = u8::try_from(velocity.value)
-            .ok()
-            .filter(|value| *value <= 127)
-        {
-            Some(value)
-        } else {
+        if velocity.value > 127 || velocity.ramp_to.is_some_and(|end| end > 127) {
             self.error("velocity must be from 0 to 127", velocity.span);
-            None
+            return None;
         }
+        if velocity.ramp_to.is_some() && position.count <= 1 {
+            self.error(
+                "a velocity ramp needs a `* N` repetition to ramp across",
+                velocity.span,
+            );
+            return None;
+        }
+        u8::try_from(position.velocity(velocity)).ok()
     }
 
     #[expect(
@@ -2113,7 +2963,20 @@ impl Compiler {
         id
     }
 
+    /// Records a diagnostic, ignoring one that repeats a message already
+    /// reported at the same span.
+    ///
+    /// Repetition sugar lowers one written item into several, so a mistake
+    /// in `drum "cp" velocity 100..200 * 4` would otherwise be reported four
+    /// times at the same place.
     fn error(&mut self, message: &str, span: SourceSpan) {
+        let duplicate = self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.span == span && diagnostic.message == message);
+        if duplicate {
+            return;
+        }
         self.diagnostics.push(CompileDiagnostic {
             message: message.to_owned(),
             span,

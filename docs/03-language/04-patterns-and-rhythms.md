@@ -41,12 +41,52 @@ chord C4 E4 G4 for 1/2 velocity 90
 - Duration: fraction `N/M` or meter-aware `N bar`
 - Optional `velocity` 0–127 (default when omitted)
 
+### Chord symbols
+
+A chord may name its notes by root and quality instead of listing them. The
+root is an ordinary pitch, so the voicing's octave stays explicit — the
+notes are built upward from the written root:
+
+```symphra
+chord G3:maj7      // G3 B3 D4 F#4
+chord A3:7         // A3 C#4 E4 G4
+chord C4:m7b5 for 1/2 velocity 90
+```
+
+| Quality | Semitones | Quality | Semitones |
+| --- | --- | --- | --- |
+| `maj` | 0 4 7 | `7` | 0 4 7 10 |
+| `m` / `min` | 0 3 7 | `maj7` | 0 4 7 11 |
+| `dim` | 0 3 6 | `m7` | 0 3 7 10 |
+| `aug` | 0 4 8 | `mmaj7` | 0 3 7 11 |
+| `sus2` | 0 2 7 | `m7b5` | 0 3 6 10 |
+| `sus4` | 0 5 7 | `dim7` | 0 3 6 9 |
+| `6` | 0 4 7 9 | `9` | 0 4 7 10 14 |
+| `m6` | 0 3 7 9 | `maj9` | 0 4 7 11 14 |
+| `add9` | 0 4 7 14 | `m9` | 0 3 7 10 14 |
+
+Anything outside the table is rejected rather than guessed at.
+
 ### Rests
 
 ```symphra
 rest for 1/8
 rest for 2 bar
 ```
+
+### Default duration
+
+A `sequence` can declare the duration its items take when they omit `for`:
+
+```symphra
+pattern arpeggio = sequence step 1/8 {
+  note G4
+  note B4 for 1/16   // an explicit duration still wins
+  rest               // takes the step too
+}
+```
+
+Without `step`, `for` stays required on every item.
 
 ## Steps patterns
 
@@ -89,6 +129,149 @@ same result.
 `choose` alternatives may also use `sample N`, and multi-item
 `sequence { … }` alternatives. Multi-sample sequence alternatives cannot be
 combined with `trigger_with` (cell count would depend on the roll).
+
+## Repetition
+
+Any rhythm cell, sequence item, or step item can be repeated with `* N`
+instead of being written out N times:
+
+```symphra
+rhythm bass_pulse resolution 1/16 {
+  hit rest * 4 hit hit rest * 3 hit rest * 5
+}
+
+pattern light_hh = steps 1/4 { drum "hh" velocity 38 * 4 }
+pattern light_rim = steps 1/8 { rest * 7  drum "rim" velocity 64 }
+```
+
+Parentheses repeat several items as a unit. The elements are separated by
+commas, and the `* N` is required — a group without one would just be its
+elements:
+
+```symphra
+pattern drop_hh = steps 1/8 {
+  (drum "hh" velocity 38, drum "hh" velocity 64) * 4
+}
+```
+
+Groups nest, and the counts multiply: `(rest * 2, drum "hh") * 3` is nine
+cells.
+
+Repetition is pure sugar — it expands to the written-out items before
+anything else runs, so `trigger_with`, `repeat`, and `reverse` see exactly
+the pattern you would have typed by hand. Two rules keep it predictable:
+
+- `choose { … }` cannot be repeated. Each copy would roll independently, so
+  `choose { … } * 4` would read like one repeated decision but not be one.
+- A body may not expand to more than 4096 items. Past that, the count is
+  almost certainly a typo, and the compiler says so instead of building it.
+
+## Subdivisions
+
+A step cell can be split between several items with `[ ... ]`. The items
+share that one cell, dividing it evenly:
+
+```symphra
+pattern fill = steps 1bar {
+  drum "bd"                 // one bar
+  [ drum "cp" * 2 ]         // two claps, half a bar each
+  [ drum "bd" [ drum "sn" rest ] ]   // half, then two quarters
+}
+```
+
+- Subdivisions nest, and each level divides the cell it sits in
+- A subdivision may be repeated: `[ drum "sn" * 2 ] * 4`
+- `choose { ... }` cannot appear inside one, the same way it cannot be
+  repeated
+
+A step resolution may be written in bars (`steps 1bar`) as well as as a
+fraction (`steps 1/16`), which is what makes bar-sized cells worth
+subdividing.
+
+Note what a subdivision does *not* do: it changes each item's duration, not
+the grid it sits on. `steps 1bar { [ drum "cp" * 2 ] }` is two claps each
+half a bar long — not two claps on a 1/16 grid followed by rests. For
+drum machines that matters, because a sample is cut off at the end of its
+step.
+
+## Velocity ramps
+
+Anywhere `velocity N` is accepted, `velocity A..B` ramps linearly across the
+copies of the repetition that encloses it:
+
+```symphra
+pattern crescendo = steps 1/16 {
+  drum "cp" velocity 86..93 * 8   // 86 87 88 89 90 91 92 93
+}
+```
+
+- The first copy is `A` and the last is `B`; values in between are rounded to
+  the nearest integer, halves away from zero
+- Ramps may descend (`velocity 110..70`)
+- Both ends must be 0–127
+- A ramp needs a repetition to ramp across; `velocity 70..110` on its own is
+  an error
+- Inside a group, the ramp follows the enclosing repetition, so
+  `(drum "bd" velocity 90..110, drum "cp") * 4` ramps the kick over four
+  iterations and leaves the clap alone
+
+## Derived patterns
+
+A pattern can be another pattern's material, transformed:
+
+```symphra
+pattern pad_chords = sequence step 1bar {
+  chord G3 B3 D4 F#4
+  chord A3 C#4 E4 G4
+}
+
+pattern drop_chords = pad_chords |> transpose 12 st
+```
+
+- Stages: `transpose N st`, `repeat N`, `reverse`, applied in that order
+- The source pattern must be declared **above** the derivation, which also
+  makes cycles impossible
+- The other play stages are not accepted here. `gain` scales amplitude,
+  which a pattern has no notion of; `pan`, `speed`, `chance`, and
+  `choose_sample` describe a performance, not material
+
+## Arpeggios
+
+An arpeggio is a chord pattern walked one note at a time:
+
+```symphra
+pattern chords = sequence step 1bar {
+  chord G4:maj7
+  chord A4:7
+}
+
+pattern arpeggio = arpeggiate chords {
+  style up_down
+  step 1/8
+}
+```
+
+Each chord becomes `chord duration / step` notes (the step must divide it
+evenly), inheriting the chord's velocity. Notes and rests in the source pass
+through unchanged; sample and `choose` steps are rejected — an arpeggio needs
+pitches.
+
+| Style | Order |
+| --- | --- |
+| `up` | Tones ascending, continuing into higher octaves |
+| `down` | The `up` run reversed |
+| `up_down` | Up, then back down without repeating the top or bottom note |
+| `down_up` | `up_down` reflected |
+| `as_written` | The chord's pitches in the order they were written |
+
+Every style but `as_written` sorts the chord's tones ascending first. Add
+`octaves N` to cap the run at N octaves of the chord's tones, wrapping back to
+the lowest one instead of climbing:
+
+```symphra
+pattern up = arpeggiate chords { style up  step 1/8  octaves 1 }
+// G4 B4 D5 F#5 G4 B4 D5 F#5
+```
 
 ## Degree steps
 

@@ -3615,3 +3615,627 @@ song "Master" {
             .any(|diagnostic| diagnostic.message == "ceiling must be at most 0db")
     );
 }
+
+/// `* N` is sugar: a body that uses it must lower to exactly the same HIR as
+/// the same body written out, node ids included.
+#[test]
+fn compile_should_expand_repetitions_into_the_written_out_pattern() {
+    let sugared = r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  rhythm pulse resolution 1/8 { hit rest * 2 (hit, rest) * 2 }
+  pattern kit = steps 1/8 { drum "bd" velocity 90 * 2 (rest, drum "hh") * 2 }
+  pattern melody = sequence { note C4 for 1/4 * 2 rest for 1/4 }
+}"#;
+    let written = r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  rhythm pulse resolution 1/8 { hit rest rest hit rest hit rest }
+  pattern kit = steps 1/8 {
+    drum "bd" velocity 90
+    drum "bd" velocity 90
+    rest
+    drum "hh"
+    rest
+    drum "hh"
+  }
+  pattern melody = sequence { note C4 for 1/4 note C4 for 1/4 rest for 1/4 }
+}"#;
+
+    let sugared = parse(SourceId(0), sugared);
+    let written = parse(SourceId(0), written);
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("sugared source should compile"),
+        compile(&written.file).expect("written-out source should compile"),
+    );
+}
+
+#[test]
+fn compile_should_reject_a_repetition_larger_than_the_expansion_cap() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1/8 { (rest, drum "hh") * 100000 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("expansion should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["repetitions expand to more than 4096 items"]
+    );
+}
+
+/// The four-bar snare fill from the draft-0.1 example: `velocity A..B`
+/// across a `* N` must produce the same velocities the example spells out
+/// by hand.
+#[test]
+fn compile_should_interpolate_velocity_ramps_across_a_repetition() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern roll = steps 1/16 {
+    drum "cp" velocity 70..74 * 2
+    drum "cp" velocity 78..84 * 4
+    drum "cp" velocity 86..93 * 8
+    drum "cp" velocity 110..94 * 2
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("ramps should compile");
+    let velocities = program.songs[0].patterns[0]
+        .steps
+        .iter()
+        .map(|step| match step {
+            PatternStep::Sample(sample) => sample.velocity,
+            other => panic!("unexpected step {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        velocities,
+        vec![
+            70, 74, // A..B over two copies is just its endpoints
+            78, 80, 82, 84, //
+            86, 87, 88, 89, 90, 91, 92, 93, //
+            110, 94, // ramps may descend
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_a_velocity_ramp_without_a_repetition() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern roll = steps 1/16 { drum "cp" velocity 70..110 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("a lone ramp should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["a velocity ramp needs a `* N` repetition to ramp across"]
+    );
+}
+
+#[test]
+fn compile_should_reject_a_velocity_ramp_past_the_midi_range() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern roll = steps 1/16 { drum "cp" velocity 100..200 * 4 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an out-of-range end should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["velocity must be from 0 to 127"]
+    );
+}
+
+/// A `[ ... ]` subdivision splits its cell evenly between its items, and
+/// nests: each level divides the cell it sits in.
+#[test]
+fn compile_should_split_a_step_between_subdivided_items() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1bar {
+    drum "bd"
+    [ drum "cp" * 2 ]
+    [ drum "bd" [ drum "sn" rest ] ]
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("subdivisions should compile");
+    let durations = program.songs[0].patterns[0]
+        .steps
+        .iter()
+        .map(|step| match step {
+            PatternStep::Sample(sample) => sample.duration,
+            PatternStep::Rest(rest) => rest.duration,
+            other => panic!("unexpected step {other:?}"),
+        })
+        .collect::<Vec<_>>();
+
+    let bar = Duration {
+        numerator: 4,
+        denominator: 4,
+    };
+    let half = Duration {
+        numerator: 2,
+        denominator: 4,
+    };
+    let quarter = Duration {
+        numerator: 1,
+        denominator: 4,
+    };
+    assert_eq!(
+        durations,
+        vec![
+            bar,     // an unsubdivided cell is still a whole bar
+            half,    // [ cp * 2 ]
+            half,    //
+            half,    // [ bd [ sn rest ] ]
+            quarter, //
+            quarter, //
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_subdivisions_that_expand_past_the_cap() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1bar { [ rest * 4000 ] * 4000 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("nested expansion should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["repetitions expand to more than 4096 items"]
+    );
+}
+
+/// `sequence step D` is sugar: items that omit `for` take `D`, and the
+/// result must match the same sequence with every duration spelled out.
+#[test]
+fn compile_should_apply_a_sequence_step_to_items_without_a_duration() {
+    let sugared = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern line = sequence step 1/8 {
+    note C4  note D4 for 1/16  rest  chord C4 E4 velocity 90
+  }
+}"#,
+    );
+    let written = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern line = sequence {
+    note C4 for 1/8
+    note D4 for 1/16
+    rest for 1/8
+    chord C4 E4 for 1/8 velocity 90
+  }
+}"#,
+    );
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("sugared source should compile"),
+        compile(&written.file).expect("written-out source should compile"),
+    );
+}
+
+/// A derived pattern is the source pattern's material, transformed: it must
+/// lower to the same steps as writing the transformed material out, node
+/// ids aside.
+#[test]
+fn compile_should_lower_a_derived_pattern_like_its_written_out_form() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern pad = sequence step 1bar { chord G3 B3 D4  chord A3 C#4 E4 }
+  pattern drop = pad |> transpose 12 st
+  pattern reversed = pad |> reverse
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("derivations should compile");
+    let pitches = |pattern: &Pattern| {
+        pattern
+            .steps
+            .iter()
+            .map(|step| match step {
+                PatternStep::Chord(chord) => {
+                    chord.notes.iter().map(|note| note.midi_pitch).collect()
+                }
+                other => panic!("unexpected step {other:?}"),
+            })
+            .collect::<Vec<Vec<u8>>>()
+    };
+    let patterns = &program.songs[0].patterns;
+
+    assert_eq!(
+        pitches(&patterns[0]),
+        vec![vec![55, 59, 62], vec![57, 61, 64]]
+    );
+    assert_eq!(
+        pitches(&patterns[1]),
+        vec![vec![67, 71, 74], vec![69, 73, 76]]
+    );
+    assert_eq!(
+        pitches(&patterns[2]),
+        vec![vec![57, 61, 64], vec![55, 59, 62]]
+    );
+}
+
+#[test]
+fn compile_should_reject_a_derivation_of_a_pattern_declared_below_it() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern drop = pad |> transpose 12 st
+  pattern pad = sequence step 1bar { chord G3 B3 D4 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("a forward reference should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["pattern derivation references a pattern that is not declared above it"]
+    );
+}
+
+/// A chord symbol is sugar: `G3:maj7` must lower to exactly the pitches
+/// `chord G3 B3 D4 F#4` does.
+#[test]
+fn compile_should_expand_chord_symbols_into_their_pitches() {
+    let sugared = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key D major
+  pattern pad = sequence step 1bar {
+    chord G3:maj7  chord A3:7  chord F#3:m7  chord B3:m7
+  }
+}"#,
+    );
+    let written = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key D major
+  pattern pad = sequence step 1bar {
+    chord G3 B3 D4 F#4
+    chord A3 C#4 E4 G4
+    chord F#3 A3 C#4 E4
+    chord B3 D4 F#4 A4
+  }
+}"#,
+    );
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("chord symbols should compile"),
+        compile(&written.file).expect("written-out source should compile"),
+    );
+}
+
+#[test]
+fn compile_should_reject_an_unknown_chord_quality() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern pad = sequence step 1bar { chord C4:lydian }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an unknown quality should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["unknown chord quality"]
+    );
+}
+
+/// The draft-0.1 example's arpeggio, stated as an arpeggiator: an up-down
+/// walk of each chord's tones that never repeats its turning notes.
+#[test]
+fn compile_should_arpeggiate_a_chord_pattern() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 150bpm meter 4/4 key D major
+  pattern chords = sequence step 1bar { chord G4:maj7  chord A4:7 }
+  pattern arp = arpeggiate chords { style up_down  step 1/8 }
+  pattern up = arpeggiate chords { style up  step 1/8  octaves 1 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("arpeggios should compile");
+    let pitches = |pattern: &Pattern| {
+        pattern
+            .steps
+            .iter()
+            .map(|step| match step {
+                PatternStep::Note(note) => note.midi_pitch,
+                other => panic!("unexpected step {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let patterns = &program.songs[0].patterns;
+
+    // G4 B4 D5 F#5 G5 F#5 D5 B4, then the same shape on A4:7.
+    assert_eq!(
+        pitches(&patterns[1]),
+        vec![
+            67, 71, 74, 78, 79, 78, 74, 71, 69, 73, 76, 79, 81, 79, 76, 73
+        ]
+    );
+    // `octaves 1` wraps back to the lowest tone instead of climbing.
+    assert_eq!(
+        pitches(&patterns[2]),
+        vec![
+            67, 71, 74, 78, 67, 71, 74, 78, 69, 73, 76, 79, 69, 73, 76, 79
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_an_arpeggio_step_that_does_not_divide_a_chord() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern chords = sequence { chord C4:maj7 for 1/3 }
+  pattern arp = arpeggiate chords { style up  step 1/8 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an uneven step should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["arpeggiate step must divide every chord's duration evenly"]
+    );
+}
+
+/// An effect preset is sugar: a track referencing one must lower exactly as
+/// though the block were written into it.
+#[test]
+fn compile_should_resolve_effect_presets_like_inline_blocks() {
+    let sugared = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  effect hall = reverb { mix 0.5 size 0.7 }
+  instrument tone = sine
+  pattern line = sequence step 1/4 { note C4 }
+  track pad role harmony { instrument tone  play line  effect hall }
+  track lead role lead { instrument tone  play line  effect hall }
+}"#,
+    );
+    let written = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1/4 { note C4 }
+  track pad role harmony {
+    instrument tone
+    play line
+    effect reverb { mix 0.5 size 0.7 }
+  }
+  track lead role lead {
+    instrument tone
+    play line
+    effect reverb { mix 0.5 size 0.7 }
+  }
+}"#,
+    );
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("presets should compile"),
+        compile(&written.file).expect("inline blocks should compile"),
+    );
+}
+
+#[test]
+fn compile_should_reject_an_unknown_effect_preset() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1/4 { note C4 }
+  track pad role harmony { instrument tone  play line  effect cathedral }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an unknown preset should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["track references an unknown effect preset"]
+    );
+}
+
+const OVERRIDE_SONG: &str = r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1bar { note C4 }
+  track lead role lead { instrument tone  volume -6 db  play line |> repeat fit }
+  section intro bars 2 { parallel exact { play track lead } }
+  section outro bars 4 {
+    parallel exact {
+      play track lead { volume -12 db  effect reverb { mix 0.3 size 0.5 } }
+    }
+  }
+  arrangement { play intro  play outro }
+}"#;
+
+/// A section's `play track x { ... }` override and `repeat fit` both resolve
+/// per section: the same declaration is louder, dryer, and repeated a
+/// different number of times depending on where it is played.
+#[test]
+fn compile_should_resolve_section_track_overrides_and_repeat_fit() {
+    let parsed = parse(SourceId(0), OVERRIDE_SONG);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("overrides should compile");
+    let song = &program.songs[0];
+    let sections = &song.sections;
+    let track_of = |section: &symphra_compiler::hir::Section| {
+        song.tracks
+            .iter()
+            .find(|track| track.id == section.tracks[0])
+            .expect("section track should exist")
+    };
+
+    let intro = track_of(&sections[0]);
+    let outro = track_of(&sections[1]);
+
+    // `fit` fills each section from the same one-bar pattern.
+    assert_eq!(intro.repeat, symphra_compiler::hir::Repeat::Fixed(2));
+    assert_eq!(outro.repeat, symphra_compiler::hir::Repeat::Fixed(4));
+
+    // -6 db in the declaration, -12 db in the outro override.
+    assert!((intro.gain - 0.501_187_2).abs() < 1e-6, "{}", intro.gain);
+    assert!((outro.gain - 0.251_188_6).abs() < 1e-6, "{}", outro.gain);
+
+    assert!(intro.effect.is_none());
+    assert!(matches!(
+        outro.effect,
+        Some(symphra_compiler::hir::Effect::Reverb(_))
+    ));
+
+    // Both sections are `exact`, so the schedule confirms each track really
+    // does fill its section.
+    schedule(&program).expect("overridden sections should schedule");
+}
+
+#[test]
+fn compile_should_reject_repeat_fit_outside_a_section() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1bar { note C4 }
+  track lead role lead { instrument tone  play line |> repeat fit }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an unplayed `fit` should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["`repeat fit` needs the track to be played by a section"]
+    );
+}
+
+#[test]
+fn compile_should_reject_repeat_fit_that_does_not_divide_a_section() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence { note C4 for 3 bar }
+  track lead role lead { instrument tone  play line |> repeat fit }
+  section intro bars 4 { parallel { play track lead } }
+  arrangement { play intro }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an uneven `fit` should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["`repeat fit` needs the pattern to divide the section's length evenly"]
+    );
+}

@@ -114,6 +114,22 @@ playback speed`). Since then, two further slices landed:
   end-to-end audio testing is a permanent — not just currently missing — gap
   for this instrument kind).
 
+- Ten further slices, in a new session on 2026-08-11, implement all of
+  [RFC 0001](/rfcs/rfc0001/) — surface sugar aimed at the verbosity of
+  `examples/draft-0.1/001-example.sym`, which shrinks from 664 lines to 504
+  with the rendered audio unchanged: `* N` repetition and `( … ) * N` groups,
+  `velocity A..B` ramps, `[ … ]` subdivisions and bar-valued `steps`
+  resolutions, `sequence step D` default durations, `root:quality` chord
+  symbols, pattern derivation (`pattern b = a |> transpose 12 st`),
+  `arpeggiate`, per-section track overrides, `repeat fit`, and named effect
+  presets. Two of them departed from the RFC as written, and the RFC records
+  both: subdivisions divide the cell they sit in rather than flattening the
+  body onto an LCM grid (which would have made an event's duration depend on
+  unrelated cells), and pattern derivation accepts only the stages that mean
+  the same thing on material as on a performance. All sugar is kept in the
+  AST — expansion happens during HIR lowering — so `symphra-fmt` reprints
+  what the author wrote instead of the expansion.
+
 This document treats tests and Rust types as authoritative. Some other files in
 `docs/` describe an older repository state.
 

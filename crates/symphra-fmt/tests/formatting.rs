@@ -1102,3 +1102,22 @@ fn formats_chord_symbols() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_an_arpeggiate_pattern() {
+    let input = r#"song "S" {
+  pattern arp = arpeggiate chords { style up_down step 1/8 octaves 2 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern arp = arpeggiate chords {
+    style up_down
+    step 1/8
+    octaves 2
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

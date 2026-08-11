@@ -235,6 +235,44 @@ pattern drop_chords = pad_chords |> transpose 12 st
   which a pattern has no notion of; `pan`, `speed`, `chance`, and
   `choose_sample` describe a performance, not material
 
+## Arpeggios
+
+An arpeggio is a chord pattern walked one note at a time:
+
+```symphra
+pattern chords = sequence step 1bar {
+  chord G4:maj7
+  chord A4:7
+}
+
+pattern arpeggio = arpeggiate chords {
+  style up_down
+  step 1/8
+}
+```
+
+Each chord becomes `chord duration / step` notes (the step must divide it
+evenly), inheriting the chord's velocity. Notes and rests in the source pass
+through unchanged; sample and `choose` steps are rejected — an arpeggio needs
+pitches.
+
+| Style | Order |
+| --- | --- |
+| `up` | Tones ascending, continuing into higher octaves |
+| `down` | The `up` run reversed |
+| `up_down` | Up, then back down without repeating the top or bottom note |
+| `down_up` | `up_down` reflected |
+| `as_written` | The chord's pitches in the order they were written |
+
+Every style but `as_written` sorts the chord's tones ascending first. Add
+`octaves N` to cap the run at N octaves of the chord's tones, wrapping back to
+the lowest one instead of climbing:
+
+```symphra
+pattern up = arpeggiate chords { style up  step 1/8  octaves 1 }
+// G4 B4 D5 F#5 G4 B4 D5 F#5
+```
+
 ## Degree steps
 
 ```symphra

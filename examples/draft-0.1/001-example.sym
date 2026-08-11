@@ -135,42 +135,10 @@ song "Aoharu Signal" {
     note B2
   }
 
-  pattern arpeggio = sequence step 1/8 {
-    note G4
-    note B4
-    note D5
-    note F#5
-    note G5
-    note F#5
-    note D5
-    note B4
-
-    note A4
-    note C#5
-    note E5
-    note G5
-    note A5
-    note G5
-    note E5
-    note C#5
-
-    note F#4
-    note A4
-    note C#5
-    note E5
-    note F#5
-    note E5
-    note C#5
-    note A4
-
-    note B4
-    note D5
-    note F#5
-    note A5
-    note B5
-    note A5
-    note F#5
-    note D5
+  // Each chord walked up and back down, eight notes to the bar.
+  pattern arpeggio = arpeggiate drop_chords {
+    style up_down
+    step 1/8
   }
 
   pattern lead_line = sequence step 1/8 {

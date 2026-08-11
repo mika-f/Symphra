@@ -3998,3 +3998,71 @@ song "S" {
         ["unknown chord quality"]
     );
 }
+
+/// The draft-0.1 example's arpeggio, stated as an arpeggiator: an up-down
+/// walk of each chord's tones that never repeats its turning notes.
+#[test]
+fn compile_should_arpeggiate_a_chord_pattern() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 150bpm meter 4/4 key D major
+  pattern chords = sequence step 1bar { chord G4:maj7  chord A4:7 }
+  pattern arp = arpeggiate chords { style up_down  step 1/8 }
+  pattern up = arpeggiate chords { style up  step 1/8  octaves 1 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("arpeggios should compile");
+    let pitches = |pattern: &Pattern| {
+        pattern
+            .steps
+            .iter()
+            .map(|step| match step {
+                PatternStep::Note(note) => note.midi_pitch,
+                other => panic!("unexpected step {other:?}"),
+            })
+            .collect::<Vec<_>>()
+    };
+    let patterns = &program.songs[0].patterns;
+
+    // G4 B4 D5 F#5 G5 F#5 D5 B4, then the same shape on A4:7.
+    assert_eq!(
+        pitches(&patterns[1]),
+        vec![
+            67, 71, 74, 78, 79, 78, 74, 71, 69, 73, 76, 79, 81, 79, 76, 73
+        ]
+    );
+    // `octaves 1` wraps back to the lowest tone instead of climbing.
+    assert_eq!(
+        pitches(&patterns[2]),
+        vec![
+            67, 71, 74, 78, 67, 71, 74, 78, 69, 73, 76, 79, 69, 73, 76, 79
+        ]
+    );
+}
+
+#[test]
+fn compile_should_reject_an_arpeggio_step_that_does_not_divide_a_chord() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern chords = sequence { chord C4:maj7 for 1/3 }
+  pattern arp = arpeggiate chords { style up  step 1/8 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an uneven step should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["arpeggiate step must divide every chord's duration evenly"]
+    );
+}

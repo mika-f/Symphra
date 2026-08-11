@@ -89,6 +89,12 @@ PatternBody =
     "sequence" ["step" Duration] "{" { SequenceItem } "}"
   | "steps" Duration "{" { StepItem } "}"
   | Ident { "|>" DerivationStage }        // another pattern, transformed
+  | "arpeggiate" Ident "{" ArpField { ArpField } "}"
+
+ArpField =
+    "style" ("up" | "down" | "up_down" | "down_up" | "as_written")
+  | "step" Duration
+  | "octaves" Integer
 
 DerivationStage =
     "transpose" Integer Ident
@@ -200,6 +206,7 @@ Master =
 `gain` `repeat` `reverse` `pan` `alternate` `chance` `speed` `retrigger`
 `choose_sample` `at` `pattern` `arrangement` `with` `sequence` `steps`
 `degree` `octave` `note` `chord` `rest` `for` `velocity` `bar` `step` `effect`
+`arpeggiate` `style` `octaves`
 `delay` `mix` `time` `feedback` `filter` `cutoff` `resonance` `reverb` `size`
 `automate` `lfo` `range` `rate` `cycles` `section` `bars` `parallel` `exact`
 `master` `limiter` `ceiling` `synth` `supersaw` `envelope` `attack` `decay`

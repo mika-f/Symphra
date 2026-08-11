@@ -1771,3 +1771,57 @@ fn parses_chord_symbols() {
 
     assert!(matches!(third.pitches, ChordPitches::Explicit(_)));
 }
+
+#[test]
+fn parses_an_arpeggiate_pattern() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern arp = arpeggiate chords { style up_down  step 1/8  octaves 2 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Arpeggiate {
+        source,
+        style,
+        step,
+        octaves,
+        ..
+    } = &pattern.body
+    else {
+        panic!("pattern should be an arpeggio");
+    };
+    assert_eq!(
+        (source.text.as_str(), style.text.as_str()),
+        ("chords", "up_down")
+    );
+    assert!(matches!(
+        step,
+        DurationExpression::Fraction {
+            numerator: 1,
+            denominator: 8,
+            ..
+        }
+    ));
+    assert_eq!(octaves.map(|octaves| octaves.count), Some(2));
+}
+
+#[test]
+fn rejects_an_arpeggiate_without_a_style() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern arp = arpeggiate chords { step 1/8 } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["arpeggiate requires a `style`"]
+    );
+}

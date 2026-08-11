@@ -7,10 +7,10 @@ use symphra_syntax::ast::{
     ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind,
     EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody, MasterDeclaration,
-    PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RhythmDeclaration,
-    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    OctavesExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
+    RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
     TrackDeclaration, TransposeExpression,
 };
 
@@ -115,6 +115,81 @@ fn chord_intervals(quality: &str) -> Option<&'static [i32]> {
         "m9" => &[0, 3, 7, 10, 14],
         _ => return None,
     })
+}
+
+/// The parts of `arpeggiate <source> { ... }`, bundled so lowering takes a
+/// spec rather than five loose parameters.
+struct ArpeggioSpec<'a> {
+    source: &'a Identifier,
+    style: &'a Identifier,
+    step: &'a DurationExpression,
+    octaves: Option<&'a OctavesExpression>,
+    span: SourceSpan,
+}
+
+/// The order an [`ArpeggioStyle`] walks a chord's tones in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArpeggioStyle {
+    Up,
+    Down,
+    UpDown,
+    DownUp,
+    AsWritten,
+}
+
+impl ArpeggioStyle {
+    fn parse(text: &str) -> Option<Self> {
+        Some(match text {
+            "up" => Self::Up,
+            "down" => Self::Down,
+            "up_down" => Self::UpDown,
+            "down_up" => Self::DownUp,
+            "as_written" => Self::AsWritten,
+            _ => return None,
+        })
+    }
+
+    /// Pool indices for `count` notes, wrapping at `cap` tones when the
+    /// arpeggio was given an `octaves` limit.
+    ///
+    /// `up_down` climbs to `ceil((count + 2) / 2)` and turns around without
+    /// repeating the top or bottom note, which is the shape a hand-written
+    /// up-down arpeggio has; `down_up` is that sequence reflected.
+    fn indices(self, count: usize, cap: Option<usize>) -> Vec<usize> {
+        let raw: Vec<usize> = match self {
+            Self::Up | Self::AsWritten => (0..count).collect(),
+            Self::Down => (0..count).rev().collect(),
+            Self::UpDown | Self::DownUp => {
+                let turn = (count + 2).div_ceil(2);
+                let mut indices = Vec::with_capacity(count);
+                for index in 0..turn.min(count) {
+                    indices.push(index);
+                }
+                let mut index = turn.saturating_sub(2);
+                while indices.len() < count {
+                    indices.push(index);
+                    index = index.saturating_sub(1);
+                }
+                if self == Self::DownUp {
+                    let top = turn.saturating_sub(1);
+                    indices = indices.into_iter().map(|index| top - index).collect();
+                }
+                indices
+            }
+        };
+        match cap {
+            Some(cap) if cap > 0 => raw.into_iter().map(|index| index % cap).collect(),
+            _ => raw,
+        }
+    }
+}
+
+/// The `index`th tone of a chord's pool: its tones in order, then the same
+/// tones an octave up, and so on.
+fn pool_pitch(tones: &[u8], index: usize) -> Option<u8> {
+    let tone = *tones.get(index % tones.len())?;
+    let octave = i32::try_from(index / tones.len()).ok()?;
+    transposed_pitch(tone, octave.checked_mul(12)?)
 }
 
 fn transposed_pitch(midi_pitch: u8, semitones: i32) -> Option<u8> {
@@ -1752,6 +1827,23 @@ impl Compiler {
                 items,
                 span,
             } => self.steps(resolution, items, *span, key, meter),
+            PatternBody::Arpeggiate {
+                source,
+                style,
+                step,
+                octaves,
+                span,
+            } => self.arpeggiated_steps(
+                &ArpeggioSpec {
+                    source,
+                    style,
+                    step,
+                    octaves: octaves.as_ref(),
+                    span: *span,
+                },
+                meter,
+                declared,
+            ),
             PatternBody::Derived {
                 source,
                 transpose,
@@ -1875,6 +1967,100 @@ impl Compiler {
             return Vec::new();
         }
         self.step_events(items, duration, span, key)
+    }
+
+    /// Lowers `pattern <name> = arpeggiate <source> { ... }`: every chord in
+    /// the source pattern becomes a run of single notes on a `step` grid,
+    /// while notes and rests pass through unchanged.
+    fn arpeggiated_steps(
+        &mut self,
+        spec: &ArpeggioSpec<'_>,
+        meter: Option<&Meter>,
+        declared: &[Pattern],
+    ) -> Vec<PatternStep> {
+        let ArpeggioSpec {
+            source,
+            style,
+            step,
+            octaves,
+            span,
+        } = *spec;
+        let Some(found) = declared.iter().find(|pattern| pattern.name == source.text) else {
+            self.error(
+                "arpeggiate references a pattern that is not declared above it",
+                source.span,
+            );
+            return Vec::new();
+        };
+        let Some(style) = ArpeggioStyle::parse(&style.text) else {
+            self.error(
+                "arpeggio style must be `up`, `down`, `up_down`, `down_up`, or `as_written`",
+                style.span,
+            );
+            return Vec::new();
+        };
+        let Some(step) = self.item_duration(step, meter, span, "step") else {
+            return Vec::new();
+        };
+        let octaves = match octaves {
+            Some(octaves) if octaves.count == 0 => {
+                self.error("octaves must be at least 1", octaves.span);
+                return Vec::new();
+            }
+            Some(octaves) => Some(octaves.count as usize),
+            None => None,
+        };
+
+        let source_steps = found.steps.clone();
+        let mut steps = Vec::with_capacity(source_steps.len());
+        for source_step in source_steps {
+            match source_step {
+                PatternStep::Chord(chord) => {
+                    let Some(count) = rhythm_cell_count(chord.duration, step) else {
+                        self.error(
+                            "arpeggiate step must divide every chord's duration evenly",
+                            span,
+                        );
+                        return Vec::new();
+                    };
+                    let Ok(count) = usize::try_from(count) else {
+                        self.error("arpeggiate produces too many notes", span);
+                        return Vec::new();
+                    };
+                    let mut tones = chord
+                        .notes
+                        .iter()
+                        .map(|note| note.midi_pitch)
+                        .collect::<Vec<_>>();
+                    if style != ArpeggioStyle::AsWritten {
+                        tones.sort_unstable();
+                    }
+                    for index in style.indices(count, octaves.map(|octaves| octaves * tones.len()))
+                    {
+                        let Some(pitch) = pool_pitch(&tones, index) else {
+                            self.error("arpeggio reaches past the MIDI range 0 to 127", span);
+                            return Vec::new();
+                        };
+                        steps.push(PatternStep::Note(Note {
+                            id: self.id(),
+                            midi_pitch: pitch,
+                            duration: step,
+                            velocity: chord.velocity,
+                        }));
+                    }
+                }
+                PatternStep::Sample(_) | PatternStep::Choice(_) => {
+                    self.error("arpeggiate needs a pitched pattern", source.span);
+                    return Vec::new();
+                }
+                other => steps.push(self.renumbered(other)),
+            }
+            if steps.len() > expand::MAX_EXPANDED_ITEMS {
+                self.error("arpeggiate produces too many notes", span);
+                return Vec::new();
+            }
+        }
+        steps
     }
 
     /// Lowers `pattern <name> = <source> |> ...`: the source pattern's

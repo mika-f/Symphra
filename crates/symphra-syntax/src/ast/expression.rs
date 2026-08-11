@@ -22,6 +22,16 @@ pub enum PatternBody {
         items: Vec<StepItem>,
         span: SourceSpan,
     },
+    /// `pattern arp = chords { style up_down step 1/8 }`: a chord pattern
+    /// walked one note at a time. `style` and the optional `octaves` cap
+    /// are validated at compile time, the way waveform names already are.
+    Arpeggiate {
+        source: Identifier,
+        style: Identifier,
+        step: DurationExpression,
+        octaves: Option<OctavesExpression>,
+        span: SourceSpan,
+    },
     /// `pattern drop = pad |> transpose 12 st`: another pattern's material,
     /// transformed. The stages are the subset of the play pipeline that
     /// means the same thing on a pattern as on a performance of one; the
@@ -33,6 +43,14 @@ pub enum PatternBody {
         reverse: bool,
         span: SourceSpan,
     },
+}
+
+/// `octaves N` on an `arpeggiate` body: how many octaves of the chord's
+/// tones the arpeggio may use before wrapping back to the lowest one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OctavesExpression {
+    pub count: u32,
+    pub span: SourceSpan,
 }
 
 /// A repeated item: `item * N`, or a parenthesised group `(a, b) * N` whose

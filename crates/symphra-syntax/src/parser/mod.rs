@@ -6,12 +6,12 @@ use crate::ast::{
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
     EnvelopeDeclaration, GainExpression, GateExpression, Identifier, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RepeatGroup,
-    RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
-    VelocityExpression, VolumeExpression,
+    NumberLiteral, OctavesExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource,
+    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
+    RepeatExpression, RepeatGroup, RestExpression, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TransposeExpression, VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -1410,6 +1410,9 @@ impl Parser {
         if self.at(TokenKind::Steps) {
             return self.steps_pattern(start, name);
         }
+        if self.at(TokenKind::Arpeggiate) {
+            return self.arpeggiate_pattern(start, name);
+        }
         if self.at(TokenKind::Identifier) {
             return self.derived_pattern(start, name);
         }
@@ -1468,6 +1471,70 @@ impl Parser {
             }
         }?;
         self.repeated(item, start, SequenceItem::Repeat)
+    }
+
+    /// Parses `pattern <name> = arpeggiate <source> { style S step D
+    /// [octaves N] }`.
+    fn arpeggiate_pattern(
+        &mut self,
+        start: SourceSpan,
+        name: Identifier,
+    ) -> Option<PatternDeclaration> {
+        self.bump();
+        let source = self.identifier("expected a pattern name after `arpeggiate`")?;
+        self.required(
+            TokenKind::LeftBrace,
+            "expected `{` after the source pattern",
+        )?;
+        let mut style = None;
+        let mut step = None;
+        let mut octaves = None;
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            match self.current().kind {
+                TokenKind::Style => {
+                    self.bump();
+                    style = Some(self.identifier("expected an arpeggio style")?);
+                }
+                TokenKind::Step => {
+                    self.bump();
+                    step = Some(self.duration_expr("step")?);
+                }
+                TokenKind::Octaves => {
+                    let keyword = self.bump().span;
+                    let count = self.required(TokenKind::Integer, "expected an octave count")?;
+                    octaves = Some(OctavesExpression {
+                        count: self.parse_u32(&count)?,
+                        span: keyword.cover(count.span),
+                    });
+                }
+                _ => {
+                    self.error("expected `style`, `step`, or `octaves` in arpeggiate");
+                    return None;
+                }
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close arpeggiate")?
+            .span;
+        let Some(style) = style else {
+            self.error("arpeggiate requires a `style`");
+            return None;
+        };
+        let Some(step) = step else {
+            self.error("arpeggiate requires a `step`");
+            return None;
+        };
+        Some(PatternDeclaration {
+            name,
+            body: PatternBody::Arpeggiate {
+                source,
+                style,
+                step,
+                octaves,
+                span: start.cover(end),
+            },
+            span: start.cover(end),
+        })
     }
 
     /// Parses `pattern <name> = <source> { |> stage }`.

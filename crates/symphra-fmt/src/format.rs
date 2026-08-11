@@ -6,8 +6,8 @@ use symphra_syntax::ast::{
     ChordExpression, ChordPitches, Declaration, DegreeChoiceAlternative, DurationExpression,
     EffectDeclaration, EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
-    NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatGroup,
+    NumberLiteral, OctavesExpression, PanExpression, PatternBody, PatternDeclaration, PlaySource,
+    PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatGroup,
     RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression,
     SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
     StepItem, TrackBody, TrackDeclaration, VelocityExpression, VolumeExpression,
@@ -1211,6 +1211,62 @@ fn step_item_span(item: &StepItem) -> SourceSpan {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ArpeggiateField<'a> {
+    Style(&'a Identifier),
+    Step(&'a DurationExpression),
+    Octaves(&'a OctavesExpression),
+}
+
+fn arpeggiate_field_span(field: ArpeggiateField<'_>) -> SourceSpan {
+    match field {
+        ArpeggiateField::Style(style) => style.span,
+        ArpeggiateField::Step(step) => step.span(),
+        ArpeggiateField::Octaves(octaves) => octaves.span,
+    }
+}
+
+/// Prints `pattern <name> = arpeggiate <source> { ... }`, split out of
+/// [`print_pattern`] so that function stays readable as pattern bodies grow.
+fn print_arpeggiate(
+    ctx: &mut Ctx<'_>,
+    decl: &PatternDeclaration,
+    source: &Identifier,
+    fields: (&Identifier, &DurationExpression, Option<&OctavesExpression>),
+    span: SourceSpan,
+) {
+    let (style, step, octaves) = fields;
+    let header = format!(
+        "pattern {} = arpeggiate {}",
+        ctx.text(decl.name.span),
+        ctx.text(source.span)
+    );
+    let mut items = vec![ArpeggiateField::Style(style), ArpeggiateField::Step(step)];
+    if let Some(octaves) = octaves {
+        items.push(ArpeggiateField::Octaves(octaves));
+    }
+    print_block(
+        ctx,
+        &header,
+        span,
+        &items,
+        arpeggiate_field_span,
+        |_| 0,
+        Reorder::No,
+        |ctx, field| match field {
+            ArpeggiateField::Style(style) => {
+                ctx.printer.line(format!("style {}", ctx.text(style.span)));
+            }
+            ArpeggiateField::Step(step) => {
+                ctx.printer.line(format!("step {}", format_duration(step)));
+            }
+            ArpeggiateField::Octaves(octaves) => {
+                ctx.printer.line(format!("octaves {}", octaves.count));
+            }
+        },
+    );
+}
+
 fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
     match &decl.body {
         PatternBody::Sequence { step, items, .. } => {
@@ -1230,6 +1286,13 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
                 print_sequence_item,
             );
         }
+        PatternBody::Arpeggiate {
+            source,
+            style,
+            step,
+            octaves,
+            span,
+        } => print_arpeggiate(ctx, decl, source, (style, step, octaves.as_ref()), *span),
         PatternBody::Derived {
             source,
             transpose,

@@ -182,8 +182,8 @@ song "S" {
 
   track chords role harmony {
     instrument lead
-    volume -6 db
-    play harmony |> trigger_with stabs |> gate 80% |> transpose 2 st |> gain 0.8 |> repeat 2 |> reverse |> chance 15% { transpose 12 st } |> speed 1.5 |> pan alternate(30%, 70%)
+    volume -6db
+    play harmony |> trigger_with stabs |> gate 80% |> transpose 2st |> gain 0.8 |> repeat 2 |> reverse |> chance 15% { transpose 12st } |> speed 1.5 |> pan alternate(30%, 70%)
   }
 }
 "#;
@@ -350,7 +350,7 @@ fn formats_track_with_layer_uses() {
 
     let expected = r#"song "S" {
   track bass role low {
-    volume -3 db
+    volume -3db
     layer {
       use sub_sine {
         play bass_roots |> gain 1
@@ -881,7 +881,7 @@ fn formats_master_limiter() {
     let expected = r#"song "S" {
   master {
     limiter {
-      ceiling -0.3 db
+      ceiling -0.3db
     }
   }
 }
@@ -940,8 +940,8 @@ song "S" {
   pattern harmony = sequence { chord C4 E4 G4 for 1/1 }
   track chords role harmony {
     instrument lead
-    volume -6 db
-    play harmony |> trigger_with stabs |> gate 80% |> transpose -3 st |> gain 1.25
+    volume -6db
+    play harmony |> trigger_with stabs |> gate 80% |> transpose -3st |> gain 1.25
   }
   pattern degrees = steps 1/8 {
     degree 0 octave 4
@@ -1159,7 +1159,7 @@ fn expands_a_section_track_override_that_carries_an_effect_block() {
   section outro bars 4 {
     parallel {
       play track lead {
-        volume -12 db
+        volume -12db
         effect reverb {
           mix 0.3
           size 0.5
@@ -1186,7 +1186,7 @@ fn formats_a_derived_pattern() {
     chord G3 B3 D4
   }
 
-  pattern drop = pad |> transpose 12 st |> repeat 2 |> reverse
+  pattern drop = pad |> transpose 12st |> repeat 2 |> reverse
 }
 "#;
 
@@ -1274,7 +1274,7 @@ fn formats_section_track_overrides_and_repeat_fit() {
   section outro bars 4 {
     parallel exact {
       play track pad
-      play track lead { volume -12 db  effect hall }
+      play track lead { volume -12db  effect hall }
     }
   }
 }

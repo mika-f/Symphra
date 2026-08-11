@@ -454,7 +454,6 @@ song "Aoharu Signal" {
 
   section build bars 4 {
     parallel exact {
-
       play track arp
       play track pad { volume -7 db }
       play track build_kick
@@ -465,7 +464,6 @@ song "Aoharu Signal" {
 
   section drop bars 8 {
     parallel exact {
-
       play track fb_chords
       play track vox
       play track bass
@@ -479,7 +477,6 @@ song "Aoharu Signal" {
 
   section outro bars 4 {
     parallel exact {
-
       play track arp
       play track pad
       play track vox { volume -14 db }

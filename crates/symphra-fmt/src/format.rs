@@ -436,7 +436,7 @@ fn print_section_track(ctx: &mut Ctx<'_>, track: &SectionTrack) {
         if let Some(volume) = &track.volume {
             let _ = write!(
                 line,
-                " volume {} {}",
+                " volume {}{}",
                 volume.decibels,
                 ctx.text(volume.unit.span)
             );
@@ -500,7 +500,7 @@ fn print_master_limiter(ctx: &mut Ctx<'_>, decl: &MasterDeclaration) {
         Reorder::No,
         |ctx, ceiling| {
             ctx.printer.line(format!(
-                "ceiling {} {}",
+                "ceiling {}{}",
                 ceiling.decibels,
                 ctx.text(ceiling.unit.span)
             ));
@@ -1059,7 +1059,7 @@ fn print_track_field(ctx: &mut Ctx<'_>, field: &TrackField<'_>) {
             .printer
             .line(format!("instrument {}", ctx.text(instrument.span))),
         TrackField::Volume(volume) => ctx.printer.line(format!(
-            "volume {} {}",
+            "volume {}{}",
             volume.decibels,
             ctx.text(volume.unit.span)
         )),
@@ -1284,7 +1284,7 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
     if let Some(transpose) = &play.transpose {
         let _ = write!(
             line,
-            " |> transpose {} {}",
+            " |> transpose {}{}",
             transpose.semitones,
             ctx.text(transpose.unit.span)
         );
@@ -1304,7 +1304,7 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
             ChanceTransformExpression::Transpose(transpose) => {
                 let _ = write!(
                     line,
-                    " transpose {} {}",
+                    " transpose {}{}",
                     transpose.semitones,
                     ctx.text(transpose.unit.span)
                 );
@@ -1480,7 +1480,7 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
             if let Some(transpose) = transpose {
                 let _ = write!(
                     line,
-                    " |> transpose {} {}",
+                    " |> transpose {}{}",
                     transpose.semitones,
                     ctx.text(transpose.unit.span)
                 );

@@ -1832,7 +1832,13 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
             let PatternBody::Sequence { items, .. } = &source_pattern.body else {
                 continue;
             };
-            for (item, step) in items.iter().zip(&pattern.steps) {
+            // Repetitions have to be expanded here the same way the compiler
+            // expanded them, or every pitch after a `* N` would line up with
+            // the wrong lowered step.
+            let Some(items) = symphra_compiler::expand::sequence_items(items) else {
+                continue;
+            };
+            for (item, step) in items.into_iter().zip(&pattern.steps) {
                 match (item, step) {
                     (
                         SequenceItem::Note(source_note),

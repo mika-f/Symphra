@@ -7,10 +7,10 @@ use symphra_syntax::ast::{
     EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
     NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, RhythmItem,
-    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
-    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, VolumeExpression,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatGroup,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression,
+    SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
+    StepItem, TrackBody, TrackDeclaration, VolumeExpression,
 };
 
 use crate::printer::{BlankSeparator, Printer};
@@ -734,14 +734,36 @@ fn vst3_field_span(field: Vst3Field<'_>) -> SourceSpan {
 fn rhythm_item_span(item: &RhythmItem) -> SourceSpan {
     match item {
         RhythmItem::Hit { span } | RhythmItem::Rest { span } => *span,
+        RhythmItem::Repeat(group) => group.span,
     }
 }
 
-fn rhythm_item_text(item: &RhythmItem) -> &'static str {
+fn rhythm_item_text(item: &RhythmItem) -> String {
     match item {
-        RhythmItem::Hit { .. } => "hit",
-        RhythmItem::Rest { .. } => "rest",
+        RhythmItem::Hit { .. } => "hit".to_owned(),
+        RhythmItem::Rest { .. } => "rest".to_owned(),
+        RhythmItem::Repeat(group) => format_repeat(group, rhythm_item_text),
     }
+}
+
+/// Reprints a `* N` repetition: `hit * 4` for a single item, and
+/// `(hit, rest) * 4` for a group.
+///
+/// A one-element group written as `(hit) * 4` normalizes to the ungrouped
+/// spelling; the parentheses carry no meaning there, and the AST does not
+/// record whether the author typed them.
+fn format_repeat<T>(group: &RepeatGroup<T>, element: impl Fn(&T) -> String) -> String {
+    let count = group.count;
+    if let [only] = group.items.as_slice() {
+        return format!("{} * {count}", element(only));
+    }
+    let items = group
+        .items
+        .iter()
+        .map(element)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("({items}) * {count}")
 }
 
 /// Prints a rhythm as a single compact line when its body has no comments:
@@ -1172,6 +1194,7 @@ fn sequence_item_span(item: &SequenceItem) -> SourceSpan {
         SequenceItem::Note(note) => note.span,
         SequenceItem::Chord(chord) => chord.span,
         SequenceItem::Rest(rest) => rest.span,
+        SequenceItem::Repeat(group) => group.span,
     }
 }
 
@@ -1183,6 +1206,7 @@ fn step_item_span(item: &StepItem) -> SourceSpan {
         | StepItem::Rest { span }
         | StepItem::Choose { span, .. }
         | StepItem::ChooseDegrees { span, .. } => *span,
+        StepItem::Repeat(group) => group.span,
     }
 }
 
@@ -1230,12 +1254,16 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
 }
 
 fn print_sequence_item(ctx: &mut Ctx<'_>, item: &SequenceItem) {
+    let line = sequence_item_text(ctx, item);
+    ctx.printer.line(line);
+}
+
+fn sequence_item_text(ctx: &Ctx<'_>, item: &SequenceItem) -> String {
     match item {
-        SequenceItem::Note(note) => print_note(ctx, note),
-        SequenceItem::Chord(chord) => print_chord(ctx, chord),
-        SequenceItem::Rest(rest) => ctx
-            .printer
-            .line(format!("rest for {}", format_duration(&rest.duration))),
+        SequenceItem::Note(note) => note_text(ctx, note),
+        SequenceItem::Chord(chord) => chord_text(ctx, chord),
+        SequenceItem::Rest(rest) => format!("rest for {}", format_duration(&rest.duration)),
+        SequenceItem::Repeat(group) => format_repeat(group, |item| sequence_item_text(ctx, item)),
     }
 }
 
@@ -1250,7 +1278,7 @@ fn format_duration(duration: &DurationExpression) -> String {
     }
 }
 
-fn print_note(ctx: &mut Ctx<'_>, note: &NoteExpression) {
+fn note_text(ctx: &Ctx<'_>, note: &NoteExpression) -> String {
     let mut line = format!(
         "note {} for {}",
         ctx.text(note.pitch.span),
@@ -1259,10 +1287,10 @@ fn print_note(ctx: &mut Ctx<'_>, note: &NoteExpression) {
     if let Some(velocity) = &note.velocity {
         let _ = write!(line, " velocity {}", velocity.value);
     }
-    ctx.printer.line(line);
+    line
 }
 
-fn print_chord(ctx: &mut Ctx<'_>, chord: &ChordExpression) {
+fn chord_text(ctx: &Ctx<'_>, chord: &ChordExpression) -> String {
     let pitches = chord
         .pitches
         .iter()
@@ -1273,14 +1301,15 @@ fn print_chord(ctx: &mut Ctx<'_>, chord: &ChordExpression) {
     if let Some(velocity) = &chord.velocity {
         let _ = write!(line, " velocity {}", velocity.value);
     }
-    ctx.printer.line(line);
+    line
 }
 
-fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
+/// Renders every step item that fits on one line. `choose` blocks are the
+/// exception, and the parser rejects them inside a repetition for exactly
+/// that reason, so a repetition never has to render one inline.
+fn step_item_text(ctx: &Ctx<'_>, item: &StepItem) -> String {
     match item {
-        StepItem::Degree { degree, octave, .. } => {
-            ctx.printer.line(format!("degree {degree} octave {octave}"));
-        }
+        StepItem::Degree { degree, octave, .. } => format!("degree {degree} octave {octave}"),
         StepItem::Sample {
             index, velocity, ..
         } => {
@@ -1288,16 +1317,33 @@ fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
             if let Some(velocity) = velocity {
                 let _ = write!(line, " velocity {}", velocity.value);
             }
-            ctx.printer.line(line);
+            line
         }
         StepItem::Drum { name, velocity, .. } => {
             let mut line = format!("drum {}", ctx.text(name.span));
             if let Some(velocity) = velocity {
                 let _ = write!(line, " velocity {}", velocity.value);
             }
+            line
+        }
+        StepItem::Rest { .. } => "rest".to_owned(),
+        StepItem::Repeat(group) => format_repeat(group, |item| step_item_text(ctx, item)),
+        StepItem::Choose { .. } | StepItem::ChooseDegrees { .. } => {
+            unreachable!("choose is not repeatable, and is printed as a block")
+        }
+    }
+}
+
+fn print_step_item(ctx: &mut Ctx<'_>, item: &StepItem) {
+    match item {
+        StepItem::Degree { .. }
+        | StepItem::Sample { .. }
+        | StepItem::Drum { .. }
+        | StepItem::Rest { .. }
+        | StepItem::Repeat(_) => {
+            let line = step_item_text(ctx, item);
             ctx.printer.line(line);
         }
-        StepItem::Rest { .. } => ctx.printer.line("rest"),
         StepItem::Choose { alternatives, span } => {
             let items: Vec<&SampleChoiceAlternative> = alternatives.iter().collect();
             print_block(

@@ -102,6 +102,7 @@ pub enum TokenKind {
     Slash,
     Plus,
     Minus,
+    Star,
     PipeGreater,
     Percent,
     DotDot,

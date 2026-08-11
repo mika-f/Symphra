@@ -22,6 +22,7 @@ use crate::hir::{
     TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
 
+pub mod expand;
 pub mod hir;
 mod schedule;
 
@@ -537,19 +538,38 @@ impl Compiler {
             declaration.span,
             "rhythm resolution",
         )?;
+        let items = self.expanded(expand::rhythm_items(&declaration.items), declaration.span)?;
         Some(Rhythm {
             id: self.id(),
             name: declaration.name.text.clone(),
             resolution,
-            items: declaration
-                .items
-                .iter()
+            items: items
+                .into_iter()
                 .map(|item| match item {
                     symphra_syntax::ast::RhythmItem::Hit { .. } => RhythmItem::Hit,
                     symphra_syntax::ast::RhythmItem::Rest { .. } => RhythmItem::Rest,
+                    symphra_syntax::ast::RhythmItem::Repeat(_) => {
+                        unreachable!("repetitions are expanded before lowering")
+                    }
                 })
                 .collect(),
         })
+    }
+
+    /// Reports the one way expansion can fail — a body whose `* N`
+    /// repetitions multiply out past [`expand::MAX_EXPANDED_ITEMS`] — and
+    /// otherwise hands back the expanded items.
+    fn expanded<T>(&mut self, expanded: Option<Vec<T>>, span: SourceSpan) -> Option<Vec<T>> {
+        if expanded.is_none() {
+            self.error(
+                &format!(
+                    "repetitions expand to more than {} items",
+                    expand::MAX_EXPANDED_ITEMS
+                ),
+                span,
+            );
+        }
+        expanded
     }
 
     /// Lowers a track declaration into one `TrackDefinition` per layer: the
@@ -1637,7 +1657,7 @@ impl Compiler {
     ) -> Pattern {
         let id = self.id();
         let steps = match &declaration.body {
-            PatternBody::Sequence { items, .. } => self.sequence_steps(items, meter),
+            PatternBody::Sequence { items, span } => self.sequence_steps(items, *span, meter),
             PatternBody::Steps {
                 resolution_numerator,
                 resolution_denominator,
@@ -1661,11 +1681,18 @@ impl Compiler {
     fn sequence_steps(
         &mut self,
         items: &[SequenceItem],
+        span: SourceSpan,
         meter: Option<&Meter>,
     ) -> Vec<PatternStep> {
+        let Some(items) = self.expanded(expand::sequence_items(items), span) else {
+            return Vec::new();
+        };
         items
-            .iter()
+            .into_iter()
             .filter_map(|item| match item {
+                SequenceItem::Repeat(_) => {
+                    unreachable!("repetitions are expanded before lowering")
+                }
                 SequenceItem::Note(note) => {
                     let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
                     let duration = self.item_duration(&note.duration, meter, note.span, "note");
@@ -1730,9 +1757,15 @@ impl Compiler {
         let Some(duration) = self.duration(numerator, denominator, span, "step") else {
             return Vec::new();
         };
+        let Some(items) = self.expanded(expand::step_items(items), span) else {
+            return Vec::new();
+        };
         items
-            .iter()
+            .into_iter()
             .filter_map(|item| match item {
+                StepItem::Repeat(_) => {
+                    unreachable!("repetitions are expanded before lowering")
+                }
                 StepItem::Degree {
                     degree,
                     octave,

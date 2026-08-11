@@ -22,8 +22,26 @@ pub enum PatternBody {
     },
 }
 
+/// A repeated item: `item * N`, or a parenthesised group `(a, b) * N` whose
+/// elements repeat as a unit.
+///
+/// Repetition is sugar — it lowers to `count` copies of `items`, in order —
+/// but it is kept in the AST rather than expanded by the parser so that
+/// `symphra-fmt` can reprint what the author wrote instead of the expansion.
+/// `count` is always at least 1, and `items` always holds at least one item;
+/// both are enforced by the parser.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepeatGroup<T> {
+    pub items: Vec<T>,
+    pub count: u32,
+    pub span: SourceSpan,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StepItem {
+    /// `drum "hh" velocity 38 * 4`, or `(rest, drum "cp") * 2`. Block-shaped
+    /// items (`choose`) are not repeatable — see the parser.
+    Repeat(RepeatGroup<StepItem>),
     Degree {
         degree: u32,
         octave: u32,
@@ -78,6 +96,8 @@ pub enum SequenceItem {
     Note(NoteExpression),
     Chord(ChordExpression),
     Rest(RestExpression),
+    /// `note C4 for 1/8 * 4`, or `(note C4 for 1/8, rest for 1/8) * 2`.
+    Repeat(RepeatGroup<SequenceItem>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

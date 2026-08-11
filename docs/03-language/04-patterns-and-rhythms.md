@@ -90,6 +90,42 @@ same result.
 `sequence { … }` alternatives. Multi-sample sequence alternatives cannot be
 combined with `trigger_with` (cell count would depend on the roll).
 
+## Repetition
+
+Any rhythm cell, sequence item, or step item can be repeated with `* N`
+instead of being written out N times:
+
+```symphra
+rhythm bass_pulse resolution 1/16 {
+  hit rest * 4 hit hit rest * 3 hit rest * 5
+}
+
+pattern light_hh = steps 1/4 { drum "hh" velocity 38 * 4 }
+pattern light_rim = steps 1/8 { rest * 7  drum "rim" velocity 64 }
+```
+
+Parentheses repeat several items as a unit. The elements are separated by
+commas, and the `* N` is required — a group without one would just be its
+elements:
+
+```symphra
+pattern drop_hh = steps 1/8 {
+  (drum "hh" velocity 38, drum "hh" velocity 64) * 4
+}
+```
+
+Groups nest, and the counts multiply: `(rest * 2, drum "hh") * 3` is nine
+cells.
+
+Repetition is pure sugar — it expands to the written-out items before
+anything else runs, so `trigger_with`, `repeat`, and `reverse` see exactly
+the pattern you would have typed by hand. Two rules keep it predictable:
+
+- `choose { … }` cannot be repeated. Each copy would roll independently, so
+  `choose { … } * 4` would read like one repeated decision but not be one.
+- A body may not expand to more than 4096 items. Past that, the count is
+  almost certainly a typo, and the compiler says so instead of building it.
+
 ## Degree steps
 
 ```symphra

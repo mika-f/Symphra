@@ -7,7 +7,7 @@ use crate::ast::{
     EnvelopeDeclaration, GainExpression, GateExpression, Identifier, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
     NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
-    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression,
+    ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RepeatGroup,
     RestExpression, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
     SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
     SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TransposeExpression,
@@ -40,6 +40,7 @@ const SONG_STATEMENT_START: &[TokenKind] = &[
 const RHYTHM_ITEM_START: &[TokenKind] = &[
     TokenKind::Hit,
     TokenKind::Rest,
+    TokenKind::LeftParen,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -47,6 +48,7 @@ const SEQUENCE_ITEM_START: &[TokenKind] = &[
     TokenKind::Note,
     TokenKind::Chord,
     TokenKind::Rest,
+    TokenKind::LeftParen,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -56,6 +58,15 @@ const STEP_ITEM_START: &[TokenKind] = &[
     TokenKind::Drum,
     TokenKind::Choose,
     TokenKind::Rest,
+    TokenKind::LeftParen,
+    TokenKind::RightBrace,
+    TokenKind::Eof,
+];
+/// Where to resync after a malformed item inside a `( ... )` repetition
+/// group: the next element, the group's own end, or the enclosing body's.
+const GROUP_ITEM_RECOVERY: &[TokenKind] = &[
+    TokenKind::Comma,
+    TokenKind::RightParen,
     TokenKind::RightBrace,
     TokenKind::Eof,
 ];
@@ -530,19 +541,7 @@ impl Parser {
         self.required(TokenKind::LeftBrace, "expected `{` after rhythm resolution")?;
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let item = match self.current().kind {
-                TokenKind::Hit => Some(RhythmItem::Hit {
-                    span: self.bump().span,
-                }),
-                TokenKind::Rest => Some(RhythmItem::Rest {
-                    span: self.bump().span,
-                }),
-                _ => {
-                    self.error("expected `hit` or `rest` in rhythm");
-                    None
-                }
-            };
-            if let Some(item) = item {
+            if let Some(item) = self.rhythm_item() {
                 items.push(item);
             } else {
                 self.recover_to(RHYTHM_ITEM_START);
@@ -558,6 +557,114 @@ impl Parser {
             items,
             span: start.cover(end),
         })
+    }
+
+    /// One rhythm cell: `hit`, `rest`, or either of those repeated —
+    /// `hit * 4`, `(hit, rest) * 4`.
+    fn rhythm_item(&mut self) -> Option<RhythmItem> {
+        let start = self.current().span;
+        if self.at(TokenKind::LeftParen) {
+            let (items, count, span) = self.repetition_group(Self::rhythm_item, start)?;
+            return Some(RhythmItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        let item = match self.current().kind {
+            TokenKind::Hit => RhythmItem::Hit {
+                span: self.bump().span,
+            },
+            TokenKind::Rest => RhythmItem::Rest {
+                span: self.bump().span,
+            },
+            _ => {
+                self.error("expected `hit`, `rest`, or `(` in rhythm");
+                return None;
+            }
+        };
+        self.repeated(item, start, RhythmItem::Repeat)
+    }
+
+    /// Wraps `item` in a repetition when a `* N` suffix follows it, and
+    /// returns it unchanged otherwise.
+    fn repeated<T>(
+        &mut self,
+        item: T,
+        start: SourceSpan,
+        wrap: fn(RepeatGroup<T>) -> T,
+    ) -> Option<T> {
+        if !self.at(TokenKind::Star) {
+            return Some(item);
+        }
+        let (count, span) = self.repetition_count(start)?;
+        Some(wrap(RepeatGroup {
+            items: vec![item],
+            count,
+            span,
+        }))
+    }
+
+    /// Parses `( item, item, ... ) * N`, with `item` parsed by `element`.
+    /// The `* N` suffix is mandatory: a bare group would be indistinguishable
+    /// from writing its elements out, so requiring the count keeps the
+    /// parenthesis from becoming decorative.
+    fn repetition_group<T>(
+        &mut self,
+        element: fn(&mut Self) -> Option<T>,
+        start: SourceSpan,
+    ) -> Option<(Vec<T>, u32, SourceSpan)> {
+        self.bump();
+        let mut items = Vec::new();
+        while !self.at_any(&[TokenKind::RightParen, TokenKind::Eof]) {
+            if let Some(item) = element(self) {
+                items.push(item);
+            } else {
+                self.recover_to(GROUP_ITEM_RECOVERY);
+            }
+            if self.at(TokenKind::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.required(
+            TokenKind::RightParen,
+            "expected `)` to close a repetition group",
+        )?;
+        if items.is_empty() {
+            self.error("a repetition group must contain at least one item");
+            return None;
+        }
+        if !self.at(TokenKind::Star) {
+            self.error("expected `*` after a repetition group");
+            return None;
+        }
+        let (count, span) = self.repetition_count(start)?;
+        Some((items, count, span))
+    }
+
+    /// Parses the `* N` suffix itself, starting at the `*`.
+    fn repetition_count(&mut self, start: SourceSpan) -> Option<(u32, SourceSpan)> {
+        self.bump();
+        let count = self.required(TokenKind::Integer, "expected a repetition count after `*`")?;
+        let value = self.parse_u32(&count)?;
+        if value == 0 {
+            self.diagnostics.push(Diagnostic::syntax(
+                "repetition count must be at least 1",
+                count.span,
+            ));
+            return None;
+        }
+        Some((value, start.cover(count.span)))
+    }
+
+    /// Reports and consumes a `* N` suffix on an item that cannot carry one.
+    fn reject_repetition(&mut self, message: &str) {
+        if !self.at(TokenKind::Star) {
+            return;
+        }
+        self.error(message);
+        self.bump();
+        if self.at(TokenKind::Integer) {
+            self.bump();
+        }
     }
 
     fn track(&mut self) -> Option<TrackDeclaration> {
@@ -1301,16 +1408,7 @@ impl Parser {
             .span;
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let item = match self.current().kind {
-                TokenKind::Note => self.note().map(SequenceItem::Note),
-                TokenKind::Chord => self.chord().map(SequenceItem::Chord),
-                TokenKind::Rest => self.rest().map(SequenceItem::Rest),
-                _ => {
-                    self.error("expected a note, chord, or rest in sequence");
-                    None
-                }
-            };
-            if let Some(item) = item {
+            if let Some(item) = self.sequence_item() {
                 items.push(item);
             } else {
                 self.recover_to(SEQUENCE_ITEM_START);
@@ -1329,6 +1427,26 @@ impl Parser {
         })
     }
 
+    /// One sequence item: a note, chord, or rest, optionally repeated —
+    /// `note C4 for 1/8 * 4`, `(note C4 for 1/8, rest for 1/8) * 2`.
+    fn sequence_item(&mut self) -> Option<SequenceItem> {
+        let start = self.current().span;
+        if self.at(TokenKind::LeftParen) {
+            let (items, count, span) = self.repetition_group(Self::sequence_item, start)?;
+            return Some(SequenceItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        let item = match self.current().kind {
+            TokenKind::Note => self.note().map(SequenceItem::Note),
+            TokenKind::Chord => self.chord().map(SequenceItem::Chord),
+            TokenKind::Rest => self.rest().map(SequenceItem::Rest),
+            _ => {
+                self.error("expected a note, chord, rest, or `(` in sequence");
+                None
+            }
+        }?;
+        self.repeated(item, start, SequenceItem::Repeat)
+    }
+
     fn steps_pattern(&mut self, start: SourceSpan, name: Identifier) -> Option<PatternDeclaration> {
         self.bump();
         let numerator = self.required(TokenKind::Integer, "expected step resolution numerator")?;
@@ -1340,46 +1458,7 @@ impl Parser {
             .span;
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
-            let item = match self.current().kind {
-                TokenKind::Degree => self.degree_step(),
-                TokenKind::Sample => {
-                    let sample = self.bump().span;
-                    self.required(TokenKind::Integer, "expected sample index")
-                        .and_then(|index| {
-                            self.parse_u32(&index).map(|index_value| {
-                                let velocity = self.velocity();
-                                let end = velocity.map_or(index.span, |velocity| velocity.span);
-                                StepItem::Sample {
-                                    index: index_value,
-                                    velocity,
-                                    span: sample.cover(end),
-                                }
-                            })
-                        })
-                }
-                TokenKind::Drum => {
-                    let drum = self.bump().span;
-                    self.string("expected a quoted drum voice name")
-                        .map(|name| {
-                            let velocity = self.velocity();
-                            let end = velocity.map_or(name.span, |velocity| velocity.span);
-                            StepItem::Drum {
-                                span: drum.cover(end),
-                                name,
-                                velocity,
-                            }
-                        })
-                }
-                TokenKind::Rest => Some(StepItem::Rest {
-                    span: self.bump().span,
-                }),
-                TokenKind::Choose => self.choice(),
-                _ => {
-                    self.error("expected a degree, sample, drum, rest, or choose in steps");
-                    None
-                }
-            };
-            if let Some(item) = item {
+            if let Some(item) = self.step_item() {
                 items.push(item);
             } else {
                 self.recover_to(STEP_ITEM_START);
@@ -1398,6 +1477,65 @@ impl Parser {
             },
             span: start.cover(end),
         })
+    }
+
+    /// One grid cell: a degree, sample, drum, rest, or `choose` block, with
+    /// everything but `choose` optionally repeated — `drum "hh" * 4`,
+    /// `(rest, drum "cp") * 2`.
+    ///
+    /// `choose` is deliberately not repeatable. It is the one block-shaped
+    /// step item, and each copy would re-roll independently, so `choose { ...
+    /// } * 4` reads like one repeated decision but is not.
+    fn step_item(&mut self) -> Option<StepItem> {
+        let start = self.current().span;
+        if self.at(TokenKind::LeftParen) {
+            let (items, count, span) = self.repetition_group(Self::step_item, start)?;
+            return Some(StepItem::Repeat(RepeatGroup { items, count, span }));
+        }
+        if self.at(TokenKind::Choose) {
+            let item = self.choice();
+            self.reject_repetition("`choose` cannot be repeated with `*`");
+            return item;
+        }
+        let item = match self.current().kind {
+            TokenKind::Degree => self.degree_step(),
+            TokenKind::Sample => {
+                let sample = self.bump().span;
+                self.required(TokenKind::Integer, "expected sample index")
+                    .and_then(|index| {
+                        self.parse_u32(&index).map(|index_value| {
+                            let velocity = self.velocity();
+                            let end = velocity.map_or(index.span, |velocity| velocity.span);
+                            StepItem::Sample {
+                                index: index_value,
+                                velocity,
+                                span: sample.cover(end),
+                            }
+                        })
+                    })
+            }
+            TokenKind::Drum => {
+                let drum = self.bump().span;
+                self.string("expected a quoted drum voice name")
+                    .map(|name| {
+                        let velocity = self.velocity();
+                        let end = velocity.map_or(name.span, |velocity| velocity.span);
+                        StepItem::Drum {
+                            span: drum.cover(end),
+                            name,
+                            velocity,
+                        }
+                    })
+            }
+            TokenKind::Rest => Some(StepItem::Rest {
+                span: self.bump().span,
+            }),
+            _ => {
+                self.error("expected a degree, sample, drum, rest, choose, or `(` in steps");
+                None
+            }
+        }?;
+        self.repeated(item, start, StepItem::Repeat)
     }
 
     fn degree_step(&mut self) -> Option<StepItem> {

@@ -15,7 +15,7 @@ compiler tests are authoritative.
 | String | `"Aoharu Signal"`, `"assets/x.wav"` |
 | Pitch | `C4`, `F#3`, `Bb2`, `C-1` |
 | Rate / unit literals | `48khz`, `150bpm`, `10ms`, `-6db`, `1400hz` |
-| Operators | `=`, `|>`, `..`, `:`, `/`, `%`, `{`, `}`, `(`, `)`, `,` |
+| Operators | `=`, `|>`, `..`, `:`, `/`, `*`, `%`, `{`, `}`, `(`, `)`, `,` |
 | Comment | `// line comment` |
 
 ## Top level
@@ -78,7 +78,9 @@ EnvelopeBlock = "{" "envelope" "{"
 
 ```text
 Rhythm =
-  "rhythm" Ident "resolution" Duration "{" { "hit" | "rest" } "}"
+  "rhythm" Ident "resolution" Duration "{" { RhythmItem } "}"
+
+RhythmItem = ("hit" | "rest" | Group) [Repeat]
 
 Pattern =
   "pattern" Ident "=" PatternBody
@@ -87,18 +89,28 @@ PatternBody =
     "sequence" "{" { SequenceItem } "}"
   | "steps" Duration "{" { StepItem } "}"
 
-SequenceItem =
+SequenceItem = SequenceAtom [Repeat]
+
+SequenceAtom =
     "note" Pitch "for" Duration ["velocity" Integer]
   | "chord" Pitch { Pitch } "for" Duration ["velocity" Integer]
   | "rest" "for" Duration
+  | Group
 
 StepItem =
+    "choose" "{" ChooseAlt { ChooseAlt } "}"     // not repeatable
+  | StepAtom [Repeat]
+
+StepAtom =
     "rest"
   | Sequence-like note/chord forms (as accepted by steps)
   | "sample" Integer ["velocity" Integer]
   | "drum" String ["velocity" Integer]
   | "degree" Integer "octave" Integer
-  | "choose" "{" ChooseAlt { ChooseAlt } "}"
+  | Group
+
+Group  = "(" Item { "," Item } ")"               // Repeat is mandatory
+Repeat = "*" Integer                             // Integer >= 1
 
 ChooseAlt =
   (SampleOrDrum | "sequence" "{" … "}") "weight" Integer

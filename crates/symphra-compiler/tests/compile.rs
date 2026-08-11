@@ -3615,3 +3615,62 @@ song "Master" {
             .any(|diagnostic| diagnostic.message == "ceiling must be at most 0db")
     );
 }
+
+/// `* N` is sugar: a body that uses it must lower to exactly the same HIR as
+/// the same body written out, node ids included.
+#[test]
+fn compile_should_expand_repetitions_into_the_written_out_pattern() {
+    let sugared = r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  rhythm pulse resolution 1/8 { hit rest * 2 (hit, rest) * 2 }
+  pattern kit = steps 1/8 { drum "bd" velocity 90 * 2 (rest, drum "hh") * 2 }
+  pattern melody = sequence { note C4 for 1/4 * 2 rest for 1/4 }
+}"#;
+    let written = r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  rhythm pulse resolution 1/8 { hit rest rest hit rest hit rest }
+  pattern kit = steps 1/8 {
+    drum "bd" velocity 90
+    drum "bd" velocity 90
+    rest
+    drum "hh"
+    rest
+    drum "hh"
+  }
+  pattern melody = sequence { note C4 for 1/4 note C4 for 1/4 rest for 1/4 }
+}"#;
+
+    let sugared = parse(SourceId(0), sugared);
+    let written = parse(SourceId(0), written);
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("sugared source should compile"),
+        compile(&written.file).expect("written-out source should compile"),
+    );
+}
+
+#[test]
+fn compile_should_reject_a_repetition_larger_than_the_expansion_cap() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern kit = steps 1/8 { (rest, drum "hh") * 100000 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("expansion should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["repetitions expand to more than 4096 items"]
+    );
+}

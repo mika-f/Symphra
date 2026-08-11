@@ -78,6 +78,7 @@ impl Lexer<'_> {
             '/' => self.push(TokenKind::Slash, start),
             '+' => self.push(TokenKind::Plus, start),
             '-' => self.push(TokenKind::Minus, start),
+            '*' => self.push(TokenKind::Star, start),
             '%' => self.push(TokenKind::Percent, start),
             '(' => self.push(TokenKind::LeftParen, start),
             ')' => self.push(TokenKind::RightParen, start),

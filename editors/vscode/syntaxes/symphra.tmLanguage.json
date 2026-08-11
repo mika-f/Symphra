@@ -118,7 +118,7 @@
         },
         {
           "name": "keyword.operator.arithmetic.symphra",
-          "match": "[/+-]"
+          "match": "[/+*-]"
         },
         {
           "name": "punctuation.separator.colon.symphra",

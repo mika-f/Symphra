@@ -1,6 +1,6 @@
 use super::{
     DurationExpression, FrequencyLiteral, Identifier, NumberLiteral, PatternDeclaration,
-    QuotedString, RateLiteral,
+    QuotedString, RateLiteral, RepeatGroup,
 };
 use crate::SourceSpan;
 
@@ -13,10 +13,17 @@ pub struct RhythmDeclaration {
     pub span: SourceSpan,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RhythmItem {
-    Hit { span: SourceSpan },
-    Rest { span: SourceSpan },
+    Hit {
+        span: SourceSpan,
+    },
+    Rest {
+        span: SourceSpan,
+    },
+    /// `hit * 4`, or `(hit, rest) * 4`. Same sugar as a repeated step or
+    /// sequence item; see [`RepeatGroup`].
+    Repeat(RepeatGroup<RhythmItem>),
 }
 
 #[derive(Clone, Debug, PartialEq)]

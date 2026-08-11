@@ -978,3 +978,30 @@ fn is_idempotent_across_every_grammar_construct() {
         );
     }
 }
+
+#[test]
+fn keeps_repetitions_instead_of_expanding_them() {
+    let input = r#"song "S" {
+  rhythm pulse resolution 1/8 { hit rest*3 (hit,rest)*2 }
+  pattern kit = steps 1/8 { drum "hh" velocity 38*4 (rest,drum "cp" velocity 96)*2 }
+  pattern melody = sequence { note C4 for 1/4*2 (rest for 1/4) * 3 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  rhythm pulse resolution 1/8 { hit rest * 3 (hit, rest) * 2 }
+
+  pattern kit = steps 1/8 {
+    drum "hh" velocity 38 * 4
+    (rest, drum "cp" velocity 96) * 2
+  }
+
+  pattern melody = sequence {
+    note C4 for 1/4 * 2
+    rest for 1/4 * 3
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

@@ -125,7 +125,7 @@ class SymphraLexer : LexerBase() {
                         i += 2
                     }
 
-                    c == '=' || c == '/' || c == '+' || c == '-' || c == '%' || c == ':' || c == ',' -> {
+                    c == '=' || c == '/' || c == '+' || c == '-' || c == '*' || c == '%' || c == ':' || c == ',' -> {
                         out += Token(i, i + 1, SymphraTokenTypes.OPERATOR)
                         i++
                     }

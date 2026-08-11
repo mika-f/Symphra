@@ -417,6 +417,7 @@ fn parses_drum_steps() {
             StepItem::Sample { .. } => panic!("unexpected sample"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+            StepItem::Repeat(_) => panic!("unexpected repetition"),
         })
         .collect::<Vec<_>>();
     assert_eq!(names, vec![Some("bd"), None, Some("hh")]);
@@ -456,6 +457,7 @@ fn parses_sample_steps() {
             StepItem::Drum { .. } => panic!("unexpected drum"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+            StepItem::Repeat(_) => panic!("unexpected repetition"),
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -493,6 +495,7 @@ fn parses_drum_and_sample_step_velocity() {
             StepItem::Degree { .. } => panic!("unexpected degree"),
             StepItem::Choose { .. } => panic!("unexpected choice"),
             StepItem::ChooseDegrees { .. } => panic!("unexpected degree choice"),
+            StepItem::Repeat(_) => panic!("unexpected repetition"),
         })
         .collect::<Vec<_>>();
     assert_eq!(velocities, vec![Some(90), Some(40), None]);
@@ -1372,4 +1375,160 @@ fn parses_master_limiter_ceiling() {
         (master.ceiling.decibels, master.ceiling.unit.text.as_str()),
         (-0.3, "db")
     );
+}
+
+/// `* N` repetition sugar is kept in the AST rather than expanded here, so
+/// the formatter can reprint what the author wrote; the compiler expands it
+/// during lowering.
+#[test]
+fn parses_a_repeated_step_item() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { drum "hh" velocity 38 * 4 rest } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let items = step_items(&parsed);
+    assert_eq!(items.len(), 2);
+    let StepItem::Repeat(group) = &items[0] else {
+        panic!("first item should be a repetition");
+    };
+    assert_eq!(group.count, 4);
+    let [StepItem::Drum { name, velocity, .. }] = group.items.as_slice() else {
+        panic!("repetition should hold one drum item");
+    };
+    assert_eq!(name.value, "hh");
+    assert_eq!(velocity.map(|velocity| velocity.value), Some(38));
+    assert!(matches!(items[1], StepItem::Rest { .. }));
+}
+
+#[test]
+fn parses_a_repetition_group_of_step_items() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { (drum "hh", rest) * 2 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let items = step_items(&parsed);
+    let [StepItem::Repeat(group)] = items else {
+        panic!("body should be one repetition");
+    };
+    assert_eq!(group.count, 2);
+    assert_eq!(group.items.len(), 2);
+    assert!(matches!(group.items[0], StepItem::Drum { .. }));
+    assert!(matches!(group.items[1], StepItem::Rest { .. }));
+}
+
+#[test]
+fn parses_nested_repetition_groups() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern kit = steps 1/8 { (rest * 2, drum "hh") * 3 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let items = step_items(&parsed);
+    let [StepItem::Repeat(outer)] = items else {
+        panic!("body should be one repetition");
+    };
+    assert_eq!(outer.count, 3);
+    let StepItem::Repeat(inner) = &outer.items[0] else {
+        panic!("first element should itself be a repetition");
+    };
+    assert_eq!(inner.count, 2);
+}
+
+#[test]
+fn parses_repeated_rhythm_cells() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"S\" { rhythm pulse resolution 1/8 { hit rest * 3 (hit, rest) * 2 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Rhythm(rhythm) = &song.statements[0] else {
+        panic!("statement should be a rhythm");
+    };
+    assert!(matches!(rhythm.items[0], RhythmItem::Hit { .. }));
+    let RhythmItem::Repeat(rests) = &rhythm.items[1] else {
+        panic!("second item should be a repetition");
+    };
+    assert_eq!(rests.count, 3);
+    let RhythmItem::Repeat(group) = &rhythm.items[2] else {
+        panic!("third item should be a repetition group");
+    };
+    assert_eq!((group.count, group.items.len()), (2, 2));
+}
+
+#[test]
+fn parses_a_repeated_sequence_item() {
+    let parsed = parse(
+        SourceId(0),
+        "song \"S\" { pattern melody = sequence { note C4 for 1/4 * 2 } }",
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should contain a sequence");
+    };
+    let [SequenceItem::Repeat(group)] = items.as_slice() else {
+        panic!("body should be one repetition");
+    };
+    assert_eq!(group.count, 2);
+    assert!(matches!(group.items[0], SequenceItem::Note(_)));
+}
+
+#[test]
+fn rejects_malformed_repetitions() {
+    for (source, message) in [
+        (
+            r#"song "S" { pattern kit = steps 1/8 { drum "hh" * 0 } }"#,
+            "repetition count must be at least 1",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { drum "hh" * } }"#,
+            "expected a repetition count after `*`",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { (drum "hh", rest) } }"#,
+            "expected `*` after a repetition group",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { () * 2 } }"#,
+            "a repetition group must contain at least one item",
+        ),
+        (
+            r#"song "S" { pattern kit = steps 1/8 { choose { sample 0 weight 1 } * 2 } }"#,
+            "`choose` cannot be repeated with `*`",
+        ),
+    ] {
+        let parsed = parse(SourceId(0), source);
+        assert_eq!(
+            parsed
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>(),
+            [message],
+            "unexpected diagnostics for {source}"
+        );
+    }
+}
+
+fn step_items(parsed: &symphra_syntax::ParsedSource) -> &[StepItem] {
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Steps { items, .. } = &pattern.body else {
+        panic!("pattern should contain steps");
+    };
+    items
 }

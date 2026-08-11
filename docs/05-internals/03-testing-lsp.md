@@ -100,7 +100,10 @@ Exercise these cases by replacing the buffer contents without saving:
    include `note`. After `play` in a track that already declares patterns, those
    pattern names should appear alongside `drum`. After `instrument` in a track
    body, declared instrument names should appear; after `trigger_with`, rhythm
-   names; after `play track` in a section, track names.
+   names; after `play track` in a section, track names; after track-body
+   `effect`, effect-preset names alongside `delay`/`filter`/`reverb`; after
+   `arpeggiate` or `pattern x =`, declared pattern names (with `sequence` /
+   `steps` / `arpeggiate` on the `=` form).
 8. Place the cursor on a language keyword and run `:lua vim.lsp.buf.hover()`.
    A short Markdown description should appear and apply to exactly that token.
 9. With a semantically valid document, hover `C4`. It should report MIDI note

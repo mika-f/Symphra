@@ -557,6 +557,16 @@ fn name_completion_kind(
         _ => line_tokens,
     };
 
+    name_completion_kind_play(block, tokens)
+        .or_else(|| name_completion_kind_bindings(block, tokens))
+        .or_else(|| name_completion_kind_sugar(tokens))
+}
+
+/// `play` / arrangement / `trigger_with` reference sites.
+fn name_completion_kind_play(
+    block: Option<CompletionBlock>,
+    tokens: &[Token],
+) -> Option<NamedKind> {
     match tokens {
         // `play <pattern>` inside a track or layer use.
         [
@@ -631,7 +641,16 @@ fn name_completion_kind(
                 ..
             },
         ] => Some(NamedKind::Rhythm),
-        // `instrument <name>` / `use <name>` inside a track body.
+        _ => None,
+    }
+}
+
+/// `instrument` / `use` / `effect` binding sites inside a track (or override).
+fn name_completion_kind_bindings(
+    block: Option<CompletionBlock>,
+    tokens: &[Token],
+) -> Option<NamedKind> {
+    match tokens {
         [
             Token {
                 kind: TokenKind::Instrument,
@@ -646,6 +665,49 @@ fn name_completion_kind(
         ] if matches!(block, Some(CompletionBlock::Layer | CompletionBlock::Use)) => {
             Some(NamedKind::Instrument)
         }
+        // Song-level `effect name = …` is a declaration site — excluded so the
+        // next token is treated as a fresh name, not a preset reference.
+        [
+            Token {
+                kind: TokenKind::Effect,
+                ..
+            },
+        ] if matches!(
+            block,
+            Some(CompletionBlock::Track | CompletionBlock::Parallel | CompletionBlock::Other)
+        ) =>
+        {
+            Some(NamedKind::Effect)
+        }
+        _ => None,
+    }
+}
+
+/// RFC 0001 pattern-source sites: `arpeggiate <name>` and `pattern x = <name>`.
+fn name_completion_kind_sugar(tokens: &[Token]) -> Option<NamedKind> {
+    match tokens {
+        // Trailing `arpeggiate` so a full `pattern … = arpeggiate` line matches.
+        [
+            ..,
+            Token {
+                kind: TokenKind::Arpeggiate,
+                ..
+            },
+        ]
+        | [
+            Token {
+                kind: TokenKind::Pattern,
+                ..
+            },
+            Token {
+                kind: TokenKind::Identifier,
+                ..
+            },
+            Token {
+                kind: TokenKind::Equal,
+                ..
+            },
+        ] => Some(NamedKind::Pattern),
         _ => None,
     }
 }
@@ -701,7 +763,9 @@ fn completion_labels(
                 "vst3",
             ]
         } else {
-            &["sequence", "steps"]
+            // Pattern body keywords, plus derivation via a bare source name
+            // (names come from name_completion_kind).
+            &["sequence", "steps", "arpeggiate"]
         }
     } else if duration_keyword_follows(line_tokens) {
         &["for"]
@@ -2248,7 +2312,7 @@ mod tests {
         );
         assert_eq!(
             labels("song \"Test\" {\n  pattern p = ", 1, 14),
-            ["sequence", "steps"]
+            ["sequence", "steps", "arpeggiate"]
         );
         assert_eq!(
             labels("song \"Test\" {\npattern p = steps 1/8 {\n  ", 2, 2),
@@ -2720,6 +2784,123 @@ mod tests {
                 16,
             ),
             ["pad", "bass"]
+        );
+    }
+
+    #[test]
+    fn completes_effect_presets_and_arpeggiate_sources() {
+        let labels = |source: &str, line, character| {
+            completions(
+                &SourceText::new(SourceId(0), "test.sym", source),
+                Position::new(line, character),
+            )
+            .into_iter()
+            .map(|item| item.label)
+            .collect::<Vec<_>>()
+        };
+
+        // Track-body `effect` offers kinds plus declared preset names.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  effect hall = reverb { mix 0.5 size 0.7 }\n",
+                    "  effect room = reverb { mix 0.3 size 0.5 }\n",
+                    "  track lead role harmony {\n",
+                    "    effect \n",
+                    "  }\n",
+                    "}\n",
+                ),
+                4,
+                11,
+            ),
+            ["delay", "filter", "reverb", "hall", "room"]
+        );
+
+        // Section override `effect` also offers presets (kinds still apply).
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  effect hall = reverb { mix 0.5 size 0.7 }\n",
+                    "  track pad role harmony { instrument lead play melody }\n",
+                    "  section intro bars 2 {\n",
+                    "    parallel {\n",
+                    "      play track pad { effect \n",
+                    "    }\n",
+                    "  }\n",
+                    "}\n",
+                ),
+                5,
+                30,
+            ),
+            ["delay", "filter", "reverb", "hall"]
+        );
+
+        // Partial preset name still resolves the effect context.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  effect hall = reverb { mix 0.5 size 0.7 }\n",
+                    "  track lead role harmony {\n",
+                    "    effect ha\n",
+                    "  }\n",
+                    "}\n",
+                ),
+                3,
+                13,
+            ),
+            ["hall"]
+        );
+
+        // Song-level `effect` is a declaration site: no preset name offers.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  effect hall = reverb { mix 0.5 size 0.7 }\n",
+                    "  effect \n",
+                    "}\n",
+                ),
+                2,
+                9,
+            ),
+            ["delay", "filter", "reverb"]
+        );
+
+        // `arpeggiate <source>` offers pattern names.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern pad = sequence {}\n",
+                    "  pattern drop = sequence {}\n",
+                    "  pattern arp = arpeggiate \n",
+                    "}\n",
+                ),
+                3,
+                27,
+            ),
+            // Incomplete `pattern arp = arpeggiate` is not yet a declaration,
+            // so only the finished sources appear.
+            ["pad", "drop"]
+        );
+
+        // `pattern x = ` offers body keywords and derivation sources.
+        assert_eq!(
+            labels(
+                concat!(
+                    "song \"Test\" {\n",
+                    "  pattern pad = sequence {}\n",
+                    "  pattern high = \n",
+                    "}\n",
+                ),
+                2,
+                17,
+            ),
+            // Same: unfinished `high` is absent until its body parses.
+            ["sequence", "steps", "arpeggiate", "pad"]
         );
     }
 

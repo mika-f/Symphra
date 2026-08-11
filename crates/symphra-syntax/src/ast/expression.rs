@@ -11,6 +11,9 @@ pub struct PatternDeclaration {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PatternBody {
     Sequence {
+        /// `sequence step 1/8 { ... }`: the duration items take when they
+        /// omit `for`. Absent, every item states its own duration.
+        step: Option<DurationExpression>,
         items: Vec<SequenceItem>,
         span: SourceSpan,
     },
@@ -109,7 +112,8 @@ pub enum SequenceItem {
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteExpression {
     pub pitch: Identifier,
-    pub duration: DurationExpression,
+    /// `None` when the item omits `for` and takes the sequence's `step`.
+    pub duration: Option<DurationExpression>,
     pub velocity: Option<VelocityExpression>,
     pub span: SourceSpan,
 }
@@ -117,7 +121,8 @@ pub struct NoteExpression {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChordExpression {
     pub pitches: Vec<Identifier>,
-    pub duration: DurationExpression,
+    /// `None` when the item omits `for` and takes the sequence's `step`.
+    pub duration: Option<DurationExpression>,
     pub velocity: Option<VelocityExpression>,
     pub span: SourceSpan,
 }
@@ -136,7 +141,8 @@ pub struct VelocityExpression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RestExpression {
-    pub duration: DurationExpression,
+    /// `None` when the item omits `for` and takes the sequence's `step`.
+    pub duration: Option<DurationExpression>,
     pub span: SourceSpan,
 }
 

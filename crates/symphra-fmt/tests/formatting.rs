@@ -1045,3 +1045,22 @@ fn formats_subdivisions_and_bar_step_resolutions() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_a_sequence_step_default_duration() {
+    let input = r#"song "S" {
+  pattern line = sequence step 1bar { note C4 note D4 for 1/16 rest }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern line = sequence step 1bar {
+    note C4
+    note D4 for 1/16
+    rest
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

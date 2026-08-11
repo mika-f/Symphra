@@ -117,105 +117,105 @@ song "Aoharu Signal" {
   // Harmonic material (4-bar phrase)
   // ─────────────────────────────────────────────
 
-  pattern pad_chords = sequence {
-    chord G3 B3 D4 F#4 for 1bar
-    chord A3 C#4 E4 G4 for 1bar
-    chord F#3 A3 C#4 E4 for 1bar
-    chord B3 D4 F#4 A4 for 1bar
+  pattern pad_chords = sequence step 1bar {
+    chord G3 B3 D4 F#4
+    chord A3 C#4 E4 G4
+    chord F#3 A3 C#4 E4
+    chord B3 D4 F#4 A4
   }
 
-  pattern drop_chords = sequence {
-    chord G4 B4 D5 F#5 for 1bar
-    chord A4 C#5 E5 G5 for 1bar
-    chord F#4 A4 C#5 E5 for 1bar
-    chord B4 D5 F#5 A5 for 1bar
+  pattern drop_chords = sequence step 1bar {
+    chord G4 B4 D5 F#5
+    chord A4 C#5 E5 G5
+    chord F#4 A4 C#5 E5
+    chord B4 D5 F#5 A5
   }
 
-  pattern bass_roots = sequence {
-    note G2 for 1bar
-    note A2 for 1bar
-    note F#2 for 1bar
-    note B2 for 1bar
+  pattern bass_roots = sequence step 1bar {
+    note G2
+    note A2
+    note F#2
+    note B2
   }
 
-  pattern arpeggio = sequence {
-    note G4 for 1/8
-    note B4 for 1/8
-    note D5 for 1/8
-    note F#5 for 1/8
-    note G5 for 1/8
-    note F#5 for 1/8
-    note D5 for 1/8
-    note B4 for 1/8
+  pattern arpeggio = sequence step 1/8 {
+    note G4
+    note B4
+    note D5
+    note F#5
+    note G5
+    note F#5
+    note D5
+    note B4
 
-    note A4 for 1/8
-    note C#5 for 1/8
-    note E5 for 1/8
-    note G5 for 1/8
-    note A5 for 1/8
-    note G5 for 1/8
-    note E5 for 1/8
-    note C#5 for 1/8
+    note A4
+    note C#5
+    note E5
+    note G5
+    note A5
+    note G5
+    note E5
+    note C#5
 
-    note F#4 for 1/8
-    note A4 for 1/8
-    note C#5 for 1/8
-    note E5 for 1/8
-    note F#5 for 1/8
-    note E5 for 1/8
-    note C#5 for 1/8
-    note A4 for 1/8
+    note F#4
+    note A4
+    note C#5
+    note E5
+    note F#5
+    note E5
+    note C#5
+    note A4
 
-    note B4 for 1/8
-    note D5 for 1/8
-    note F#5 for 1/8
-    note A5 for 1/8
-    note B5 for 1/8
-    note A5 for 1/8
-    note F#5 for 1/8
-    note D5 for 1/8
+    note B4
+    note D5
+    note F#5
+    note A5
+    note B5
+    note A5
+    note F#5
+    note D5
   }
 
-  pattern lead_line = sequence {
-    note D5 for 1/8
+  pattern lead_line = sequence step 1/8 {
+    note D5
     note D5 for 1/16
     note E5 for 1/16
-    note F#5 for 1/8
-    note A5 for 1/8
-    rest for 1/8
-    note B5 for 1/8
-    note A5 for 1/8
-    note F#5 for 1/8
+    note F#5
+    note A5
+    rest
+    note B5
+    note A5
+    note F#5
 
-    note C#5 for 1/8
+    note C#5
     note C#5 for 1/16
     note E5 for 1/16
-    note G5 for 1/8
-    note A5 for 1/8
-    rest for 1/8
-    note B5 for 1/8
-    note A5 for 1/8
-    note E5 for 1/8
+    note G5
+    note A5
+    rest
+    note B5
+    note A5
+    note E5
 
-    note A4 for 1/8
+    note A4
     note A4 for 1/16
     note C#5 for 1/16
-    note E5 for 1/8
-    note F#5 for 1/8
-    rest for 1/8
-    note A5 for 1/8
-    note F#5 for 1/8
-    note E5 for 1/8
+    note E5
+    note F#5
+    rest
+    note A5
+    note F#5
+    note E5
 
-    note B4 for 1/8
-    note D5 for 1/8
-    note F#5 for 1/8
+    note B4
+    note D5
+    note F#5
     note A5 for 1/16
     note B5 for 1/16
-    note A5 for 1/8
-    note F#5 for 1/8
-    note E5 for 1/8
-    note D5 for 1/8
+    note A5
+    note F#5
+    note E5
+    note D5
   }
 
   // ─────────────────────────────────────────────

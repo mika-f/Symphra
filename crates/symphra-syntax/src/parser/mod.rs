@@ -93,6 +93,7 @@ pub fn parse(source: SourceId, input: &str) -> ParsedSource {
         tokens: lexed.tokens,
         cursor: 0,
         diagnostics: lexed.diagnostics,
+        sequence_step: false,
     };
     let declarations = parser.source_file();
     ParsedSource {
@@ -109,6 +110,9 @@ struct Parser {
     tokens: Vec<Token>,
     cursor: usize,
     diagnostics: Vec<Diagnostic>,
+    /// Whether the `sequence` body currently being parsed declared a
+    /// `step` default, which makes each item's `for <duration>` optional.
+    sequence_step: bool,
 }
 
 impl Parser {
@@ -1410,9 +1414,16 @@ impl Parser {
             TokenKind::Sequence,
             "expected `sequence` or `steps` pattern body",
         )?;
+        let step = if self.at(TokenKind::Step) {
+            self.bump();
+            Some(self.duration_expr("step")?)
+        } else {
+            None
+        };
         let body_start = self
             .required(TokenKind::LeftBrace, "expected `{` after `sequence`")?
             .span;
+        self.sequence_step = step.is_some();
         let mut items = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             if let Some(item) = self.sequence_item() {
@@ -1421,12 +1432,14 @@ impl Parser {
                 self.recover_to(SEQUENCE_ITEM_START);
             }
         }
+        self.sequence_step = false;
         let end = self
             .required(TokenKind::RightBrace, "expected `}` to close sequence")?
             .span;
         Some(PatternDeclaration {
             name,
             body: PatternBody::Sequence {
+                step,
                 items,
                 span: body_start.cover(end),
             },
@@ -1727,10 +1740,13 @@ impl Parser {
     fn note(&mut self) -> Option<NoteExpression> {
         let start = self.bump().span;
         let pitch = self.identifier("expected note pitch")?;
-        self.required(TokenKind::For, "expected `for` after note pitch")?;
-        let duration = self.duration_expr("note")?;
+        let duration = self.item_duration("note", "expected `for` after note pitch")?;
         let velocity = self.velocity();
-        let end = velocity.map_or(duration.span(), |velocity| velocity.span);
+        let end = match (duration, velocity) {
+            (_, Some(velocity)) => velocity.span,
+            (Some(duration), None) => duration.span(),
+            (None, None) => pitch.span,
+        };
         Some(NoteExpression {
             pitch,
             duration,
@@ -1741,12 +1757,33 @@ impl Parser {
 
     fn rest(&mut self) -> Option<RestExpression> {
         let start = self.bump().span;
-        self.required(TokenKind::For, "expected `for` after `rest`")?;
-        let duration = self.duration_expr("rest")?;
+        let duration = self.item_duration("rest", "expected `for` after `rest`")?;
         Some(RestExpression {
-            span: start.cover(duration.span()),
+            span: start.cover(duration.map_or(start, |duration| duration.span())),
             duration,
         })
+    }
+
+    /// Parses a sequence item's `for <duration>`, which may be omitted when
+    /// the enclosing `sequence` declared a `step` default.
+    #[expect(
+        clippy::option_option,
+        reason = "the outer None is a parse failure, the inner one an omitted `for`"
+    )]
+    fn item_duration(
+        &mut self,
+        context: &str,
+        missing: &str,
+    ) -> Option<Option<DurationExpression>> {
+        if !self.at(TokenKind::For) {
+            if self.sequence_step {
+                return Some(None);
+            }
+            self.error(missing);
+            return None;
+        }
+        self.bump();
+        self.duration_expr(context).map(Some)
     }
 
     fn chord(&mut self) -> Option<ChordExpression> {
@@ -1756,10 +1793,13 @@ impl Parser {
         while self.at(TokenKind::Identifier) {
             pitches.push(self.identifier("expected chord pitch")?);
         }
-        self.required(TokenKind::For, "expected `for` after chord pitches")?;
-        let duration = self.duration_expr("chord")?;
+        let duration = self.item_duration("chord", "expected `for` after chord pitches")?;
         let velocity = self.velocity();
-        let end = velocity.map_or(duration.span(), |velocity| velocity.span);
+        let end = match (duration, velocity) {
+            (_, Some(velocity)) => velocity.span,
+            (Some(duration), None) => duration.span(),
+            (None, None) => pitches.last().map_or(start, |pitch| pitch.span),
+        };
         Some(ChordExpression {
             pitches,
             duration,

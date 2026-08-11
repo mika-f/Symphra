@@ -86,16 +86,18 @@ Pattern =
   "pattern" Ident "=" PatternBody
 
 PatternBody =
-    "sequence" "{" { SequenceItem } "}"
+    "sequence" ["step" Duration] "{" { SequenceItem } "}"
   | "steps" Duration "{" { StepItem } "}"
 
 SequenceItem = SequenceAtom [Repeat]
 
 SequenceAtom =
-    "note" Pitch "for" Duration [Velocity]
-  | "chord" Pitch { Pitch } "for" Duration [Velocity]
-  | "rest" "for" Duration
+    "note" Pitch [For] [Velocity]
+  | "chord" Pitch { Pitch } [For] [Velocity]
+  | "rest" [For]
   | Group
+
+For = "for" Duration          // required unless the sequence has a `step`
 
 StepItem =
     "choose" "{" ChooseAlt { ChooseAlt } "}"     // not repeatable
@@ -191,7 +193,7 @@ Master =
 `track` `role` `volume` `layer` `use` `play` `trigger_with` `gate` `transpose`
 `gain` `repeat` `reverse` `pan` `alternate` `chance` `speed` `retrigger`
 `choose_sample` `at` `pattern` `arrangement` `with` `sequence` `steps`
-`degree` `octave` `note` `chord` `rest` `for` `velocity` `bar` `effect`
+`degree` `octave` `note` `chord` `rest` `for` `velocity` `bar` `step` `effect`
 `delay` `mix` `time` `feedback` `filter` `cutoff` `resonance` `reverb` `size`
 `automate` `lfo` `range` `rate` `cycles` `section` `bars` `parallel` `exact`
 `master` `limiter` `ceiling` `synth` `supersaw` `envelope` `attack` `decay`

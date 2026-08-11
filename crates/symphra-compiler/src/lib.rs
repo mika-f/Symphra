@@ -1677,7 +1677,9 @@ impl Compiler {
     ) -> Pattern {
         let id = self.id();
         let steps = match &declaration.body {
-            PatternBody::Sequence { items, span } => self.sequence_steps(items, *span, meter),
+            PatternBody::Sequence { step, items, span } => {
+                self.sequence_steps(items, step.as_ref(), *span, meter)
+            }
             PatternBody::Steps {
                 resolution,
                 items,
@@ -1694,6 +1696,7 @@ impl Compiler {
     fn sequence_steps(
         &mut self,
         items: &[SequenceItem],
+        step: Option<&DurationExpression>,
         span: SourceSpan,
         meter: Option<&Meter>,
     ) -> Vec<PatternStep> {
@@ -1708,7 +1711,13 @@ impl Compiler {
                 }
                 SequenceItem::Note(note) => {
                     let midi_pitch = self.pitch(&note.pitch.text, note.pitch.span);
-                    let duration = self.item_duration(&note.duration, meter, note.span, "note");
+                    let duration = self.sequence_duration(
+                        note.duration.as_ref(),
+                        step,
+                        meter,
+                        note.span,
+                        "note",
+                    );
                     let velocity = self.velocity(note.velocity.as_ref(), expanded.position);
                     let (Some(midi_pitch), Some(duration), Some(velocity)) =
                         (midi_pitch, duration, velocity)
@@ -1728,7 +1737,13 @@ impl Compiler {
                         .iter()
                         .map(|pitch| self.pitch(&pitch.text, pitch.span))
                         .collect::<Option<Vec<_>>>();
-                    let duration = self.item_duration(&chord.duration, meter, chord.span, "chord");
+                    let duration = self.sequence_duration(
+                        chord.duration.as_ref(),
+                        step,
+                        meter,
+                        chord.span,
+                        "chord",
+                    );
                     let velocity = self.velocity(chord.velocity.as_ref(), expanded.position);
                     let (Some(midi_pitches), Some(duration), Some(velocity)) =
                         (midi_pitches, duration, velocity)
@@ -1748,7 +1763,7 @@ impl Compiler {
                     }))
                 }
                 SequenceItem::Rest(rest) => self
-                    .item_duration(&rest.duration, meter, rest.span, "rest")
+                    .sequence_duration(rest.duration.as_ref(), step, meter, rest.span, "rest")
                     .map(|duration| {
                         PatternStep::Rest(Rest {
                             id: self.id(),
@@ -2061,6 +2076,28 @@ impl Compiler {
             }
         };
         self.duration(numerator, denominator, span, item)
+    }
+
+    /// Resolves a sequence item's duration: its own `for <duration>`, or
+    /// the `sequence step <duration>` default when it omitted one. An item
+    /// with neither is rejected — the parser normally catches this, but a
+    /// recovered parse can still reach here.
+    fn sequence_duration(
+        &mut self,
+        duration: Option<&DurationExpression>,
+        step: Option<&DurationExpression>,
+        meter: Option<&Meter>,
+        span: SourceSpan,
+        item: &str,
+    ) -> Option<Duration> {
+        let Some(duration) = duration.or(step) else {
+            self.error(
+                &format!("{item} needs a duration, or a `step` on its sequence"),
+                span,
+            );
+            return None;
+        };
+        self.item_duration(duration, meter, span, item)
     }
 
     /// Resolves an item's velocity at `position`, the place it sits in the

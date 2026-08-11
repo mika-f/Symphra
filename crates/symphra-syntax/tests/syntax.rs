@@ -114,11 +114,11 @@ fn parses_the_draft_example() {
         panic!("fourth sequence item should be a note");
     };
     assert_eq!(note.pitch.text, "G4");
-    let DurationExpression::Fraction {
+    let Some(DurationExpression::Fraction {
         numerator,
         denominator,
         ..
-    } = note.duration
+    }) = note.duration
     else {
         panic!("note duration should be a fraction");
     };
@@ -1123,11 +1123,11 @@ fn parses_chord_pitches_and_duration() {
     let SequenceItem::Chord(chord) = &items[0] else {
         panic!("sequence item should be a chord");
     };
-    let DurationExpression::Fraction {
+    let Some(DurationExpression::Fraction {
         numerator,
         denominator,
         ..
-    } = chord.duration
+    }) = chord.duration
     else {
         panic!("chord duration should be a fraction");
     };
@@ -1172,7 +1172,7 @@ fn parses_bar_durations_for_notes_chords_and_rests() {
     let SequenceItem::Note(note) = &items[0] else {
         panic!("first item should be a note");
     };
-    let DurationExpression::Bars { count, .. } = note.duration else {
+    let Some(DurationExpression::Bars { count, .. }) = note.duration else {
         panic!("note duration should be bars");
     };
     assert_eq!(count, 1);
@@ -1180,7 +1180,7 @@ fn parses_bar_durations_for_notes_chords_and_rests() {
     let SequenceItem::Chord(chord) = &items[1] else {
         panic!("second item should be a chord");
     };
-    let DurationExpression::Bars { count, .. } = chord.duration else {
+    let Some(DurationExpression::Bars { count, .. }) = chord.duration else {
         panic!("chord duration should be bars");
     };
     assert_eq!(count, 2);
@@ -1188,7 +1188,7 @@ fn parses_bar_durations_for_notes_chords_and_rests() {
     let SequenceItem::Rest(rest) = &items[2] else {
         panic!("third item should be a rest");
     };
-    let DurationExpression::Bars { count, .. } = rest.duration else {
+    let Some(DurationExpression::Bars { count, .. }) = rest.duration else {
         panic!("rest duration should be bars");
     };
     assert_eq!(count, 1);
@@ -1622,5 +1622,65 @@ fn rejects_an_empty_subdivision() {
             .map(|diagnostic| diagnostic.message.as_str())
             .collect::<Vec<_>>(),
         ["a subdivision must contain at least one item"]
+    );
+}
+
+#[test]
+fn parses_a_sequence_step_default_duration() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern line = sequence step 1/8 { note C4  note D4 for 1/16  rest } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { step, items, .. } = &pattern.body else {
+        panic!("pattern should contain a sequence");
+    };
+    assert!(matches!(
+        step,
+        Some(DurationExpression::Fraction {
+            numerator: 1,
+            denominator: 8,
+            ..
+        })
+    ));
+
+    let [
+        SequenceItem::Note(first),
+        SequenceItem::Note(second),
+        SequenceItem::Rest(rest),
+    ] = items.as_slice()
+    else {
+        panic!("body should be two notes and a rest");
+    };
+    assert!(first.duration.is_none());
+    assert!(matches!(
+        second.duration,
+        Some(DurationExpression::Fraction {
+            denominator: 16,
+            ..
+        })
+    ));
+    assert!(rest.duration.is_none());
+}
+
+#[test]
+fn rejects_a_missing_duration_without_a_sequence_step() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern line = sequence { note C4 } }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["expected `for` after note pitch"]
     );
 }

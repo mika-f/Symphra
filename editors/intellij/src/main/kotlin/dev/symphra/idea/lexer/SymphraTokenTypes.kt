@@ -46,7 +46,7 @@ object SymphraTokenTypes {
         "resolution", "hit", "track", "role", "volume", "layer", "use", "play",
         "trigger_with", "gate", "transpose", "gain", "repeat", "reverse", "pan",
         "alternate", "chance", "speed", "retrigger", "choose_sample", "at", "pattern",
-        "arrangement", "with", "sequence", "steps", "degree", "octave", "note", "chord",
+        "arrangement", "with", "sequence", "steps", "step", "degree", "octave", "note", "chord",
         "rest", "for", "velocity", "bar", "effect", "delay", "mix", "time", "feedback",
         "filter", "cutoff", "resonance", "reverb", "size", "automate", "lfo", "range",
         "rate", "cycles", "section", "bars", "parallel", "exact", "master", "limiter",

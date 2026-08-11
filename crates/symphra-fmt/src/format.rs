@@ -1213,8 +1213,11 @@ fn step_item_span(item: &StepItem) -> SourceSpan {
 
 fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
     match &decl.body {
-        PatternBody::Sequence { items, .. } => {
-            let header = format!("pattern {} = sequence", ctx.text(decl.name.span));
+        PatternBody::Sequence { step, items, .. } => {
+            let step = step.map_or_else(String::new, |step| {
+                format!(" step {}", format_duration(&step))
+            });
+            let header = format!("pattern {} = sequence{step}", ctx.text(decl.name.span));
             let items: Vec<&SequenceItem> = items.iter().collect();
             print_block(
                 ctx,
@@ -1259,7 +1262,7 @@ fn sequence_item_text(ctx: &Ctx<'_>, item: &SequenceItem) -> String {
     match item {
         SequenceItem::Note(note) => note_text(ctx, note),
         SequenceItem::Chord(chord) => chord_text(ctx, chord),
-        SequenceItem::Rest(rest) => format!("rest for {}", format_duration(&rest.duration)),
+        SequenceItem::Rest(rest) => format!("rest{}", format_for(rest.duration.as_ref())),
         SequenceItem::Repeat(group) => format_repeat(group, |item| sequence_item_text(ctx, item)),
     }
 }
@@ -1270,6 +1273,13 @@ fn velocity_text(velocity: &VelocityExpression) -> String {
         Some(end) => format!("velocity {}..{end}", velocity.value),
         None => format!("velocity {}", velocity.value),
     }
+}
+
+/// ` for <duration>`, or nothing when the item takes its sequence's `step`.
+fn format_for(duration: Option<&DurationExpression>) -> String {
+    duration.map_or_else(String::new, |duration| {
+        format!(" for {}", format_duration(duration))
+    })
 }
 
 fn format_duration(duration: &DurationExpression) -> String {
@@ -1285,9 +1295,9 @@ fn format_duration(duration: &DurationExpression) -> String {
 
 fn note_text(ctx: &Ctx<'_>, note: &NoteExpression) -> String {
     let mut line = format!(
-        "note {} for {}",
+        "note {}{}",
         ctx.text(note.pitch.span),
-        format_duration(&note.duration)
+        format_for(note.duration.as_ref())
     );
     if let Some(velocity) = &note.velocity {
         let _ = write!(line, " {}", velocity_text(velocity));
@@ -1302,7 +1312,7 @@ fn chord_text(ctx: &Ctx<'_>, chord: &ChordExpression) -> String {
         .map(|pitch| ctx.text(pitch.span))
         .collect::<Vec<_>>()
         .join(" ");
-    let mut line = format!("chord {pitches} for {}", format_duration(&chord.duration));
+    let mut line = format!("chord {pitches}{}", format_for(chord.duration.as_ref()));
     if let Some(velocity) = &chord.velocity {
         let _ = write!(line, " {}", velocity_text(velocity));
     }

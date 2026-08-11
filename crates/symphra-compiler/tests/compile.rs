@@ -3835,3 +3835,39 @@ song "S" {
         ["repetitions expand to more than 4096 items"]
     );
 }
+
+/// `sequence step D` is sugar: items that omit `for` take `D`, and the
+/// result must match the same sequence with every duration spelled out.
+#[test]
+fn compile_should_apply_a_sequence_step_to_items_without_a_duration() {
+    let sugared = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern line = sequence step 1/8 {
+    note C4  note D4 for 1/16  rest  chord C4 E4 velocity 90
+  }
+}"#,
+    );
+    let written = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern line = sequence {
+    note C4 for 1/8
+    note D4 for 1/16
+    rest for 1/8
+    chord C4 E4 for 1/8 velocity 90
+  }
+}"#,
+    );
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("sugared source should compile"),
+        compile(&written.file).expect("written-out source should compile"),
+    );
+}

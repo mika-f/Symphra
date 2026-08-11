@@ -48,6 +48,20 @@ rest for 1/8
 rest for 2 bar
 ```
 
+### Default duration
+
+A `sequence` can declare the duration its items take when they omit `for`:
+
+```symphra
+pattern arpeggio = sequence step 1/8 {
+  note G4
+  note B4 for 1/16   // an explicit duration still wins
+  rest               // takes the step too
+}
+```
+
+Without `step`, `for` stays required on every item.
+
 ## Steps patterns
 
 Fixed grid, one item per cell at the given step duration:

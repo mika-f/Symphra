@@ -8,10 +8,10 @@ use symphra_syntax::ast::{
     Identifier, InstrumentBody, InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration,
     NoteExpression, NumberLiteral, OctavesExpression, PanExpression, PatternBody,
     PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RepeatGroup, RhythmDeclaration, RhythmItem, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TrackEffect,
-    VelocityExpression, VolumeExpression,
+    QuotedString, RateLiteral, RepeatCount, RepeatGroup, RhythmDeclaration, RhythmItem,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SectionTrack,
+    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TrackEffect, VelocityExpression, VolumeExpression,
 };
 
 use crate::printer::{BlankSeparator, Printer};
@@ -377,19 +377,74 @@ fn print_section_parallel(ctx: &mut Ctx<'_>, decl: &SectionDeclaration) {
     } else {
         "parallel"
     };
-    let items: Vec<&Identifier> = decl.tracks.iter().collect();
+    let items: Vec<&SectionTrack> = decl.tracks.iter().collect();
     print_block(
         ctx,
         header,
         decl.span,
         &items,
-        |track: &Identifier| track.span,
+        |track: &SectionTrack| track.span,
         |_| 0,
         Reorder::No,
-        |ctx, track| {
-            ctx.printer
-                .line(format!("play track {}", ctx.text(track.span)));
-        },
+        print_section_track,
+    );
+}
+
+/// Prints `play track <name>`, with its override block when it has one.
+///
+/// A short override — only a volume and a preset reference, with no comments
+/// inside — stays on the reference's own line, the way `rhythm` bodies stay
+/// compact. It reads as a modifier on the reference rather than a block, and
+/// keeping it inline is what makes overriding shorter than declaring a second
+/// track in the first place.
+fn print_section_track(ctx: &mut Ctx<'_>, track: &SectionTrack) {
+    let header = format!("play track {}", ctx.text(track.name.span));
+    if track.volume.is_none() && track.effect.is_none() && track.automate.is_none() {
+        ctx.printer.line(header);
+        return;
+    }
+    let inline = track.automate.is_none()
+        && !matches!(track.effect, Some(TrackEffect::Inline(_)))
+        && !ctx.cursor.has_comment_before(track.span.end);
+    if inline {
+        let mut line = header;
+        line.push_str(" {");
+        if let Some(volume) = &track.volume {
+            let _ = write!(
+                line,
+                " volume {} {}",
+                volume.decibels,
+                ctx.text(volume.unit.span)
+            );
+        }
+        if let Some(TrackEffect::Preset(name)) = &track.effect {
+            let _ = write!(line, "  effect {}", ctx.text(name.span));
+        }
+        line.push_str(" }");
+        let _ = ctx.cursor.take_leading(track.span.end, track.span.start);
+        ctx.printer.line(line);
+        return;
+    }
+    let mut items = Vec::new();
+    if let Some(volume) = &track.volume {
+        items.push(TrackField::Volume(volume));
+    }
+    if let Some(effect) = &track.effect {
+        items.push(TrackField::Effect(effect));
+    }
+    if let Some(automate) = &track.automate {
+        items.push(TrackField::Automate(automate));
+    }
+    let items: Vec<&TrackField<'_>> = items.iter().collect();
+    print_block(
+        ctx,
+        &header,
+        track.span,
+        &items,
+        |field: &TrackField<'_>| track_field_span(field),
+        |_| 0,
+        Reorder::No,
+        print_track_field,
     );
 }
 
@@ -899,26 +954,30 @@ fn print_track(ctx: &mut Ctx<'_>, decl: &TrackDeclaration) {
         |field: &TrackField<'_>| track_field_span(field),
         |_| 0,
         Reorder::No,
-        |ctx, field| match field {
-            TrackField::Instrument(instrument) => ctx
-                .printer
-                .line(format!("instrument {}", ctx.text(instrument.span))),
-            TrackField::Volume(volume) => ctx.printer.line(format!(
-                "volume {} {}",
-                volume.decibels,
-                ctx.text(volume.unit.span)
-            )),
-            TrackField::Play(play) => print_play(ctx, play),
-            TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
-            TrackField::Effect(effect) => match effect {
-                TrackEffect::Inline(effect) => print_effect(ctx, "effect", effect),
-                TrackEffect::Preset(name) => {
-                    ctx.printer.line(format!("effect {}", ctx.text(name.span)));
-                }
-            },
-            TrackField::Automate(automate) => print_automate(ctx, automate),
-        },
+        print_track_field,
     );
+}
+
+fn print_track_field(ctx: &mut Ctx<'_>, field: &TrackField<'_>) {
+    match field {
+        TrackField::Instrument(instrument) => ctx
+            .printer
+            .line(format!("instrument {}", ctx.text(instrument.span))),
+        TrackField::Volume(volume) => ctx.printer.line(format!(
+            "volume {} {}",
+            volume.decibels,
+            ctx.text(volume.unit.span)
+        )),
+        TrackField::Play(play) => print_play(ctx, play),
+        TrackField::Layer(uses, span) => print_layer(ctx, uses, *span),
+        TrackField::Effect(effect) => match effect {
+            TrackEffect::Inline(effect) => print_effect(ctx, "effect", effect),
+            TrackEffect::Preset(name) => {
+                ctx.printer.line(format!("effect {}", ctx.text(name.span)));
+            }
+        },
+        TrackField::Automate(automate) => print_automate(ctx, automate),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1139,7 +1198,7 @@ fn print_play(ctx: &mut Ctx<'_>, play: &PlayStatement) {
         let _ = write!(line, " |> gain {}", gain.factor);
     }
     if let Some(repeat) = &play.repeat {
-        let _ = write!(line, " |> repeat {}", repeat.count);
+        let _ = write!(line, " |> repeat {}", repeat_text(repeat.count));
     }
     if play.reverse {
         line.push_str(" |> reverse");
@@ -1332,7 +1391,7 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
                 );
             }
             if let Some(repeat) = repeat {
-                let _ = write!(line, " |> repeat {}", repeat.count);
+                let _ = write!(line, " |> repeat {}", repeat_text(repeat.count));
             }
             if *reverse {
                 line.push_str(" |> reverse");
@@ -1389,6 +1448,14 @@ fn format_for(duration: Option<&DurationExpression>) -> String {
     duration.map_or_else(String::new, |duration| {
         format!(" for {}", format_duration(duration))
     })
+}
+
+/// `repeat 2`'s count, or the `fit` that stands in for one.
+fn repeat_text(count: RepeatCount) -> String {
+    match count {
+        RepeatCount::Fixed(count) => count.to_string(),
+        RepeatCount::Fit => "fit".to_owned(),
+    }
 }
 
 fn format_duration(duration: &DurationExpression) -> String {

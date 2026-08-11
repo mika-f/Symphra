@@ -224,10 +224,18 @@ pub struct GainExpression {
     pub span: SourceSpan,
 }
 
+/// `repeat N`, or `repeat fit` — repeat as many times as it takes to fill
+/// the section the track is played by.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RepeatExpression {
-    pub count: u32,
+    pub count: RepeatCount,
     pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepeatCount {
+    Fixed(u32),
+    Fit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,7 +417,22 @@ pub struct SectionDeclaration {
     pub name: Identifier,
     pub bars: u32,
     pub exact: bool,
-    pub tracks: Vec<Identifier>,
+    pub tracks: Vec<SectionTrack>,
+    pub span: SourceSpan,
+}
+
+/// One `play track <name>` in a section, optionally with a `{ ... }` block
+/// overriding what that track's declaration says for this section only.
+///
+/// The overrides are the parts of a track that describe its place in the
+/// mix rather than what it plays, which is why the same track can be
+/// louder in one section without a second declaration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionTrack {
+    pub name: Identifier,
+    pub volume: Option<VolumeExpression>,
+    pub effect: Option<TrackEffect>,
+    pub automate: Option<AutomateDeclaration>,
     pub span: SourceSpan,
 }
 

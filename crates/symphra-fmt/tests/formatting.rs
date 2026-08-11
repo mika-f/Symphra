@@ -1066,6 +1066,33 @@ fn formats_a_sequence_step_default_duration() {
 }
 
 #[test]
+fn expands_a_section_track_override_that_carries_an_effect_block() {
+    let input = r#"song "S" {
+  section outro bars 4 {
+    parallel { play track lead { volume -12 db effect reverb { mix 0.3 size 0.5 } } }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  section outro bars 4 {
+    parallel {
+      play track lead {
+        volume -12 db
+        effect reverb {
+          mix 0.3
+          size 0.5
+        }
+      }
+    }
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
 fn formats_a_derived_pattern() {
     let input = r#"song "S" {
   pattern pad = sequence step 1bar { chord G3 B3 D4 }
@@ -1140,6 +1167,34 @@ fn formats_effect_presets_and_references() {
     instrument warm
     play chords
     effect hall
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}
+
+#[test]
+fn formats_section_track_overrides_and_repeat_fit() {
+    let input = r#"song "S" {
+  track lead role lead { instrument tone play line |> repeat fit }
+  section outro bars 4 {
+    parallel exact { play track pad play track lead { volume -12 db effect hall } }
+  }
+}
+"#;
+
+    let expected = r#"song "S" {
+  track lead role lead {
+    instrument tone
+    play line |> repeat fit
+  }
+
+  section outro bars 4 {
+    parallel exact {
+      play track pad
+      play track lead { volume -12 db  effect hall }
+    }
   }
 }
 "#;

@@ -9,9 +9,10 @@ use symphra_syntax::ast::{
     EffectPresetDeclaration, EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody,
     MasterDeclaration, OctavesExpression, PanExpression, PatternBody, PatternDeclaration,
     PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral,
-    RepeatExpression, RhythmDeclaration, SampleChoiceAlternative, SampleSelectorExpression,
-    SectionDeclaration, SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression,
-    StepItem, TrackBody, TrackDeclaration, TrackEffect, TransposeExpression,
+    RepeatCount, RepeatExpression, RhythmDeclaration, SampleChoiceAlternative,
+    SampleSelectorExpression, SectionDeclaration, SectionTrack, SequenceItem, SongDeclaration,
+    SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration, TrackEffect,
+    TransposeExpression, VolumeExpression,
 };
 
 use crate::expand::Repetition;
@@ -19,7 +20,7 @@ use crate::hir::{
     Arrangement, Chance, ChanceTransform, Channels, Chord, ChordNote, DegreeChoice, DelayEffect,
     Duration, Effect, Envelope, FilterAutomation, FilterEffect, InstrumentKind, Key, LfoWaveform,
     MasterLimiter, Meter, Mode, NodeId, Note, Pan, Pattern, PatternOccurrence, PatternStep,
-    PitchClass, Program, Project, Rest, ReverbEffect, Rhythm, RhythmItem, SampleChoice,
+    PitchClass, Program, Project, Repeat, Rest, ReverbEffect, Rhythm, RhythmItem, SampleChoice,
     SampleRange, SampleSelector, SampleTrigger, Section, SectionOccurrence, Song, Speed,
     TrackDefinition, WeightedNote, WeightedSampleSequence,
 };
@@ -115,6 +116,87 @@ fn chord_intervals(quality: &str) -> Option<&'static [i32]> {
         "m9" => &[0, 3, 7, 10, 14],
         _ => return None,
     })
+}
+
+/// What a section needs from the song around it to resolve its track
+/// references and per-reference overrides.
+struct SectionContext<'a, 'b> {
+    track_defs: &'a [&'b TrackDeclaration],
+    effect_presets: &'a [&'b EffectPresetDeclaration],
+    patterns: &'a [Pattern],
+    meter: Option<&'a Meter>,
+}
+
+/// A zero-length duration, the identity for [`add_durations`].
+const ZERO_DURATION: Duration = Duration {
+    numerator: 0,
+    denominator: 1,
+};
+
+/// One pattern step's length, or `None` for a `choose` whose alternatives
+/// are sequences of different lengths — that step's duration is not known
+/// until the roll happens during scheduling.
+fn step_duration(step: &PatternStep) -> Option<Duration> {
+    match step {
+        PatternStep::Note(note) => Some(note.duration),
+        PatternStep::Chord(chord) => Some(chord.duration),
+        PatternStep::Rest(rest) => Some(rest.duration),
+        PatternStep::Sample(sample) => Some(sample.duration),
+        PatternStep::DegreeChoice(choice) => {
+            choice.alternatives.first().map(|first| first.note.duration)
+        }
+        PatternStep::Choice(choice) => {
+            let mut lengths = choice.alternatives.iter().map(|alternative| {
+                alternative
+                    .samples
+                    .iter()
+                    .try_fold(ZERO_DURATION, |total, sample| {
+                        add_durations(total, sample.duration)
+                    })
+            });
+            let first = lengths.next()??;
+            lengths.all(|length| length == Some(first)).then_some(first)
+        }
+    }
+}
+
+/// A pattern's total length, or `None` when any step's length depends on a
+/// weighted roll.
+fn pattern_duration(pattern: &Pattern) -> Option<Duration> {
+    pattern.steps.iter().try_fold(ZERO_DURATION, |total, step| {
+        add_durations(total, step_duration(step)?)
+    })
+}
+
+/// Adds two whole-note fractions, reduced so repeated addition stays inside
+/// `u32`.
+fn add_durations(left: Duration, right: Duration) -> Option<Duration> {
+    if left.denominator == 0 || right.denominator == 0 {
+        return None;
+    }
+    let denominator = u64::from(left.denominator) * u64::from(right.denominator);
+    let numerator = u64::from(left.numerator) * u64::from(right.denominator)
+        + u64::from(right.numerator) * u64::from(left.denominator);
+    let divisor = gcd(numerator, denominator).max(1);
+    Some(Duration {
+        numerator: u32::try_from(numerator / divisor).ok()?,
+        denominator: u32::try_from(denominator / divisor).ok()?,
+    })
+}
+
+fn gcd(left: u64, right: u64) -> u64 {
+    let (mut left, mut right) = (left, right);
+    while right != 0 {
+        let next = left % right;
+        left = right;
+        right = next;
+    }
+    left
+}
+
+/// Whether a section's `play track` reference carries any override at all.
+fn overrides_anything(reference: &SectionTrack) -> bool {
+    reference.volume.is_some() || reference.effect.is_some() || reference.automate.is_some()
 }
 
 /// The parts of `arpeggiate <source> { ... }`, bundled so lowering takes a
@@ -477,10 +559,22 @@ impl Compiler {
             settings.meter.as_ref(),
             &effect_presets,
         );
+        let mut tracks = tracks;
+        let mut variants = Vec::new();
+        let section_context = SectionContext {
+            track_defs: &track_defs,
+            effect_presets: &effect_presets,
+            patterns: &patterns,
+            meter: settings.meter.as_ref(),
+        };
+        // Sections resolve their overrides against the declared tracks only;
+        // the variants they synthesize are appended afterwards so a later
+        // section never matches an earlier one's copy by name.
         let sections = section_defs
             .iter()
-            .filter_map(|section| self.section(section, &tracks, settings.meter.as_ref()))
+            .filter_map(|section| self.section(section, &tracks, &mut variants, &section_context))
             .collect::<Vec<_>>();
+        tracks.extend(variants);
         self.check_arrangement_track_combination(
             arrangement.as_ref(),
             !tracks.is_empty(),
@@ -489,6 +583,22 @@ impl Compiler {
         let arrangement = arrangement.and_then(|(entries, span)| {
             self.arrangement(entries, span, &patterns, &instruments, &sections)
         });
+        // Every `repeat fit` reachable from an arrangement was resolved into
+        // a count while its section was lowered. One left over belongs to a
+        // track no section plays, so there is nothing for it to fill.
+        if !matches!(arrangement, Some(Arrangement::Sections(_))) {
+            for declaration in &track_defs {
+                if tracks
+                    .iter()
+                    .any(|track| track.name == declaration.name.text && track.repeat == Repeat::Fit)
+                {
+                    self.error(
+                        "`repeat fit` needs the track to be played by a section",
+                        declaration.span,
+                    );
+                }
+            }
+        }
         let master = master_decl.and_then(|declaration| self.master(declaration));
         match (settings.tempo_bpm, settings.meter, settings.key) {
             (Some(tempo_bpm), Some(meter), Some(key)) => Some(Song {
@@ -582,8 +692,10 @@ impl Compiler {
         &mut self,
         declaration: &SectionDeclaration,
         tracks: &[TrackDefinition],
-        meter: Option<&Meter>,
+        variants: &mut Vec<TrackDefinition>,
+        context: &SectionContext<'_, '_>,
     ) -> Option<Section> {
+        let meter = context.meter;
         let bars = meter.and_then(|meter| {
             let Some(numerator) = declaration.bars.checked_mul(meter.numerator) else {
                 self.error("section bars is out of range", declaration.span);
@@ -605,17 +717,34 @@ impl Compiler {
             );
             any_missing = true;
         }
-        for name in &declaration.tracks {
+        for reference in &declaration.tracks {
             let matches = tracks
                 .iter()
-                .filter(|track| track.name == name.text)
-                .map(|track| track.id)
+                .filter(|track| track.name == reference.name.text)
+                .cloned()
                 .collect::<Vec<_>>();
             if matches.is_empty() {
-                self.error("section references an unknown track", name.span);
+                self.error("section references an unknown track", reference.name.span);
                 any_missing = true;
+                continue;
+            }
+            let needs_variant = overrides_anything(reference)
+                || matches.iter().any(|track| track.repeat == Repeat::Fit);
+            // A failed override has already been reported; falling back to
+            // the declaration's own tracks keeps the section itself intact,
+            // so the arrangement referencing it is not reported as broken
+            // too.
+            let overridden = if needs_variant {
+                bars.and_then(|bars| self.overridden_tracks(reference, &matches, context, bars))
             } else {
-                track_ids.extend(matches);
+                None
+            };
+            match overridden {
+                Some(overridden) => {
+                    track_ids.extend(overridden.iter().map(|track| track.id));
+                    variants.extend(overridden);
+                }
+                None => track_ids.extend(matches.iter().map(|track| track.id)),
             }
         }
         if any_missing {
@@ -628,6 +757,150 @@ impl Compiler {
             exact: declaration.exact,
             tracks: track_ids,
         })
+    }
+
+    /// Builds the per-section variants of an overridden track: a copy of
+    /// each matching track definition (a layered track lowers to one per
+    /// layer) with this section's volume, effect, and automation in place of
+    /// the declaration's.
+    ///
+    /// A variant is a separate track with its own id, exactly as a
+    /// hand-written duplicate declaration would be. That matters for
+    /// `chance`, whose rolls are seeded from the track identity — the same
+    /// as today, where a track played in two sections already rolls
+    /// differently in each.
+    fn overridden_tracks(
+        &mut self,
+        reference: &SectionTrack,
+        matches: &[TrackDefinition],
+        context: &SectionContext<'_, '_>,
+        bars: Duration,
+    ) -> Option<Vec<TrackDefinition>> {
+        let declaration = context
+            .track_defs
+            .iter()
+            .find(|track| track.name.text == reference.name.text)?;
+        let scale = self.volume_scale(reference.volume.as_ref(), declaration)?;
+        let effect = if reference.effect.is_some() || reference.automate.is_some() {
+            let effect_declaration =
+                self.resolve_effect(reference.effect.as_ref(), context.effect_presets)?;
+            Some(
+                self.effect(
+                    effect_declaration,
+                    reference.automate.as_ref(),
+                    context.meter,
+                )
+                .ok()?,
+            )
+        } else {
+            None
+        };
+        let mut variants = Vec::with_capacity(matches.len());
+        for track in matches {
+            let repeat = match track.repeat {
+                Repeat::Fixed(count) => Repeat::Fixed(count),
+                Repeat::Fit => Repeat::Fixed(self.fit_count(track, bars, context, reference)?),
+            };
+            variants.push(TrackDefinition {
+                id: self.id(),
+                gain: track.gain * scale,
+                effect: effect.unwrap_or(track.effect),
+                repeat,
+                ..track.clone()
+            });
+        }
+        Some(variants)
+    }
+
+    /// Resolves `repeat fit` for one section: how many times the track's
+    /// pattern fits into the section's length.
+    fn fit_count(
+        &mut self,
+        track: &TrackDefinition,
+        bars: Duration,
+        context: &SectionContext<'_, '_>,
+        reference: &SectionTrack,
+    ) -> Option<u16> {
+        let pattern = context
+            .patterns
+            .iter()
+            .find(|pattern| pattern.id == track.pattern)?;
+        let Some(length) = pattern_duration(pattern) else {
+            self.error(
+                "`repeat fit` needs a pattern whose length is fixed",
+                reference.span,
+            );
+            return None;
+        };
+        let count = rhythm_cell_count(bars, length).and_then(|count| u16::try_from(count).ok());
+        match count {
+            Some(count) if count > 0 => Some(count),
+            _ => {
+                self.error(
+                    "`repeat fit` needs the pattern to divide the section's length evenly",
+                    reference.span,
+                );
+                None
+            }
+        }
+    }
+
+    /// How much a section's `volume` override changes a track's gain: the
+    /// new volume divided by the declaration's, so the play pipeline's own
+    /// `gain` stage stays multiplied in.
+    fn volume_scale(
+        &mut self,
+        volume: Option<&VolumeExpression>,
+        declaration: &TrackDeclaration,
+    ) -> Option<f32> {
+        let Some(volume) = volume else {
+            return Some(1.0);
+        };
+        let overridden = self.volume_amplitude(volume)?;
+        let declared = match declaration.volume.as_deref() {
+            Some(declared) => self.volume_amplitude(declared)?,
+            None => 1.0,
+        };
+        Some(overridden / declared)
+    }
+
+    fn volume_amplitude(&mut self, volume: &VolumeExpression) -> Option<f32> {
+        if volume.unit.text != "db" {
+            self.error("volume unit must be `db`", volume.unit.span);
+            return None;
+        }
+        if !volume.decibels.is_finite() {
+            self.error("volume must be finite", volume.span);
+            return None;
+        }
+        Some(10.0_f32.powf(volume.decibels / 20.0))
+    }
+
+    /// Resolves a track's `effect` to the block it names, following a
+    /// song-level preset reference.
+    #[expect(
+        clippy::option_option,
+        reason = "the outer None is a resolution failure, the inner one an absent effect"
+    )]
+    fn resolve_effect<'a>(
+        &mut self,
+        effect: Option<&'a TrackEffect>,
+        effect_presets: &[&'a EffectPresetDeclaration],
+    ) -> Option<Option<&'a EffectDeclaration>> {
+        match effect {
+            None => Some(None),
+            Some(TrackEffect::Inline(effect)) => Some(Some(effect)),
+            Some(TrackEffect::Preset(name)) => {
+                let Some(found) = effect_presets
+                    .iter()
+                    .find(|preset| preset.name.text == name.text)
+                else {
+                    self.error("track references an unknown effect preset", name.span);
+                    return None;
+                };
+                Some(Some(&found.effect))
+            }
+        }
     }
 
     fn build_tracks(
@@ -764,19 +1037,9 @@ impl Compiler {
     ) -> Vec<(TrackDefinition, Option<Pattern>)> {
         // Resolved once per declaration (not per layer) so an invalid effect
         // is reported once, not once per `use`.
-        let effect_declaration = match declaration.effect.as_ref() {
-            None => None,
-            Some(TrackEffect::Inline(effect)) => Some(effect),
-            Some(TrackEffect::Preset(name)) => {
-                let found = effect_presets
-                    .iter()
-                    .find(|preset| preset.name.text == name.text);
-                if found.is_none() {
-                    self.error("track references an unknown effect preset", name.span);
-                }
-                found.map(|preset| &preset.effect)
-            }
-        };
+        let effect_declaration = self
+            .resolve_effect(declaration.effect.as_ref(), effect_presets)
+            .flatten();
         let effect = self
             .effect(effect_declaration, declaration.automate.as_ref(), meter)
             .ok()
@@ -896,7 +1159,7 @@ impl Compiler {
                         gate_percent,
                         transpose_semitones,
                         gain,
-                        repeat_count,
+                        repeat: repeat_count,
                         reverse: play.reverse,
                         pan,
                         chance,
@@ -1146,16 +1409,19 @@ impl Compiler {
         Some(speed)
     }
 
-    fn repeat_count(&mut self, play: &PlayStatement) -> Option<u16> {
+    fn repeat_count(&mut self, play: &PlayStatement) -> Option<Repeat> {
         match play.repeat {
-            Some(repeat) => match u16::try_from(repeat.count) {
-                Ok(count) if count > 0 => Some(count),
-                _ => {
-                    self.error("repeat must be from 1 to 65535", repeat.span);
-                    None
-                }
+            Some(repeat) => match repeat.count {
+                RepeatCount::Fit => Some(Repeat::Fit),
+                RepeatCount::Fixed(count) => match u16::try_from(count) {
+                    Ok(count) if count > 0 => Some(Repeat::Fixed(count)),
+                    _ => {
+                        self.error("repeat must be from 1 to 65535", repeat.span);
+                        None
+                    }
+                },
             },
-            None => Some(1),
+            None => Some(Repeat::Fixed(1)),
         }
     }
 
@@ -2126,12 +2392,15 @@ impl Compiler {
             }
         }
         if let Some(repeat) = repeat {
-            if repeat.count == 0 {
+            let RepeatCount::Fixed(count) = repeat.count else {
+                unreachable!("the parser rejects `repeat fit` on a pattern derivation")
+            };
+            if count == 0 {
                 self.error("repeat count must be greater than zero", repeat.span);
                 return Vec::new();
             }
             let once = steps.clone();
-            for _ in 1..repeat.count {
+            for _ in 1..count {
                 let copy = once
                     .iter()
                     .map(|step| self.renumbered(step.clone()))

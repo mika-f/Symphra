@@ -4134,3 +4134,108 @@ song "S" {
         ["track references an unknown effect preset"]
     );
 }
+
+const OVERRIDE_SONG: &str = r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1bar { note C4 }
+  track lead role lead { instrument tone  volume -6 db  play line |> repeat fit }
+  section intro bars 2 { parallel exact { play track lead } }
+  section outro bars 4 {
+    parallel exact {
+      play track lead { volume -12 db  effect reverb { mix 0.3 size 0.5 } }
+    }
+  }
+  arrangement { play intro  play outro }
+}"#;
+
+/// A section's `play track x { ... }` override and `repeat fit` both resolve
+/// per section: the same declaration is louder, dryer, and repeated a
+/// different number of times depending on where it is played.
+#[test]
+fn compile_should_resolve_section_track_overrides_and_repeat_fit() {
+    let parsed = parse(SourceId(0), OVERRIDE_SONG);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("overrides should compile");
+    let song = &program.songs[0];
+    let sections = &song.sections;
+    let track_of = |section: &symphra_compiler::hir::Section| {
+        song.tracks
+            .iter()
+            .find(|track| track.id == section.tracks[0])
+            .expect("section track should exist")
+    };
+
+    let intro = track_of(&sections[0]);
+    let outro = track_of(&sections[1]);
+
+    // `fit` fills each section from the same one-bar pattern.
+    assert_eq!(intro.repeat, symphra_compiler::hir::Repeat::Fixed(2));
+    assert_eq!(outro.repeat, symphra_compiler::hir::Repeat::Fixed(4));
+
+    // -6 db in the declaration, -12 db in the outro override.
+    assert!((intro.gain - 0.501_187_2).abs() < 1e-6, "{}", intro.gain);
+    assert!((outro.gain - 0.251_188_6).abs() < 1e-6, "{}", outro.gain);
+
+    assert!(intro.effect.is_none());
+    assert!(matches!(
+        outro.effect,
+        Some(symphra_compiler::hir::Effect::Reverb(_))
+    ));
+
+    // Both sections are `exact`, so the schedule confirms each track really
+    // does fill its section.
+    schedule(&program).expect("overridden sections should schedule");
+}
+
+#[test]
+fn compile_should_reject_repeat_fit_outside_a_section() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence step 1bar { note C4 }
+  track lead role lead { instrument tone  play line |> repeat fit }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an unplayed `fit` should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["`repeat fit` needs the track to be played by a section"]
+    );
+}
+
+#[test]
+fn compile_should_reject_repeat_fit_that_does_not_divide_a_section() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  instrument tone = sine
+  pattern line = sequence { note C4 for 3 bar }
+  track lead role lead { instrument tone  play line |> repeat fit }
+  section intro bars 4 { parallel { play track lead } }
+  arrangement { play intro }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an uneven `fit` should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["`repeat fit` needs the pattern to divide the section's length evenly"]
+    );
+}

@@ -8,10 +8,11 @@ use crate::ast::{
     InstrumentBody, InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration,
     NoteExpression, NumberLiteral, OctavesExpression, PanExpression, PatternBody,
     PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration, ProjectStatement,
-    QuotedString, RateLiteral, RepeatExpression, RepeatGroup, RestExpression, RhythmDeclaration,
-    RhythmItem, SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration,
-    SequenceItem, SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
-    TrackDeclaration, TrackEffect, TransposeExpression, VelocityExpression, VolumeExpression,
+    QuotedString, RateLiteral, RepeatCount, RepeatExpression, RepeatGroup, RestExpression,
+    RhythmDeclaration, RhythmItem, SampleChoiceAlternative, SampleSelectorExpression,
+    SectionDeclaration, SectionTrack, SequenceItem, SongDeclaration, SongStatement, SourceFile,
+    SpeedExpression, StepItem, TrackBody, TrackDeclaration, TrackEffect, TransposeExpression,
+    VelocityExpression, VolumeExpression,
 };
 use crate::{Diagnostic, SourceId, SourceSpan, Token, TokenKind, lex};
 
@@ -518,7 +519,7 @@ impl Parser {
         }))
     }
 
-    fn parallel_block(&mut self) -> Option<(bool, Vec<Identifier>)> {
+    fn parallel_block(&mut self) -> Option<(bool, Vec<SectionTrack>)> {
         self.required(TokenKind::Parallel, "expected `parallel` in section")?;
         let exact = if self.at(TokenKind::Exact) {
             self.bump();
@@ -530,10 +531,10 @@ impl Parser {
         let mut tracks = Vec::new();
         while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
             if self.at(TokenKind::Play) {
-                self.bump();
+                let start = self.bump().span;
                 self.required(TokenKind::Track, "expected `track` after `play`")?;
-                let track = self.identifier("expected a track name after `play track`")?;
-                tracks.push(track);
+                let name = self.identifier("expected a track name after `play track`")?;
+                tracks.push(self.section_track(start, name)?);
             } else {
                 self.error("expected `play track <name>` in parallel block");
                 self.recover_to(PARALLEL_PLAY_START);
@@ -541,6 +542,46 @@ impl Parser {
         }
         self.required(TokenKind::RightBrace, "expected `}` to close parallel")?;
         Some((exact, tracks))
+    }
+
+    /// Parses the optional `{ ... }` after `play track <name>`: a volume,
+    /// an effect, and an automation block that replace the track's own for
+    /// this section.
+    fn section_track(&mut self, start: SourceSpan, name: Identifier) -> Option<SectionTrack> {
+        if !self.at(TokenKind::LeftBrace) {
+            return Some(SectionTrack {
+                span: start.cover(name.span),
+                name,
+                volume: None,
+                effect: None,
+                automate: None,
+            });
+        }
+        self.bump();
+        let mut volume = None;
+        let mut effect = None;
+        let mut automate = None;
+        while !self.at_any(&[TokenKind::RightBrace, TokenKind::Eof]) {
+            match self.current().kind {
+                TokenKind::Volume => volume = Some(self.volume()?),
+                TokenKind::Effect => effect = Some(self.track_effect()?),
+                TokenKind::Automate => automate = Some(self.automate()?),
+                _ => {
+                    self.error("expected `volume`, `effect`, or `automate` in a track override");
+                    return None;
+                }
+            }
+        }
+        let end = self
+            .required(TokenKind::RightBrace, "expected `}` to close the override")?
+            .span;
+        Some(SectionTrack {
+            span: start.cover(end),
+            name,
+            volume,
+            effect,
+            automate,
+        })
     }
 
     fn rhythm(&mut self) -> Option<RhythmDeclaration> {
@@ -1429,9 +1470,19 @@ impl Parser {
 
     fn repeat(&mut self) -> Option<RepeatExpression> {
         let start = self.bump().span;
-        let value = self.required(TokenKind::Integer, "expected a count after `repeat`")?;
+        if self.at(TokenKind::Fit) {
+            let end = self.bump().span;
+            return Some(RepeatExpression {
+                count: RepeatCount::Fit,
+                span: start.cover(end),
+            });
+        }
+        let value = self.required(
+            TokenKind::Integer,
+            "expected a count or `fit` after `repeat`",
+        )?;
         Some(RepeatExpression {
-            count: self.parse_u32(&value)?,
+            count: RepeatCount::Fixed(self.parse_u32(&value)?),
             span: start.cover(value.span),
         })
     }
@@ -1592,7 +1643,15 @@ impl Parser {
             self.bump();
             match self.current().kind {
                 TokenKind::Transpose => end = self.play_transpose(&mut transpose)?,
-                TokenKind::Repeat => end = self.play_repeat(&mut repeat)?,
+                TokenKind::Repeat => {
+                    end = self.play_repeat(&mut repeat)?;
+                    if matches!(repeat.map(|repeat| repeat.count), Some(RepeatCount::Fit)) {
+                        self.error(
+                            "`repeat fit` needs a section, so it belongs on a play, not a pattern",
+                        );
+                        return None;
+                    }
+                }
                 TokenKind::Reverse => end = self.reverse(&mut reverse),
                 _ => {
                     self.error("expected `transpose`, `repeat`, or `reverse` after `|>`");

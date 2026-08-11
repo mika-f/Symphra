@@ -44,7 +44,7 @@ object SymphraTokenTypes {
         "instrument", "sample", "choose", "weight", "sampled", "sampler", "drum_machine",
         "soundfont", "preset", "source", "root", "pack", "bank", "drum", "rhythm",
         "resolution", "hit", "track", "role", "volume", "layer", "use", "play",
-        "trigger_with", "gate", "transpose", "gain", "repeat", "reverse", "pan",
+        "trigger_with", "gate", "transpose", "gain", "repeat", "fit", "reverse", "pan",
         "alternate", "chance", "speed", "retrigger", "choose_sample", "at", "pattern",
         "arrangement", "with", "sequence", "steps", "step", "degree", "octave", "note", "chord",
         "rest", "for", "velocity", "bar", "effect", "delay", "mix", "time", "feedback",

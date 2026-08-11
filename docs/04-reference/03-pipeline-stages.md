@@ -13,7 +13,7 @@ new graph topology.
 | Gate | `gate 85%` | Timed events | Shorten length to % of slot |
 | Transpose | `transpose 12 st` | Pitched events | Shift by semitones |
 | Gain | `gain 0.2` | Events | Scale amplitude |
-| Repeat | `repeat 2` | Whole pattern result | Concatenate N copies |
+| Repeat | `repeat 2`, `repeat fit` | Whole pattern result | Concatenate N copies; `fit` fills the section |
 | Reverse | `reverse` | Whole pattern result | Reverse within local window |
 | Pan | `pan center` (and related) | Track events | Static stereo position |
 | Alternate pan | `alternate { pan … }` | Track events | Alternate pan values |

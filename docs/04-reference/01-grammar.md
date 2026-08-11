@@ -190,8 +190,13 @@ AutomateCutoff =
 
 Section =
   "section" Ident "bars" Integer "{"
-    "parallel" ["exact"] "{" { "play" "track" Ident } "}"
+    "parallel" ["exact"] "{" { SectionTrack } "}"
   "}"
+
+SectionTrack =
+  "play" "track" Ident ["{" { TrackOverride } "}"]
+
+TrackOverride = "volume" Level | Effect | AutomateCutoff
 
 Arrangement =
   "arrangement" "{" { ArrEntry } "}"
@@ -216,5 +221,5 @@ Master =
 `arpeggiate` `style` `octaves`
 `delay` `mix` `time` `feedback` `filter` `cutoff` `resonance` `reverb` `size`
 `automate` `lfo` `range` `rate` `cycles` `section` `bars` `parallel` `exact`
-`master` `limiter` `ceiling` `synth` `supersaw` `envelope` `attack` `decay`
+`master` `limiter` `ceiling` `fit` `synth` `supersaw` `envelope` `attack` `decay`
 `sustain` `release` `voices` `detune` `spread` `choose` `weight`

@@ -72,7 +72,7 @@ pub struct TrackDefinition {
     pub gate_percent: Option<u8>,
     pub transpose_semitones: Option<i32>,
     pub gain: f32,
-    pub repeat_count: u16,
+    pub repeat: Repeat,
     pub reverse: bool,
     pub pan: Pan,
     pub chance: Option<Chance>,
@@ -80,6 +80,15 @@ pub struct TrackDefinition {
     pub choose_sample: Option<SampleRange>,
     pub at: Option<Duration>,
     pub effect: Option<Effect>,
+}
+
+/// How many times a track's material repeats: a written count, or `fit` —
+/// as many times as it takes to fill the section playing it, resolved when
+/// that section is lowered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeat {
+    Fixed(u16),
+    Fit,
 }
 
 /// A track's single post-render effect: a feedback delay, a resonant

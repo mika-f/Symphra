@@ -283,18 +283,9 @@ song "Aoharu Signal" {
     instrument music_box
     volume -8 db
 
-    play arpeggio
+    play arpeggio |> repeat fit
 
     effect arp_hall
-  }
-
-  track arp_drop role harmony {
-    instrument music_box
-    volume -14 db
-
-    play arpeggio |> repeat 2
-
-    effect pad_hall
   }
 
   track pad role harmony {
@@ -306,20 +297,11 @@ song "Aoharu Signal" {
     effect pad_hall
   }
 
-  track pad_build role harmony {
-    instrument warm_pad
-    volume -7 db
-
-    play pad_chords
-
-    effect pad_hall
-  }
-
   track fb_chords role harmony {
     instrument fb_saw
     volume -6 db
 
-    play drop_chords |> trigger_with chord_stabs |> gate 90% |> repeat 2
+    play drop_chords |> trigger_with chord_stabs |> gate 90% |> repeat fit
 
     effect filter {
       cutoff 1400hz
@@ -338,16 +320,7 @@ song "Aoharu Signal" {
     instrument voice_oohs
     volume -9 db
 
-    play drop_chords |> trigger_with vox_hits |> gate 50% |> repeat 2
-
-    effect vox_hall
-  }
-
-  track vox_outro role lead {
-    instrument voice_oohs
-    volume -14 db
-
-    play drop_chords |> trigger_with vox_hits |> gate 50%
+    play drop_chords |> trigger_with vox_hits |> gate 50% |> repeat fit
 
     effect vox_hall
   }
@@ -356,7 +329,7 @@ song "Aoharu Signal" {
     instrument bass_saw
     volume -3 db
 
-    play bass_roots |> trigger_with bass_pulse |> gate 85% |> repeat 2
+    play bass_roots |> trigger_with bass_pulse |> gate 85% |> repeat fit
 
     effect filter {
       cutoff 500hz
@@ -369,11 +342,11 @@ song "Aoharu Signal" {
 
     layer {
       use lead_tone {
-        play lead_line |> gate 85% |> repeat 2
+        play lead_line |> gate 85% |> repeat fit
       }
 
       use lead_tone {
-        play lead_line |> gate 85% |> transpose 12 st |> gain 0.2 |> repeat 2
+        play lead_line |> gate 85% |> transpose 12 st |> gain 0.2 |> repeat fit
       }
     }
 
@@ -392,40 +365,23 @@ song "Aoharu Signal" {
     instrument tr909
     volume -12 db
 
-    play light_hh |> repeat 4
+    play light_hh |> repeat fit
   }
 
   track light_rim role drums {
     instrument tr909
     volume -10 db
 
-    play light_rim |> repeat 4
+    play light_rim |> repeat fit
 
     effect tight
-  }
-
-  // Outro light drums a bit louder (Strudel lightDrums.gain(.6))
-  track light_hh_outro role drums {
-    instrument tr909
-    volume -8 db
-
-    play light_hh |> repeat 4
-  }
-
-  track light_rim_outro role drums {
-    instrument tr909
-    volume -7 db
-
-    play light_rim |> repeat 4
-
-    effect plate
   }
 
   track build_kick role drums {
     instrument tr909
     volume -2 db
 
-    play four_on_floor |> repeat 4
+    play four_on_floor |> repeat fit
   }
 
   track snare_roll role drums {
@@ -461,7 +417,7 @@ song "Aoharu Signal" {
     instrument tr909
     volume -4 db
 
-    play drop_clap |> repeat 8
+    play drop_clap |> repeat fit
 
     effect room
   }
@@ -470,14 +426,14 @@ song "Aoharu Signal" {
     instrument tr909
     volume -10 db
 
-    play drop_hh |> repeat 8
+    play drop_hh |> repeat fit
   }
 
   track drop_oh role drums {
     instrument tr909
     volume -9 db
 
-    play drop_oh |> repeat 8
+    play drop_oh |> repeat fit
 
     effect short_plate
   }
@@ -500,7 +456,7 @@ song "Aoharu Signal" {
     parallel exact {
 
       play track arp
-      play track pad_build
+      play track pad { volume -7 db }
       play track build_kick
       play track snare_roll
       play track riser
@@ -514,7 +470,7 @@ song "Aoharu Signal" {
       play track vox
       play track bass
       play track lead
-      play track arp_drop
+      play track arp { volume -14 db  effect pad_hall }
       play track drop_clap
       play track drop_hh
       play track drop_oh
@@ -526,9 +482,9 @@ song "Aoharu Signal" {
 
       play track arp
       play track pad
-      play track vox_outro
-      play track light_hh_outro
-      play track light_rim_outro
+      play track vox { volume -14 db }
+      play track light_hh { volume -8 db }
+      play track light_rim { volume -7 db  effect plate }
     }
   }
 

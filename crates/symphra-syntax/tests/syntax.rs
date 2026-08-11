@@ -1,6 +1,7 @@
 use symphra_syntax::ast::{
     ArrangementEntry, ChordPitches, Declaration, DurationExpression, EffectKind, InstrumentBody,
-    PatternBody, ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem, TrackEffect,
+    PatternBody, ProjectStatement, RepeatCount, RhythmItem, SequenceItem, SongStatement, StepItem,
+    TrackBody, TrackEffect,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -745,7 +746,7 @@ fn parses_tracks_with_rhythm_triggers() {
             Some(95),
             Some((12, "st")),
             Some(0.30),
-            Some(4),
+            Some(RepeatCount::Fixed(4)),
             true,
             Some(symphra_syntax::ast::PanExpression::Alternate {
                 left_percent: 30,
@@ -1297,7 +1298,7 @@ fn parses_section_with_exact_parallel_block() {
         section
             .tracks
             .iter()
-            .map(|track| track.text.as_str())
+            .map(|track| track.name.text.as_str())
             .collect::<Vec<_>>(),
         vec!["chords", "bass"]
     );
@@ -1720,7 +1721,10 @@ fn parses_a_derived_pattern() {
         transpose.as_ref().map(|transpose| transpose.semitones),
         Some(12)
     );
-    assert_eq!(repeat.as_ref().map(|repeat| repeat.count), Some(2));
+    assert_eq!(
+        repeat.as_ref().map(|repeat| repeat.count),
+        Some(RepeatCount::Fixed(2))
+    );
     assert!(reverse);
 }
 
@@ -1858,4 +1862,65 @@ fn parses_effect_presets_and_references() {
         panic!("the track should reference a preset");
     };
     assert_eq!(name.text, "hall");
+}
+
+#[test]
+fn parses_section_track_overrides_and_repeat_fit() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" {
+  track lead role lead { instrument tone  play line |> repeat fit }
+  section outro bars 4 {
+    parallel exact {
+      play track lead { volume -12 db  effect hall }
+      play track pad
+    }
+  }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Track(track) = &song.statements[0] else {
+        panic!("first statement should be a track");
+    };
+    let TrackBody::Single { play, .. } = &track.body else {
+        panic!("track should have a single body");
+    };
+    assert_eq!(
+        play.repeat.map(|repeat| repeat.count),
+        Some(RepeatCount::Fit)
+    );
+
+    let SongStatement::Section(section) = &song.statements[1] else {
+        panic!("second statement should be a section");
+    };
+    let [overridden, plain] = section.tracks.as_slice() else {
+        panic!("section should reference two tracks");
+    };
+    assert_eq!(overridden.name.text, "lead");
+    assert_eq!(
+        overridden.volume.as_ref().map(|volume| volume.decibels),
+        Some(-12.0)
+    );
+    assert!(matches!(overridden.effect, Some(TrackEffect::Preset(_))));
+    assert_eq!(plain.name.text, "pad");
+    assert!(plain.volume.is_none() && plain.effect.is_none());
+}
+
+#[test]
+fn rejects_repeat_fit_on_a_pattern_derivation() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern drop = pad |> repeat fit }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["`repeat fit` needs a section, so it belongs on a play, not a pattern"]
+    );
 }

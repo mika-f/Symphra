@@ -1483,7 +1483,7 @@ fn visit_name_references(song: &SongDeclaration, mut visit: impl FnMut(NamedKind
             }
             SongStatement::Section(section) => {
                 for track in &section.tracks {
-                    visit(NamedKind::Track, track);
+                    visit(NamedKind::Track, &track.name);
                 }
             }
             SongStatement::Track(track) => match &track.body {

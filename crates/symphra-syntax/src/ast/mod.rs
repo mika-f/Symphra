@@ -15,7 +15,7 @@ pub use statement::{
     ChanceTransformExpression, ChooseSampleExpression, EffectDeclaration, EffectFactor, EffectKind,
     EffectPresetDeclaration, EnvelopeDeclaration, GainExpression, GateExpression, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, PanExpression, PlaySource,
-    PlayStatement, ProjectStatement, RepeatExpression, RhythmDeclaration, RhythmItem,
-    SectionDeclaration, SongStatement, SpeedExpression, TrackBody, TrackDeclaration, TrackEffect,
-    TransposeExpression, VolumeExpression,
+    PlayStatement, ProjectStatement, RepeatCount, RepeatExpression, RhythmDeclaration, RhythmItem,
+    SectionDeclaration, SectionTrack, SongStatement, SpeedExpression, TrackBody, TrackDeclaration,
+    TrackEffect, TransposeExpression, VolumeExpression,
 };

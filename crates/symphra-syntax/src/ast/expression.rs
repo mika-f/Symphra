@@ -129,9 +129,49 @@ pub struct NoteExpression {
     pub span: SourceSpan,
 }
 
+/// How a chord names its notes: every pitch written out, or a root and a
+/// quality (`G3:maj7`) that the compiler expands into the same pitches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChordPitches {
+    Explicit(Vec<Identifier>),
+    Symbol {
+        root: Identifier,
+        /// `maj7`, `m7b5`, `7`, … — validated against a table at compile
+        /// time rather than keyworded, the way waveform names already are.
+        quality: Identifier,
+    },
+}
+
+impl ChordPitches {
+    /// The written pitches, for tools that map source spans onto lowered
+    /// notes. A symbol contributes only its root, which is the note it
+    /// names directly.
+    #[must_use]
+    pub fn spelled(&self) -> &[Identifier] {
+        match self {
+            Self::Explicit(pitches) => pitches,
+            Self::Symbol { root, .. } => std::slice::from_ref(root),
+        }
+    }
+
+    #[must_use]
+    pub fn span(&self) -> Option<SourceSpan> {
+        match self {
+            Self::Explicit(pitches) => Some(
+                pitches.first()?.span.cover(
+                    pitches
+                        .last()
+                        .map_or(pitches.first()?.span, |last| last.span),
+                ),
+            ),
+            Self::Symbol { root, quality } => Some(root.span.cover(quality.span)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChordExpression {
-    pub pitches: Vec<Identifier>,
+    pub pitches: ChordPitches,
     /// `None` when the item omits `for` and takes the sequence's `step`.
     pub duration: Option<DurationExpression>,
     pub velocity: Option<VelocityExpression>,

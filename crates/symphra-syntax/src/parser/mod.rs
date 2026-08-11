@@ -2,7 +2,7 @@ mod literal;
 
 use crate::ast::{
     ArrangementEntry, ArrangementOccurrence, AtExpression, AutomateDeclaration, ChanceExpression,
-    ChanceTransformExpression, ChooseSampleExpression, ChordExpression, Declaration,
+    ChanceTransformExpression, ChooseSampleExpression, ChordExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectFactor, EffectKind,
     EnvelopeDeclaration, GainExpression, GateExpression, Identifier, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
@@ -1832,19 +1832,38 @@ impl Parser {
         self.duration_expr(context).map(Some)
     }
 
+    /// Parses `chord C4 E4 G4 ...` or the symbol form `chord C4:maj7`,
+    /// which names the same notes by root and quality.
     fn chord(&mut self) -> Option<ChordExpression> {
         let start = self.bump().span;
-        let mut pitches = vec![self.identifier("expected first chord pitch")?];
-        pitches.push(self.identifier("expected second chord pitch")?);
-        while self.at(TokenKind::Identifier) {
-            pitches.push(self.identifier("expected chord pitch")?);
-        }
+        let root = self.identifier("expected first chord pitch")?;
+        let pitches = if self.at(TokenKind::Colon) {
+            self.bump();
+            let quality = self.required_any(
+                &[TokenKind::Identifier, TokenKind::Integer],
+                "expected a chord quality after `:`",
+            )?;
+            ChordPitches::Symbol {
+                root,
+                quality: Identifier {
+                    text: quality.text,
+                    span: quality.span,
+                },
+            }
+        } else {
+            let mut pitches = vec![root];
+            pitches.push(self.identifier("expected second chord pitch")?);
+            while self.at(TokenKind::Identifier) {
+                pitches.push(self.identifier("expected chord pitch")?);
+            }
+            ChordPitches::Explicit(pitches)
+        };
         let duration = self.item_duration("chord", "expected `for` after chord pitches")?;
         let velocity = self.velocity();
         let end = match (duration, velocity) {
             (_, Some(velocity)) => velocity.span,
             (Some(duration), None) => duration.span(),
-            (None, None) => pitches.last().map_or(start, |pitch| pitch.span),
+            (None, None) => pitches.span().unwrap_or(start),
         };
         Some(ChordExpression {
             pitches,

@@ -99,7 +99,7 @@ SequenceItem = SequenceAtom [Repeat]
 
 SequenceAtom =
     "note" Pitch [For] [Velocity]
-  | "chord" Pitch { Pitch } [For] [Velocity]
+  | "chord" ( Pitch { Pitch } | Pitch ":" Quality ) [For] [Velocity]
   | "rest" [For]
   | Group
 

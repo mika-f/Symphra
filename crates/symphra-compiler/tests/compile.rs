@@ -3940,3 +3940,61 @@ song "S" {
         ["pattern derivation references a pattern that is not declared above it"]
     );
 }
+
+/// A chord symbol is sugar: `G3:maj7` must lower to exactly the pitches
+/// `chord G3 B3 D4 F#4` does.
+#[test]
+fn compile_should_expand_chord_symbols_into_their_pitches() {
+    let sugared = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key D major
+  pattern pad = sequence step 1bar {
+    chord G3:maj7  chord A3:7  chord F#3:m7  chord B3:m7
+  }
+}"#,
+    );
+    let written = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key D major
+  pattern pad = sequence step 1bar {
+    chord G3 B3 D4 F#4
+    chord A3 C#4 E4 G4
+    chord F#3 A3 C#4 E4
+    chord B3 D4 F#4 A4
+  }
+}"#,
+    );
+    assert!(sugared.diagnostics.is_empty(), "{:?}", sugared.diagnostics);
+    assert!(written.diagnostics.is_empty(), "{:?}", written.diagnostics);
+
+    assert_eq!(
+        compile(&sugared.file).expect("chord symbols should compile"),
+        compile(&written.file).expect("written-out source should compile"),
+    );
+}
+
+#[test]
+fn compile_should_reject_an_unknown_chord_quality() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern pad = sequence step 1bar { chord C4:lydian }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("an unknown quality should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["unknown chord quality"]
+    );
+}

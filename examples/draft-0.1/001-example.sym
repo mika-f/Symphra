@@ -117,11 +117,12 @@ song "Aoharu Signal" {
   // Harmonic material (4-bar phrase)
   // ─────────────────────────────────────────────
 
+  // D major 4536: Gmaj7 → A7 → F#m7 → Bm7
   pattern pad_chords = sequence step 1bar {
-    chord G3 B3 D4 F#4
-    chord A3 C#4 E4 G4
-    chord F#3 A3 C#4 E4
-    chord B3 D4 F#4 A4
+    chord G3:maj7
+    chord A3:7
+    chord F#3:m7
+    chord B3:m7
   }
 
   // The drop voicing is the pad an octave up.

@@ -41,6 +41,32 @@ chord C4 E4 G4 for 1/2 velocity 90
 - Duration: fraction `N/M` or meter-aware `N bar`
 - Optional `velocity` 0–127 (default when omitted)
 
+### Chord symbols
+
+A chord may name its notes by root and quality instead of listing them. The
+root is an ordinary pitch, so the voicing's octave stays explicit — the
+notes are built upward from the written root:
+
+```symphra
+chord G3:maj7      // G3 B3 D4 F#4
+chord A3:7         // A3 C#4 E4 G4
+chord C4:m7b5 for 1/2 velocity 90
+```
+
+| Quality | Semitones | Quality | Semitones |
+| --- | --- | --- | --- |
+| `maj` | 0 4 7 | `7` | 0 4 7 10 |
+| `m` / `min` | 0 3 7 | `maj7` | 0 4 7 11 |
+| `dim` | 0 3 6 | `m7` | 0 3 7 10 |
+| `aug` | 0 4 8 | `mmaj7` | 0 3 7 11 |
+| `sus2` | 0 2 7 | `m7b5` | 0 3 6 10 |
+| `sus4` | 0 5 7 | `dim7` | 0 3 6 9 |
+| `6` | 0 4 7 9 | `9` | 0 4 7 10 14 |
+| `m6` | 0 3 7 9 | `maj9` | 0 4 7 11 14 |
+| `add9` | 0 4 7 14 | `m9` | 0 3 7 10 14 |
+
+Anything outside the table is rejected rather than guessed at.
+
 ### Rests
 
 ```symphra

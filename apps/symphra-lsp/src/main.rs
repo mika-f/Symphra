@@ -1850,7 +1850,9 @@ fn pitch_midi_spans(source: &SourceText) -> Vec<(SourceSpan, u8)> {
                         SequenceItem::Chord(source_chord),
                         symphra_compiler::hir::PatternStep::Chord(chord),
                     ) => {
-                        for (source_pitch, note) in source_chord.pitches.iter().zip(&chord.notes) {
+                        for (source_pitch, note) in
+                            source_chord.pitches.spelled().iter().zip(&chord.notes)
+                        {
                             pitches.push((source_pitch.span, note.midi_pitch));
                         }
                     }

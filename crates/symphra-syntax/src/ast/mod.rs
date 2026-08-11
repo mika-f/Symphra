@@ -5,8 +5,8 @@ mod statement;
 
 pub use declaration::{Declaration, ProjectDeclaration, SongDeclaration, SourceFile};
 pub use expression::{
-    ChordExpression, DegreeChoiceAlternative, DurationExpression, NoteExpression, PatternBody,
-    PatternDeclaration, RepeatGroup, RestExpression, SampleChoiceAlternative,
+    ChordExpression, ChordPitches, DegreeChoiceAlternative, DurationExpression, NoteExpression,
+    PatternBody, PatternDeclaration, RepeatGroup, RestExpression, SampleChoiceAlternative,
     SampleSelectorExpression, SequenceItem, StepItem, VelocityExpression,
 };
 pub use literal::{FrequencyLiteral, Identifier, NumberLiteral, QuotedString, RateLiteral};

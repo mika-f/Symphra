@@ -3,8 +3,8 @@ use std::fmt::Write as _;
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
     ArrangementEntry, ArrangementOccurrence, AutomateDeclaration, ChanceTransformExpression,
-    ChordExpression, Declaration, DegreeChoiceAlternative, DurationExpression, EffectDeclaration,
-    EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
+    ChordExpression, ChordPitches, Declaration, DegreeChoiceAlternative, DurationExpression,
+    EffectDeclaration, EffectFactor, EffectKind, EnvelopeDeclaration, Identifier, InstrumentBody,
     InstrumentDeclaration, LayerUse, LfoDeclaration, MasterDeclaration, NoteExpression,
     NumberLiteral, PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement,
     ProjectDeclaration, ProjectStatement, QuotedString, RateLiteral, RepeatGroup,
@@ -1334,12 +1334,16 @@ fn note_text(ctx: &Ctx<'_>, note: &NoteExpression) -> String {
 }
 
 fn chord_text(ctx: &Ctx<'_>, chord: &ChordExpression) -> String {
-    let pitches = chord
-        .pitches
-        .iter()
-        .map(|pitch| ctx.text(pitch.span))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let pitches = match &chord.pitches {
+        ChordPitches::Explicit(pitches) => pitches
+            .iter()
+            .map(|pitch| ctx.text(pitch.span))
+            .collect::<Vec<_>>()
+            .join(" "),
+        ChordPitches::Symbol { root, quality } => {
+            format!("{}:{}", ctx.text(root.span), ctx.text(quality.span))
+        }
+    };
     let mut line = format!("chord {pitches}{}", format_for(chord.duration.as_ref()));
     if let Some(velocity) = &chord.velocity {
         let _ = write!(line, " {}", velocity_text(velocity));

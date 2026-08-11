@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use symphra_syntax::SourceSpan;
 use symphra_syntax::ast::{
-    ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, Declaration,
+    ArrangementEntry, AutomateDeclaration, ChanceTransformExpression, ChordPitches, Declaration,
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind,
     EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody, MasterDeclaration,
     PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
@@ -85,6 +85,36 @@ fn transpose_step(step: &mut PatternStep, semitones: i32) -> bool {
         *pitch = transposed;
     }
     true
+}
+
+/// Semitone offsets above the root for each chord quality a `root:quality`
+/// symbol may name.
+///
+/// Deliberately a closed table rather than a parsed formula: the point of
+/// the symbol form is that its expansion is predictable, and a quality
+/// nobody has agreed the spelling of is better rejected than guessed.
+fn chord_intervals(quality: &str) -> Option<&'static [i32]> {
+    Some(match quality {
+        "maj" => &[0, 4, 7],
+        "m" | "min" => &[0, 3, 7],
+        "dim" => &[0, 3, 6],
+        "aug" => &[0, 4, 8],
+        "sus2" => &[0, 2, 7],
+        "sus4" => &[0, 5, 7],
+        "6" => &[0, 4, 7, 9],
+        "m6" => &[0, 3, 7, 9],
+        "add9" => &[0, 4, 7, 14],
+        "7" => &[0, 4, 7, 10],
+        "maj7" => &[0, 4, 7, 11],
+        "m7" => &[0, 3, 7, 10],
+        "mmaj7" => &[0, 3, 7, 11],
+        "m7b5" => &[0, 3, 6, 10],
+        "dim7" => &[0, 3, 6, 9],
+        "9" => &[0, 4, 7, 10, 14],
+        "maj9" => &[0, 4, 7, 11, 14],
+        "m9" => &[0, 3, 7, 10, 14],
+        _ => return None,
+    })
 }
 
 fn transposed_pitch(midi_pitch: u8, semitones: i32) -> Option<u8> {
@@ -1783,11 +1813,7 @@ impl Compiler {
                     }))
                 }
                 SequenceItem::Chord(chord) => {
-                    let midi_pitches = chord
-                        .pitches
-                        .iter()
-                        .map(|pitch| self.pitch(&pitch.text, pitch.span))
-                        .collect::<Option<Vec<_>>>();
+                    let midi_pitches = self.chord_pitches(&chord.pitches);
                     let duration = self.sequence_duration(
                         chord.duration.as_ref(),
                         step,
@@ -2258,6 +2284,37 @@ impl Compiler {
             }
         };
         self.duration(numerator, denominator, span, item)
+    }
+
+    /// Resolves a chord's notes: the pitches as written, or the pitches a
+    /// `root:quality` symbol names.
+    fn chord_pitches(&mut self, pitches: &ChordPitches) -> Option<Vec<u8>> {
+        match pitches {
+            ChordPitches::Explicit(pitches) => pitches
+                .iter()
+                .map(|pitch| self.pitch(&pitch.text, pitch.span))
+                .collect(),
+            ChordPitches::Symbol { root, quality } => {
+                let root_pitch = self.pitch(&root.text, root.span)?;
+                let Some(intervals) = chord_intervals(&quality.text) else {
+                    self.error("unknown chord quality", quality.span);
+                    return None;
+                };
+                intervals
+                    .iter()
+                    .map(|interval| {
+                        let pitch = transposed_pitch(root_pitch, *interval);
+                        if pitch.is_none() {
+                            self.error(
+                                "chord reaches past the MIDI range 0 to 127",
+                                root.span.cover(quality.span),
+                            );
+                        }
+                        pitch
+                    })
+                    .collect()
+            }
+        }
     }
 
     /// Resolves a sequence item's duration: its own `for <duration>`, or

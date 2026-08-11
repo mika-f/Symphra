@@ -1,6 +1,6 @@
 use symphra_syntax::ast::{
-    ArrangementEntry, Declaration, DurationExpression, EffectKind, InstrumentBody, PatternBody,
-    ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem,
+    ArrangementEntry, ChordPitches, Declaration, DurationExpression, EffectKind, InstrumentBody,
+    PatternBody, ProjectStatement, RhythmItem, SequenceItem, SongStatement, StepItem,
 };
 use symphra_syntax::{DiagnosticKind, SourceId, TokenKind, lex, parse};
 
@@ -1135,6 +1135,7 @@ fn parses_chord_pitches_and_duration() {
         (
             chord
                 .pitches
+                .spelled()
                 .iter()
                 .map(|pitch| pitch.text.as_str())
                 .collect::<Vec<_>>(),
@@ -1731,4 +1732,42 @@ fn rejects_a_performance_stage_in_a_pattern_derivation() {
             .collect::<Vec<_>>(),
         ["expected `transpose`, `repeat`, or `reverse` after `|>`"]
     );
+}
+
+#[test]
+fn parses_chord_symbols() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern pad = sequence step 1bar { chord G3:maj7  chord A3:7  chord F#3 A3 C#4 } }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Sequence { items, .. } = &pattern.body else {
+        panic!("pattern should contain a sequence");
+    };
+    let [
+        SequenceItem::Chord(first),
+        SequenceItem::Chord(second),
+        SequenceItem::Chord(third),
+    ] = items.as_slice()
+    else {
+        panic!("body should be three chords");
+    };
+
+    let ChordPitches::Symbol { root, quality } = &first.pitches else {
+        panic!("first chord should be a symbol");
+    };
+    assert_eq!((root.text.as_str(), quality.text.as_str()), ("G3", "maj7"));
+
+    let ChordPitches::Symbol { quality, .. } = &second.pitches else {
+        panic!("second chord should be a symbol");
+    };
+    assert_eq!(quality.text, "7", "an integer quality is still a quality");
+
+    assert!(matches!(third.pitches, ChordPitches::Explicit(_)));
 }

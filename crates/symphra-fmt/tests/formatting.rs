@@ -1084,3 +1084,21 @@ fn formats_a_derived_pattern() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_chord_symbols() {
+    let input = r#"song "S" {
+  pattern pad = sequence step 1bar { chord G3:maj7 chord A3:7 velocity 90 }
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern pad = sequence step 1bar {
+    chord G3:maj7
+    chord A3:7 velocity 90
+  }
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

@@ -100,17 +100,17 @@ song "Aoharu Signal" {
   // ─────────────────────────────────────────────
 
   rhythm chord_stabs resolution 1/8 {
-    hit rest rest hit rest rest hit rest
-    hit rest rest hit rest rest hit hit
+    hit rest * 2 hit rest * 2 hit rest
+    hit rest * 2 hit rest * 2 hit hit
   }
 
   rhythm vox_hits resolution 1/8 {
-    rest hit rest rest hit hit rest rest
+    rest hit rest * 2 hit hit rest * 2
   }
 
   rhythm bass_pulse resolution 1/16 {
-    hit rest rest rest rest hit hit rest
-    rest rest hit rest rest rest rest rest
+    hit rest * 4 hit hit rest
+    rest * 2 hit rest * 5
   }
 
   // ─────────────────────────────────────────────
@@ -224,68 +224,36 @@ song "Aoharu Signal" {
 
   // Strudel lightDrums: hh*4 + late rim
   pattern light_hh = steps 1/4 {
-    drum "hh" velocity 38
-    drum "hh" velocity 38
-    drum "hh" velocity 38
-    drum "hh" velocity 38
+    drum "hh" velocity 38 * 4
   }
 
   pattern light_rim = steps 1/8 {
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
+    rest * 7
     drum "rim" velocity 64
   }
 
   // Strudel build: bd*4
   pattern four_on_floor = steps 1/4 {
-    drum "bd" velocity 115
-    drum "bd" velocity 115
-    drum "bd" velocity 115
-    drum "bd" velocity 115
+    drum "bd" velocity 115 * 4
   }
 
   // Strudel snareRoll: <cp*2 cp*4 cp*8 cp*16> over 4 bars (1/16 grid)
   pattern snare_roll = steps 1/16 {
     // bar 1 — cp*2
     drum "cp" velocity 70
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
+    rest * 7
     drum "cp" velocity 74
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
+    rest * 7
 
     // bar 2 — cp*4
     drum "cp" velocity 78
-    rest
-    rest
-    rest
+    rest * 3
     drum "cp" velocity 80
-    rest
-    rest
-    rest
+    rest * 3
     drum "cp" velocity 82
-    rest
-    rest
-    rest
+    rest * 3
     drum "cp" velocity 84
-    rest
-    rest
-    rest
+    rest * 3
 
     // bar 3 — cp*8
     drum "cp" velocity 86
@@ -326,31 +294,15 @@ song "Aoharu Signal" {
 
   // Strudel dropDrums: ~ cp ~ cp | hh*8 | late oh
   pattern drop_clap = steps 1/4 {
-    rest
-    drum "cp" velocity 96
-    rest
-    drum "cp" velocity 96
+    (rest, drum "cp" velocity 96) * 2
   }
 
   pattern drop_hh = steps 1/8 {
-    drum "hh" velocity 38
-    drum "hh" velocity 64
-    drum "hh" velocity 38
-    drum "hh" velocity 64
-    drum "hh" velocity 38
-    drum "hh" velocity 64
-    drum "hh" velocity 38
-    drum "hh" velocity 64
+    (drum "hh" velocity 38, drum "hh" velocity 64) * 4
   }
 
   pattern drop_oh = steps 1/8 {
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
-    rest
+    rest * 7
     drum "oh" velocity 70
   }
 

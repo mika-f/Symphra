@@ -399,13 +399,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     // First token should be the `project` keyword at 0:0 length 7 type keyword(0).
     assert_eq!(
         &data[..5],
-        &[
-            json!(0),
-            json!(0),
-            json!(7),
-            json!(0),
-            json!(0)
-        ]
+        &[json!(0), json!(0), json!(7), json!(0), json!(0)]
     );
 
     server.send(&json!({

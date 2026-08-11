@@ -36,7 +36,12 @@ ad-hoc examples when something looks out of date.
 
 - Rust **1.88+** (edition 2024)
 
-### Build
+### Install
+
+Prebuilt CLI, LSP, and formatter binaries for Linux, Windows, and macOS are
+attached to [GitHub Releases](https://github.com/mika-f/Symphra/releases).
+
+### Build from source
 
 ```console
 cargo build --workspace --locked

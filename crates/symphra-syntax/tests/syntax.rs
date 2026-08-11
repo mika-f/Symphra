@@ -1684,3 +1684,51 @@ fn rejects_a_missing_duration_without_a_sequence_step() {
         ["expected `for` after note pitch"]
     );
 }
+
+#[test]
+fn parses_a_derived_pattern() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern drop = pad |> transpose 12 st |> repeat 2 |> reverse }"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:#?}", parsed.diagnostics);
+    let Declaration::Song(song) = &parsed.file.declarations[0] else {
+        panic!("declaration should be a song");
+    };
+    let SongStatement::Pattern(pattern) = &song.statements[0] else {
+        panic!("statement should be a pattern");
+    };
+    let PatternBody::Derived {
+        source,
+        transpose,
+        repeat,
+        reverse,
+        ..
+    } = &pattern.body
+    else {
+        panic!("pattern should be derived");
+    };
+    assert_eq!(source.text, "pad");
+    assert_eq!(
+        transpose.as_ref().map(|transpose| transpose.semitones),
+        Some(12)
+    );
+    assert_eq!(repeat.as_ref().map(|repeat| repeat.count), Some(2));
+    assert!(reverse);
+}
+
+#[test]
+fn rejects_a_performance_stage_in_a_pattern_derivation() {
+    let parsed = parse(
+        SourceId(0),
+        r#"song "S" { pattern drop = pad |> gain 0.5 }"#,
+    );
+    assert_eq!(
+        parsed
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>(),
+        ["expected `transpose`, `repeat`, or `reverse` after `|>`"]
+    );
+}

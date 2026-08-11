@@ -124,12 +124,8 @@ song "Aoharu Signal" {
     chord B3 D4 F#4 A4
   }
 
-  pattern drop_chords = sequence step 1bar {
-    chord G4 B4 D5 F#5
-    chord A4 C#5 E5 G5
-    chord F#4 A4 C#5 E5
-    chord B4 D5 F#5 A5
-  }
+  // The drop voicing is the pad an octave up.
+  pattern drop_chords = pad_chords |> transpose 12 st
 
   pattern bass_roots = sequence step 1bar {
     note G2

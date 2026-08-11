@@ -189,6 +189,26 @@ pattern crescendo = steps 1/16 {
   `(drum "bd" velocity 90..110, drum "cp") * 4` ramps the kick over four
   iterations and leaves the clap alone
 
+## Derived patterns
+
+A pattern can be another pattern's material, transformed:
+
+```symphra
+pattern pad_chords = sequence step 1bar {
+  chord G3 B3 D4 F#4
+  chord A3 C#4 E4 G4
+}
+
+pattern drop_chords = pad_chords |> transpose 12 st
+```
+
+- Stages: `transpose N st`, `repeat N`, `reverse`, applied in that order
+- The source pattern must be declared **above** the derivation, which also
+  makes cycles impossible
+- The other play stages are not accepted here. `gain` scales amplitude,
+  which a pattern has no notion of; `pan`, `speed`, `chance`, and
+  `choose_sample` describe a performance, not material
+
 ## Degree steps
 
 ```symphra

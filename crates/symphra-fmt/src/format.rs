@@ -1230,6 +1230,34 @@ fn print_pattern(ctx: &mut Ctx<'_>, decl: &PatternDeclaration) {
                 print_sequence_item,
             );
         }
+        PatternBody::Derived {
+            source,
+            transpose,
+            repeat,
+            reverse,
+            ..
+        } => {
+            let mut line = format!(
+                "pattern {} = {}",
+                ctx.text(decl.name.span),
+                ctx.text(source.span)
+            );
+            if let Some(transpose) = transpose {
+                let _ = write!(
+                    line,
+                    " |> transpose {} {}",
+                    transpose.semitones,
+                    ctx.text(transpose.unit.span)
+                );
+            }
+            if let Some(repeat) = repeat {
+                let _ = write!(line, " |> repeat {}", repeat.count);
+            }
+            if *reverse {
+                line.push_str(" |> reverse");
+            }
+            ctx.printer.line(line);
+        }
         PatternBody::Steps {
             resolution, items, ..
         } => {

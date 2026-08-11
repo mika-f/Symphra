@@ -1064,3 +1064,23 @@ fn formats_a_sequence_step_default_duration() {
 
     assert_eq!(format(input), expected);
 }
+
+#[test]
+fn formats_a_derived_pattern() {
+    let input = r#"song "S" {
+  pattern pad = sequence step 1bar { chord G3 B3 D4 }
+  pattern drop = pad|>transpose 12 st|>repeat 2|>reverse
+}
+"#;
+
+    let expected = r#"song "S" {
+  pattern pad = sequence step 1bar {
+    chord G3 B3 D4
+  }
+
+  pattern drop = pad |> transpose 12 st |> repeat 2 |> reverse
+}
+"#;
+
+    assert_eq!(format(input), expected);
+}

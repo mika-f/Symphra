@@ -1410,9 +1410,12 @@ impl Parser {
         if self.at(TokenKind::Steps) {
             return self.steps_pattern(start, name);
         }
+        if self.at(TokenKind::Identifier) {
+            return self.derived_pattern(start, name);
+        }
         self.required(
             TokenKind::Sequence,
-            "expected `sequence` or `steps` pattern body",
+            "expected `sequence`, `steps`, or a pattern name as a pattern body",
         )?;
         let step = if self.at(TokenKind::Step) {
             self.bump();
@@ -1465,6 +1468,49 @@ impl Parser {
             }
         }?;
         self.repeated(item, start, SequenceItem::Repeat)
+    }
+
+    /// Parses `pattern <name> = <source> { |> stage }`.
+    ///
+    /// Only `transpose`, `repeat`, and `reverse` are accepted. The other
+    /// play stages describe a performance rather than material: `gain`
+    /// scales amplitude, which a pattern has no notion of (its analogue,
+    /// velocity, is a different quantity); `pan`, `speed`, `chance`, and
+    /// `choose_sample` are track-domain; and `trigger_with`/`gate` are left
+    /// out until their pattern-level meaning is pinned down.
+    fn derived_pattern(
+        &mut self,
+        start: SourceSpan,
+        name: Identifier,
+    ) -> Option<PatternDeclaration> {
+        let source = self.identifier("expected a pattern name")?;
+        let mut transpose = None;
+        let mut repeat = None;
+        let mut reverse = false;
+        let mut end = source.span;
+        while self.at(TokenKind::PipeGreater) {
+            self.bump();
+            match self.current().kind {
+                TokenKind::Transpose => end = self.play_transpose(&mut transpose)?,
+                TokenKind::Repeat => end = self.play_repeat(&mut repeat)?,
+                TokenKind::Reverse => end = self.reverse(&mut reverse),
+                _ => {
+                    self.error("expected `transpose`, `repeat`, or `reverse` after `|>`");
+                    return None;
+                }
+            }
+        }
+        Some(PatternDeclaration {
+            name,
+            body: PatternBody::Derived {
+                source,
+                transpose,
+                repeat,
+                reverse,
+                span: start.cover(end),
+            },
+            span: start.cover(end),
+        })
     }
 
     fn steps_pattern(&mut self, start: SourceSpan, name: Identifier) -> Option<PatternDeclaration> {

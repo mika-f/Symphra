@@ -88,6 +88,12 @@ Pattern =
 PatternBody =
     "sequence" ["step" Duration] "{" { SequenceItem } "}"
   | "steps" Duration "{" { StepItem } "}"
+  | Ident { "|>" DerivationStage }        // another pattern, transformed
+
+DerivationStage =
+    "transpose" Integer Ident
+  | "repeat" Integer
+  | "reverse"
 
 SequenceItem = SequenceAtom [Repeat]
 

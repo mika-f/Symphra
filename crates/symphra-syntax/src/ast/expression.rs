@@ -1,4 +1,4 @@
-use super::{Identifier, QuotedString};
+use super::{Identifier, QuotedString, RepeatExpression, TransposeExpression};
 use crate::SourceSpan;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -20,6 +20,17 @@ pub enum PatternBody {
     Steps {
         resolution: DurationExpression,
         items: Vec<StepItem>,
+        span: SourceSpan,
+    },
+    /// `pattern drop = pad |> transpose 12 st`: another pattern's material,
+    /// transformed. The stages are the subset of the play pipeline that
+    /// means the same thing on a pattern as on a performance of one; the
+    /// parser rejects the rest.
+    Derived {
+        source: Identifier,
+        transpose: Option<TransposeExpression>,
+        repeat: Option<RepeatExpression>,
+        reverse: bool,
         span: SourceSpan,
     },
 }

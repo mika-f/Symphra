@@ -3871,3 +3871,72 @@ song "S" {
         compile(&written.file).expect("written-out source should compile"),
     );
 }
+
+/// A derived pattern is the source pattern's material, transformed: it must
+/// lower to the same steps as writing the transformed material out, node
+/// ids aside.
+#[test]
+fn compile_should_lower_a_derived_pattern_like_its_written_out_form() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern pad = sequence step 1bar { chord G3 B3 D4  chord A3 C#4 E4 }
+  pattern drop = pad |> transpose 12 st
+  pattern reversed = pad |> reverse
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let program = compile(&parsed.file).expect("derivations should compile");
+    let pitches = |pattern: &Pattern| {
+        pattern
+            .steps
+            .iter()
+            .map(|step| match step {
+                PatternStep::Chord(chord) => {
+                    chord.notes.iter().map(|note| note.midi_pitch).collect()
+                }
+                other => panic!("unexpected step {other:?}"),
+            })
+            .collect::<Vec<Vec<u8>>>()
+    };
+    let patterns = &program.songs[0].patterns;
+
+    assert_eq!(
+        pitches(&patterns[0]),
+        vec![vec![55, 59, 62], vec![57, 61, 64]]
+    );
+    assert_eq!(
+        pitches(&patterns[1]),
+        vec![vec![67, 71, 74], vec![69, 73, 76]]
+    );
+    assert_eq!(
+        pitches(&patterns[2]),
+        vec![vec![57, 61, 64], vec![55, 59, 62]]
+    );
+}
+
+#[test]
+fn compile_should_reject_a_derivation_of_a_pattern_declared_below_it() {
+    let parsed = parse(
+        SourceId(0),
+        r#"project { seed 1 sample_rate 48khz output stereo }
+song "S" {
+  tempo 120bpm meter 4/4 key C major
+  pattern drop = pad |> transpose 12 st
+  pattern pad = sequence step 1bar { chord G3 B3 D4 }
+}"#,
+    );
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+
+    let errors = compile(&parsed.file).expect_err("a forward reference should be rejected");
+    assert_eq!(
+        errors
+            .iter()
+            .map(|error| error.message.as_str())
+            .collect::<Vec<_>>(),
+        ["pattern derivation references a pattern that is not declared above it"]
+    );
+}

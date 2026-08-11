@@ -8,9 +8,10 @@ use symphra_syntax::ast::{
     DegreeChoiceAlternative, DurationExpression, EffectDeclaration, EffectKind,
     EnvelopeDeclaration, FrequencyLiteral, Identifier, InstrumentBody, MasterDeclaration,
     PanExpression, PatternBody, PatternDeclaration, PlaySource, PlayStatement, ProjectDeclaration,
-    ProjectStatement, QuotedString, RateLiteral, RhythmDeclaration, SampleChoiceAlternative,
-    SampleSelectorExpression, SectionDeclaration, SequenceItem, SongDeclaration, SongStatement,
-    SourceFile, SpeedExpression, StepItem, TrackBody, TrackDeclaration,
+    ProjectStatement, QuotedString, RateLiteral, RepeatExpression, RhythmDeclaration,
+    SampleChoiceAlternative, SampleSelectorExpression, SectionDeclaration, SequenceItem,
+    SongDeclaration, SongStatement, SourceFile, SpeedExpression, StepItem, TrackBody,
+    TrackDeclaration, TransposeExpression,
 };
 
 use crate::expand::Repetition;
@@ -58,6 +59,32 @@ fn divide_duration(duration: Duration, cells: usize) -> Option<Duration> {
         numerator: duration.numerator,
         denominator: duration.denominator.checked_mul(cells)?,
     })
+}
+
+/// Transposes every pitched event in a pattern step, reporting `false`
+/// when any of them would leave the MIDI range.
+fn transpose_step(step: &mut PatternStep, semitones: i32) -> bool {
+    let pitches: Vec<&mut u8> = match step {
+        PatternStep::Note(note) => vec![&mut note.midi_pitch],
+        PatternStep::Chord(chord) => chord
+            .notes
+            .iter_mut()
+            .map(|note| &mut note.midi_pitch)
+            .collect(),
+        PatternStep::DegreeChoice(choice) => choice
+            .alternatives
+            .iter_mut()
+            .map(|alternative| &mut alternative.note.midi_pitch)
+            .collect(),
+        PatternStep::Sample(_) | PatternStep::Choice(_) | PatternStep::Rest(_) => Vec::new(),
+    };
+    for pitch in pitches {
+        let Some(transposed) = transposed_pitch(*pitch, semitones) else {
+            return false;
+        };
+        *pitch = transposed;
+    }
+    true
 }
 
 fn transposed_pitch(midi_pitch: u8, semitones: i32) -> Option<u8> {
@@ -314,10 +341,19 @@ impl Compiler {
             .iter()
             .filter_map(|rhythm| self.rhythm(rhythm))
             .collect::<Vec<_>>();
-        let mut patterns = pattern_declarations
-            .iter()
-            .map(|pattern| self.pattern(pattern, settings.key.as_ref(), settings.meter.as_ref()))
-            .collect::<Vec<_>>();
+        // Lowered in declaration order, and each one can see the patterns
+        // before it: that is what makes `pattern b = a |> ...` resolvable
+        // without a second pass, and cyclic by construction impossible.
+        let mut patterns: Vec<Pattern> = Vec::with_capacity(pattern_declarations.len());
+        for declaration in &pattern_declarations {
+            let pattern = self.pattern(
+                declaration,
+                settings.key.as_ref(),
+                settings.meter.as_ref(),
+                &patterns,
+            );
+            patterns.push(pattern);
+        }
         let tracks = self.build_tracks(
             &track_defs,
             &mut patterns,
@@ -1674,6 +1710,7 @@ impl Compiler {
         declaration: &PatternDeclaration,
         key: Option<&Key>,
         meter: Option<&Meter>,
+        declared: &[Pattern],
     ) -> Pattern {
         let id = self.id();
         let steps = match &declaration.body {
@@ -1685,6 +1722,20 @@ impl Compiler {
                 items,
                 span,
             } => self.steps(resolution, items, *span, key, meter),
+            PatternBody::Derived {
+                source,
+                transpose,
+                repeat,
+                reverse,
+                span,
+            } => self.derived_steps(
+                source,
+                transpose.as_ref(),
+                repeat.as_ref(),
+                *reverse,
+                *span,
+                declared,
+            ),
         };
         Pattern {
             id,
@@ -1798,6 +1849,137 @@ impl Compiler {
             return Vec::new();
         }
         self.step_events(items, duration, span, key)
+    }
+
+    /// Lowers `pattern <name> = <source> |> ...`: the source pattern's
+    /// steps, copied with fresh node ids (so seeded `choose` rolls stay
+    /// distinct between the two patterns), then transformed.
+    ///
+    /// Stage order matches the play pipeline's: transpose, then repeat,
+    /// then reverse.
+    fn derived_steps(
+        &mut self,
+        source: &Identifier,
+        transpose: Option<&TransposeExpression>,
+        repeat: Option<&RepeatExpression>,
+        reverse: bool,
+        span: SourceSpan,
+        declared: &[Pattern],
+    ) -> Vec<PatternStep> {
+        let Some(found) = declared.iter().find(|pattern| pattern.name == source.text) else {
+            self.error(
+                "pattern derivation references a pattern that is not declared above it",
+                source.span,
+            );
+            return Vec::new();
+        };
+        let mut steps = found
+            .steps
+            .clone()
+            .into_iter()
+            .map(|step| self.renumbered(step))
+            .collect::<Vec<_>>();
+
+        if let Some(transpose) = transpose {
+            for step in &mut steps {
+                if !transpose_step(step, transpose.semitones) {
+                    self.error(
+                        "transposed pitch must be within the MIDI range 0 to 127",
+                        transpose.span,
+                    );
+                    return Vec::new();
+                }
+            }
+        }
+        if let Some(repeat) = repeat {
+            if repeat.count == 0 {
+                self.error("repeat count must be greater than zero", repeat.span);
+                return Vec::new();
+            }
+            let once = steps.clone();
+            for _ in 1..repeat.count {
+                let copy = once
+                    .iter()
+                    .map(|step| self.renumbered(step.clone()))
+                    .collect::<Vec<_>>();
+                steps.extend(copy);
+            }
+            if steps.len() > expand::MAX_EXPANDED_ITEMS {
+                self.error(
+                    &format!(
+                        "repetitions expand to more than {} items",
+                        expand::MAX_EXPANDED_ITEMS
+                    ),
+                    span,
+                );
+                return Vec::new();
+            }
+        }
+        if reverse {
+            steps.reverse();
+        }
+        steps
+    }
+
+    /// Gives a copied step (and everything inside it) fresh node ids.
+    fn renumbered(&mut self, step: PatternStep) -> PatternStep {
+        match step {
+            PatternStep::Note(note) => PatternStep::Note(Note {
+                id: self.id(),
+                ..note
+            }),
+            PatternStep::Chord(chord) => PatternStep::Chord(Chord {
+                notes: chord
+                    .notes
+                    .into_iter()
+                    .map(|note| ChordNote {
+                        id: self.id(),
+                        ..note
+                    })
+                    .collect(),
+                ..chord
+            }),
+            PatternStep::Sample(sample) => PatternStep::Sample(SampleTrigger {
+                id: self.id(),
+                ..sample
+            }),
+            PatternStep::Rest(rest) => PatternStep::Rest(Rest {
+                id: self.id(),
+                ..rest
+            }),
+            PatternStep::Choice(choice) => PatternStep::Choice(SampleChoice {
+                id: self.id(),
+                alternatives: choice
+                    .alternatives
+                    .into_iter()
+                    .map(|alternative| WeightedSampleSequence {
+                        samples: alternative
+                            .samples
+                            .into_iter()
+                            .map(|sample| SampleTrigger {
+                                id: self.id(),
+                                ..sample
+                            })
+                            .collect(),
+                        ..alternative
+                    })
+                    .collect(),
+            }),
+            PatternStep::DegreeChoice(choice) => PatternStep::DegreeChoice(DegreeChoice {
+                id: self.id(),
+                alternatives: choice
+                    .alternatives
+                    .into_iter()
+                    .map(|alternative| WeightedNote {
+                        note: Note {
+                            id: self.id(),
+                            ..alternative.note
+                        },
+                        ..alternative
+                    })
+                    .collect(),
+            }),
+        }
     }
 
     /// Lowers one level of a `steps` body at `duration` per cell, recursing

@@ -472,26 +472,69 @@ fn formats_at_bar_beat_placement() {
 }
 
 #[test]
-fn keeps_rhythm_hit_rest_on_a_single_compact_line() {
-    let input = r#"song "S" {
+fn keeps_same_line_rhythm_cells_compact_and_preserves_line_breaks() {
+    // Cells that already share a source line stay on one printed line, even
+    // when the braces wrap.
+    let compact = r#"song "S" {
+  rhythm stabs resolution 1/4 {
+    hit rest hit rest
+  }
+  rhythm pulse resolution 1/8 { hit rest hit }
+}
+"#;
+    assert_eq!(
+        format(compact),
+        r#"song "S" {
+  rhythm stabs resolution 1/4 { hit rest hit rest }
+
+  rhythm pulse resolution 1/8 { hit rest hit }
+}
+"#
+    );
+
+    // One cell per source line stays one cell per printed line — the
+    // formatter must not glue them back into a single run.
+    let stacked = r#"song "S" {
   rhythm stabs resolution 1/4 {
     hit
     rest
     hit
     rest
   }
-  rhythm pulse resolution 1/8 { hit rest hit }
 }
 "#;
+    assert_eq!(
+        format(stacked),
+        r#"song "S" {
+  rhythm stabs resolution 1/4 {
+    hit
+    rest
+    hit
+    rest
+  }
+}
+"#
+    );
 
-    let expected = r#"song "S" {
-  rhythm stabs resolution 1/4 { hit rest hit rest }
-
-  rhythm pulse resolution 1/8 { hit rest hit }
+    // Multi-cell lines (typical bar layout) keep their breaks and normalize
+    // spacing around `* N`.
+    let bars = r#"song "S" {
+  rhythm chord_stabs resolution 1/8 {
+    hit rest*2 hit rest*2 hit rest
+    hit rest*2 hit rest*2 hit hit
+  }
 }
 "#;
-
-    assert_eq!(format(input), expected);
+    assert_eq!(
+        format(bars),
+        r#"song "S" {
+  rhythm chord_stabs resolution 1/8 {
+    hit rest * 2 hit rest * 2 hit rest
+    hit rest * 2 hit rest * 2 hit hit
+  }
+}
+"#
+    );
 }
 
 #[test]

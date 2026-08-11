@@ -2,13 +2,14 @@
 //!
 //! [`format_source`] reprints a source file into one canonical layout:
 //! two-space indentation, one item per line inside every block body (except
-//! `rhythm` bodies, which keep `hit`/`rest` on a single compact line),
-//! `project`/`song` settings reordered into a fixed canonical order, a blank
-//! line before each song-level declaration (`instrument`, `pattern`,
-//! `track`, …), and at most one blank line preserved anywhere the author
-//! left one. It refuses to format source with lexical or syntax diagnostics,
-//! matching `symphra-syntax`'s own guidance not to trust an AST produced
-//! alongside diagnostics.
+//! `rhythm` bodies, which keep cells that share a source line together —
+//! so a one-line body stays compact and multi-line bar layouts keep their
+//! breaks), `project`/`song` settings reordered into a fixed canonical
+//! order, a blank line before each song-level declaration (`instrument`,
+//! `pattern`, `track`, …), and at most one blank line preserved anywhere
+//! the author left one. It refuses to format source with lexical or syntax
+//! diagnostics, matching `symphra-syntax`'s own guidance not to trust an
+//! AST produced alongside diagnostics.
 //!
 //! Every identifier, number, and string literal is copied verbatim from the
 //! original source by byte span rather than reconstructed from its parsed

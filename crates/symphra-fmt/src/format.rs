@@ -825,13 +825,23 @@ fn format_repeat<T>(group: &RepeatGroup<T>, element: impl Fn(&T) -> String) -> S
     format!("({items}) * {count}")
 }
 
-/// Prints a rhythm as a single compact line when its body has no comments:
-/// `rhythm name resolution 1/4 { hit rest hit rest }`.
+/// Prints a rhythm body.
 ///
-/// `hit`/`rest` cells are short and usually written in one run, so the
-/// formatter does not expand them one-per-line the way other block bodies
-/// are. If any comment sits inside the rhythm span, fall back to the normal
-/// multi-line block so comments can still be reattached.
+/// Cells that share a source line stay on one printed line (`hit rest * 2`),
+/// so bar-shaped multi-line rhythms keep their line breaks:
+///
+/// ```text
+/// rhythm chord_stabs resolution 1/8 {
+///   hit rest * 2 hit rest * 2 hit rest
+///   hit rest * 2 hit rest * 2 hit hit
+/// }
+/// ```
+///
+/// A body whose cells all sit on one source line stays compact:
+/// `rhythm pulse resolution 1/8 { hit rest hit }`.
+///
+/// If any comment sits inside the rhythm span, fall back to one cell per
+/// printed line so comments can still be reattached.
 fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
     let header = format!(
         "rhythm {} resolution {}/{}",
@@ -871,8 +881,8 @@ fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
         return;
     }
 
-    // No comments in the body: advance the cursor past the item spans so
-    // later siblings do not see leftover trivia, then emit one line.
+    // Advance the cursor past every cell so later siblings do not see
+    // leftover trivia, then reprint from the source line groups.
     let mut prev_end = decl.span.start;
     for (index, item) in decl.items.iter().enumerate() {
         let span = rhythm_item_span(item);
@@ -886,13 +896,57 @@ fn print_rhythm(ctx: &mut Ctx<'_>, decl: &RhythmDeclaration) {
     }
     let _ = ctx.cursor.take_leading(decl.span.end, prev_end);
 
-    let body = decl
-        .items
-        .iter()
-        .map(rhythm_item_text)
-        .collect::<Vec<_>>()
-        .join(" ");
-    ctx.printer.line(format!("{header} {{ {body} }}"));
+    let runs = rhythm_line_runs(ctx.source, &decl.items);
+    if runs.len() <= 1 {
+        let body = decl
+            .items
+            .iter()
+            .map(rhythm_item_text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        ctx.printer.line(format!("{header} {{ {body} }}"));
+        return;
+    }
+
+    ctx.printer.line(format!("{header} {{"));
+    ctx.printer.indent();
+    for run in runs {
+        let line = run
+            .iter()
+            .map(|item| rhythm_item_text(item))
+            .collect::<Vec<_>>()
+            .join(" ");
+        ctx.printer.line(line);
+    }
+    ctx.printer.dedent();
+    ctx.printer.line("}");
+}
+
+/// Groups consecutive rhythm cells that share a source line. Authors use
+/// line breaks to mark bar boundaries (`hit rest * 2 …` per bar); those
+/// breaks have to survive formatting.
+fn rhythm_line_runs<'a>(source: &str, items: &'a [RhythmItem]) -> Vec<Vec<&'a RhythmItem>> {
+    let mut runs: Vec<Vec<&RhythmItem>> = Vec::new();
+    let mut current_line = None;
+    for item in items {
+        let line = source_line_at(source, rhythm_item_span(item).start);
+        match current_line {
+            Some(previous) if previous == line => {
+                runs.last_mut().expect("run started with current_line").push(item);
+            }
+            _ => {
+                current_line = Some(line);
+                runs.push(vec![item]);
+            }
+        }
+    }
+    runs
+}
+
+/// Zero-based source line of the byte offset `offset`.
+fn source_line_at(source: &str, offset: u32) -> usize {
+    let end = (offset as usize).min(source.len());
+    source[..end].bytes().filter(|&b| b == b'\n').count()
 }
 
 // --- track -------------------------------------------------------------

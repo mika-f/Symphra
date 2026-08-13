@@ -29,7 +29,8 @@ ad-hoc examples when something looks out of date.
   LFO automation of filter cutoff; master limiter
 - **Deterministic rendering** — seeded choices and chance; offline WAV export
 - **Editor support** — `symphra-lsp`, VS Code and IntelliJ extensions, formatter;
-  background loop preview in VS Code with `symphra-player`
+  full-song and cursor-section background loop previews in VS Code with
+  `symphra-player`
 
 ## Quick start
 

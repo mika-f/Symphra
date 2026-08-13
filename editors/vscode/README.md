@@ -14,9 +14,10 @@ tracks the current draft and will need updates as the language grows.
   and punctuation (`|>`, `..`, `:`, `*`, `[]`, `()`, `,`).
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, completions, semantic tokens, and inlay hints.
-- **Render and Play** and **Stop Playback** commands backed by the `symphra`
-  CLI and a background `symphra-player` process that loops the full render
-  without opening a player panel.
+- **Render and Play**, **Loop Section at Cursor**, and **Stop Playback** commands
+  backed by the `symphra` CLI and a background `symphra-player` process. The
+  player loops either the full render or the arranged occurrence of the section
+  containing the cursor, without opening a player panel.
 
 ## Building and running
 
@@ -57,4 +58,5 @@ folder isn't the repository root).
 
 - **Symphra: Restart Language Server** (`symphra.restartServer`)
 - **Symphra: Render and Play** (`symphra.renderAndPlay`)
+- **Symphra: Loop Section at Cursor** (`symphra.loopSection`)
 - **Symphra: Stop Playback** (`symphra.stopPlayback`)

@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::ops::Range;
 use std::process::ExitCode;
 use std::sync::{Arc, mpsc};
 
@@ -20,15 +21,30 @@ fn main() -> ExitCode {
 fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), PlayerError> {
     let mut args = args.into_iter();
     let input = args.next().ok_or(PlayerError::Usage)?;
-    if args.next().is_some() {
-        return Err(PlayerError::Usage);
-    }
-
     let audio = decode_wav(&fs::read(input)?)?;
-    play(audio)
+    let range = match (args.next(), args.next(), args.next()) {
+        (None, None, None) => 0..audio.frames(),
+        (Some(start), Some(end), None) => parse_frame(&start)?..parse_frame(&end)?,
+        _ => return Err(PlayerError::Usage),
+    };
+    if range.start >= range.end || range.end > audio.frames() {
+        return Err(PlayerError::InvalidRange {
+            start: range.start,
+            end: range.end,
+            frames: audio.frames(),
+        });
+    }
+    play(audio, range)
 }
 
-fn play(audio: Audio) -> Result<(), PlayerError> {
+fn parse_frame(value: &OsString) -> Result<usize, PlayerError> {
+    value
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or(PlayerError::Usage)
+}
+
+fn play(audio: Audio, range: Range<usize>) -> Result<(), PlayerError> {
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -38,18 +54,18 @@ fn play(audio: Audio) -> Result<(), PlayerError> {
     let config = supported.into();
     let (errors, stream_errors) = mpsc::channel();
     let stream = match format {
-        SampleFormat::I8 => output_stream::<i8>(&device, config, audio, errors),
-        SampleFormat::I16 => output_stream::<i16>(&device, config, audio, errors),
-        SampleFormat::I24 => output_stream::<I24>(&device, config, audio, errors),
-        SampleFormat::I32 => output_stream::<i32>(&device, config, audio, errors),
-        SampleFormat::I64 => output_stream::<i64>(&device, config, audio, errors),
-        SampleFormat::U8 => output_stream::<u8>(&device, config, audio, errors),
-        SampleFormat::U16 => output_stream::<u16>(&device, config, audio, errors),
-        SampleFormat::U24 => output_stream::<U24>(&device, config, audio, errors),
-        SampleFormat::U32 => output_stream::<u32>(&device, config, audio, errors),
-        SampleFormat::U64 => output_stream::<u64>(&device, config, audio, errors),
-        SampleFormat::F32 => output_stream::<f32>(&device, config, audio, errors),
-        SampleFormat::F64 => output_stream::<f64>(&device, config, audio, errors),
+        SampleFormat::I8 => output_stream::<i8>(&device, config, audio, range, errors),
+        SampleFormat::I16 => output_stream::<i16>(&device, config, audio, range, errors),
+        SampleFormat::I24 => output_stream::<I24>(&device, config, audio, range, errors),
+        SampleFormat::I32 => output_stream::<i32>(&device, config, audio, range, errors),
+        SampleFormat::I64 => output_stream::<i64>(&device, config, audio, range, errors),
+        SampleFormat::U8 => output_stream::<u8>(&device, config, audio, range, errors),
+        SampleFormat::U16 => output_stream::<u16>(&device, config, audio, range, errors),
+        SampleFormat::U24 => output_stream::<U24>(&device, config, audio, range, errors),
+        SampleFormat::U32 => output_stream::<u32>(&device, config, audio, range, errors),
+        SampleFormat::U64 => output_stream::<u64>(&device, config, audio, range, errors),
+        SampleFormat::F32 => output_stream::<f32>(&device, config, audio, range, errors),
+        SampleFormat::F64 => output_stream::<f64>(&device, config, audio, range, errors),
         unsupported => return Err(PlayerError::UnsupportedSampleFormat(unsupported)),
     }?;
     stream.play()?;
@@ -64,12 +80,13 @@ fn output_stream<T>(
     device: &Device,
     config: StreamConfig,
     audio: Audio,
+    range: Range<usize>,
     errors: mpsc::Sender<String>,
 ) -> Result<Stream, cpal::Error>
 where
     T: Sample + SizedSample + FromSample<f32>,
 {
-    let mut playback = Playback::new(audio, &config);
+    let mut playback = Playback::new(audio, range, &config);
     device.build_output_stream(
         config,
         move |output: &mut [T], _| playback.write(output),
@@ -87,18 +104,26 @@ struct Audio {
     samples: Arc<[f32]>,
 }
 
+impl Audio {
+    fn frames(&self) -> usize {
+        self.samples.len() / usize::from(self.channels)
+    }
+}
+
 struct Playback {
     audio: Audio,
+    range: Range<usize>,
     output_channels: usize,
     source_position: f64,
     source_step: f64,
 }
 
 impl Playback {
-    fn new(audio: Audio, output: &StreamConfig) -> Self {
+    fn new(audio: Audio, range: Range<usize>, output: &StreamConfig) -> Self {
         Self {
             source_step: f64::from(audio.sample_rate_hz) / f64::from(output.sample_rate),
             audio,
+            range,
             output_channels: usize::from(output.channels),
             source_position: 0.0,
         }
@@ -134,8 +159,8 @@ impl Playback {
         let frame = self.source_position.floor() as usize;
         let next = (frame + 1) % self.frames();
         let fraction = (self.source_position - frame as f64) as f32;
-        let current = self.frame_sample(frame, output_channel);
-        let following = self.frame_sample(next, output_channel);
+        let current = self.frame_sample(self.range.start + frame, output_channel);
+        let following = self.frame_sample(self.range.start + next, output_channel);
         current + (following - current) * fraction
     }
 
@@ -154,7 +179,7 @@ impl Playback {
     }
 
     fn frames(&self) -> usize {
-        self.audio.samples.len() / usize::from(self.audio.channels)
+        self.range.end - self.range.start
     }
 }
 
@@ -223,8 +248,14 @@ fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, WavError> {
 
 #[derive(Debug, thiserror::Error)]
 enum PlayerError {
-    #[error("usage: symphra-player <input.wav>")]
+    #[error("usage: symphra-player <input.wav> [<start-frame> <end-frame>]")]
     Usage,
+    #[error("frame range {start}..{end} is outside the WAV's {frames} frames")]
+    InvalidRange {
+        start: usize,
+        end: usize,
+        frames: usize,
+    },
     #[error("failed to read WAV: {0}")]
     Read(#[from] std::io::Error),
     #[error(transparent)]
@@ -293,6 +324,7 @@ mod tests {
         };
         let mut playback = Playback::new(
             audio,
+            0..2,
             &StreamConfig {
                 channels: 1,
                 sample_rate: 2,
@@ -309,6 +341,35 @@ mod tests {
                 .zip([0.0, 1.0, 0.0, 1.0])
                 .all(|(actual, expected)| (actual - expected).abs() < f32::EPSILON),
             "looped output differs: {output:?}"
+        );
+    }
+
+    #[test]
+    fn playback_should_loop_only_the_selected_frames() {
+        let audio = Audio {
+            sample_rate_hz: 4,
+            channels: 1,
+            samples: Arc::from([0.0, 0.25, 0.5, 0.75]),
+        };
+        let mut playback = Playback::new(
+            audio,
+            1..3,
+            &StreamConfig {
+                channels: 1,
+                sample_rate: 4,
+                buffer_size: cpal::BufferSize::Default,
+            },
+        );
+        let mut output = [0.0_f32; 4];
+
+        playback.write(&mut output);
+
+        assert!(
+            output
+                .iter()
+                .zip([0.25, 0.5, 0.25, 0.5])
+                .all(|(actual, expected)| (actual - expected).abs() < f32::EPSILON),
+            "section-looped output differs: {output:?}"
         );
     }
 }

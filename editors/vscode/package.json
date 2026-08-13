@@ -56,6 +56,10 @@
         "title": "Symphra: Render and Play"
       },
       {
+        "command": "symphra.loopSection",
+        "title": "Symphra: Loop Section at Cursor"
+      },
+      {
         "command": "symphra.stopPlayback",
         "title": "Symphra: Stop Playback"
       }

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde::Serialize;
 use symphra_compiler::compile;
 use symphra_syntax::ast::{
     ArrangementEntry, ChordPitches, Declaration, Identifier, PatternBody, PlaySource,
@@ -45,6 +46,106 @@ impl Backend {
             .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
     }
+
+    async fn section_preview(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<SectionPreview>> {
+        let documents = self.documents.read().await;
+        Ok(documents
+            .get(&params.text_document.uri)
+            .and_then(|source| section_preview(source, params.position)))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SectionPreview {
+    name: String,
+    start_frame: u64,
+    end_frame: u64,
+}
+
+fn section_preview(source: &SourceText, position: Position) -> Option<SectionPreview> {
+    let parsed = parse(source.id, &source.text);
+    if !parsed.diagnostics.is_empty() {
+        return None;
+    }
+    let program = compile(&parsed.file).ok()?;
+    let song_declaration = parsed.file.declarations.iter().find_map(|declaration| {
+        if let Declaration::Song(song) = declaration {
+            Some(song)
+        } else {
+            None
+        }
+    })?;
+    let song = program.songs.first()?;
+    let offset = source.byte_offset_utf16(SourcePosition {
+        line: position.line,
+        utf16_column: position.character,
+    })?;
+    let target = song_declaration
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            SongStatement::Section(section)
+                if section.span.start <= offset && offset < section.span.end =>
+            {
+                Some(section)
+            }
+            _ => None,
+        })?;
+    let entries = song_declaration
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            SongStatement::Arrangement { entries, .. } => Some(entries),
+            _ => None,
+        })?;
+    let sections = song_declaration
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            SongStatement::Section(section) => Some((section.name.text.as_str(), section.bars)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut elapsed_bars = 0_u64;
+    for entry in entries {
+        let ArrangementEntry::Play { name, .. } = entry else {
+            return None;
+        };
+        let bars = u64::from(*sections.get(name.text.as_str())?);
+        if name.text == target.name.text {
+            let end_bars = elapsed_bars.checked_add(bars)?;
+            return Some(SectionPreview {
+                name: target.name.text.clone(),
+                start_frame: bars_to_frames(elapsed_bars, song, program.project.sample_rate_hz)?,
+                end_frame: bars_to_frames(end_bars, song, program.project.sample_rate_hz)?,
+            });
+        }
+        elapsed_bars = elapsed_bars.checked_add(bars)?;
+    }
+    None
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "the finite non-negative frame count is range-checked before conversion"
+)]
+fn bars_to_frames(
+    bars: u64,
+    song: &symphra_compiler::hir::Song,
+    sample_rate_hz: u32,
+) -> Option<u64> {
+    let frames = bars as f64 * f64::from(song.meter.numerator) / f64::from(song.meter.denominator)
+        * 240.0
+        * f64::from(sample_rate_hz)
+        / song.tempo_bpm;
+    (frames.is_finite() && frames >= 0.0 && frames <= u64::MAX as f64)
+        .then(|| frames.round() as u64)
 }
 
 impl LanguageServer for Backend {
@@ -2186,11 +2287,13 @@ const fn keyword_description_playback(kind: TokenKind) -> Option<&'static str> {
 
 #[tokio::main]
 async fn main() {
-    let (service, socket) = LspService::new(|client| Backend {
+    let (service, socket) = LspService::build(|client| Backend {
         client,
         documents: RwLock::new(HashMap::new()),
         hierarchical_symbols: AtomicBool::new(false),
-    });
+    })
+    .custom_method("symphra/sectionPreview", Backend::section_preview)
+    .finish();
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
         .serve(service)
         .await;
@@ -2203,8 +2306,33 @@ mod tests {
         SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER, SEMANTIC_TOKEN_STRING, SEMANTIC_TOKEN_TYPE,
         SourceId, SourceText, code_lenses, completions, definition, diagnostics,
         document_highlights, document_symbols, flatten_document_symbols, formatting_edits, hover,
-        inlay_hints, prepare_rename, references, rename, semantic_tokens,
+        inlay_hints, prepare_rename, references, rename, section_preview, semantic_tokens,
     };
+
+    #[test]
+    fn resolves_the_section_at_the_cursor_to_arrangement_frames() {
+        let text = include_str!("../../../examples/draft-0.1/001-example.sym");
+        let source = SourceText::new(SourceId(0), "test.sym", text);
+        let drop_line = text
+            .lines()
+            .position(|line| line.trim_start().starts_with("section drop bars"))
+            .expect("example should declare drop");
+
+        let preview = section_preview(
+            &source,
+            Position::new(u32::try_from(drop_line).expect("line fits in u32"), 10),
+        )
+        .expect("drop should be arranged");
+
+        assert_eq!(
+            preview,
+            super::SectionPreview {
+                name: "drop".to_owned(),
+                start_frame: 614_400,
+                end_frame: 1_228_800,
+            }
+        );
+    }
     use tower_lsp_server::ls_types::{
         CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, InlayHintLabel, Position,
         PrepareRenameResponse, Range, SemanticToken, SymbolKind, Uri,

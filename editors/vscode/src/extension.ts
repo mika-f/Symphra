@@ -16,6 +16,9 @@ let playback: ChildProcess | undefined;
 let previewDirectory: string | undefined;
 let playbackGeneration = 0;
 
+type FrameRange = readonly [start: number, end: number];
+type SectionPreview = { name: string; startFrame: number; endFrame: number };
+
 const LSP_BINARY_NAME = process.platform === "win32" ? "symphra-lsp.exe" : "symphra-lsp";
 const CLI_BINARY_NAME = process.platform === "win32" ? "symphra.exe" : "symphra";
 const PLAYER_BINARY_NAME = process.platform === "win32" ? "symphra-player.exe" : "symphra-player";
@@ -25,6 +28,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("symphra.restartServer", () => restartServer()),
     vscode.commands.registerCommand("symphra.renderAndPlay", () => renderAndPlay()),
+    vscode.commands.registerCommand("symphra.loopSection", () => loopSection()),
     vscode.commands.registerCommand("symphra.stopPlayback", () => stopPlayback()),
     // CodeLens "N references" clicks: server sends LSP positions/locations as plain JSON.
     vscode.commands.registerCommand(
@@ -142,6 +146,53 @@ async function renderAndPlay(): Promise<void> {
     void vscode.window.showErrorMessage("Symphra: open a saved .sym file to render it.");
     return;
   }
+  await renderDocumentAndPlay(document);
+}
+
+async function loopSection(): Promise<void> {
+  const editor = vscode.window.activeTextEditor;
+  const document = editor?.document;
+  if (!editor || !document || document.languageId !== "symphra" || document.uri.scheme !== "file") {
+    void vscode.window.showErrorMessage("Symphra: open a saved .sym file to loop a section.");
+    return;
+  }
+  if (!client) {
+    void vscode.window.showErrorMessage("Symphra: the language server is not running.");
+    return;
+  }
+
+  let section: SectionPreview | null;
+  try {
+    section = await client.sendRequest<SectionPreview | null>("symphra/sectionPreview", {
+      textDocument: { uri: document.uri.toString() },
+      position: {
+        line: editor.selection.active.line,
+        character: editor.selection.active.character,
+      },
+    });
+  } catch (error) {
+    void vscode.window.showErrorMessage(`Symphra: could not resolve the section. ${describe(error)}`);
+    return;
+  }
+  if (!section) {
+    void vscode.window.showErrorMessage(
+      "Symphra: place the cursor inside a section used by the arrangement.",
+    );
+    return;
+  }
+  const range: FrameRange = [section.startFrame, section.endFrame];
+  if (!range.every(Number.isSafeInteger) || range[0] < 0 || range[0] >= range[1]) {
+    void vscode.window.showErrorMessage("Symphra: the section playback range is invalid.");
+    return;
+  }
+  await renderDocumentAndPlay(document, range, section.name);
+}
+
+async function renderDocumentAndPlay(
+  document: vscode.TextDocument,
+  range?: FrameRange,
+  sectionName?: string,
+): Promise<void> {
   if (!(await document.save())) {
     return;
   }
@@ -154,7 +205,12 @@ async function renderAndPlay(): Promise<void> {
 
   try {
     await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: "Symphra: rendering preview" },
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: sectionName
+          ? `Symphra: rendering section ${sectionName}`
+          : "Symphra: rendering preview",
+      },
       () => execFileAsync(command, [document.uri.fsPath, output]),
     );
   } catch (error) {
@@ -166,7 +222,7 @@ async function renderAndPlay(): Promise<void> {
   }
 
   if (generation === playbackGeneration) {
-    startPlayback(resolvePlayerCommand(), output, directory);
+    startPlayback(resolvePlayerCommand(), output, directory, range);
   } else {
     void removePreview(directory);
   }
@@ -181,8 +237,14 @@ function stopPlayback(): void {
   }
 }
 
-function startPlayback(command: string, output: string, directory: string): void {
-  const child = spawn(command, [output], {
+function startPlayback(
+  command: string,
+  output: string,
+  directory: string,
+  range?: FrameRange,
+): void {
+  const args = range ? [output, String(range[0]), String(range[1])] : [output];
+  const child = spawn(command, args, {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
   });

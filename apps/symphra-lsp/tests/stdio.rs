@@ -476,6 +476,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         })
     );
 
+    let section_source = include_str!("../../../examples/draft-0.1/001-example.sym");
+    let drop_line = section_source
+        .lines()
+        .position(|line| line.trim_start().starts_with("section drop bars"))
+        .expect("example should declare drop");
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didChange",
@@ -484,10 +489,40 @@ fn stdio_server_should_handle_documents_and_shutdown() {
                 "uri": "file:///test.sym",
                 "version": 3
             },
+            "contentChanges": [{ "text": section_source }]
+        }
+    }));
+    assert_eq!(server.receive()["params"]["diagnostics"], json!([]));
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "symphra/sectionPreview",
+        "params": {
+            "textDocument": { "uri": "file:///test.sym" },
+            "position": { "line": drop_line, "character": 10 }
+        }
+    }));
+    assert_eq!(
+        server.receive()["result"],
+        json!({
+            "name": "drop",
+            "startFrame": 614_400,
+            "endFrame": 1_228_800
+        })
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {
+                "uri": "file:///test.sym",
+                "version": 4
+            },
             "contentChanges": [{ "text": "project { seed nope }" }]
         }
     }));
-    assert_eq!(server.receive()["params"]["version"], 3);
+    assert_eq!(server.receive()["params"]["version"], 4);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didClose",
@@ -501,11 +536,11 @@ fn stdio_server_should_handle_documents_and_shutdown() {
 
     server.send(&json!({
         "jsonrpc": "2.0",
-        "id": 13,
+        "id": 14,
         "method": "shutdown",
         "params": null
     }));
-    assert_eq!(server.receive()["id"], 13);
+    assert_eq!(server.receive()["id"], 14);
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "exit"

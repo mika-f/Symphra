@@ -28,3 +28,4 @@ node_modules/
 .makit/
 dist/
 .pnpm-store/
+.symphra-cache/

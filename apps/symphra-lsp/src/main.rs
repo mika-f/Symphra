@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,7 @@ use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 struct Backend {
     client: Client,
     documents: RwLock<HashMap<Uri, SourceText>>,
+    preview_tracks: RwLock<HashMap<Uri, PreviewTrackState>>,
     hierarchical_symbols: AtomicBool,
 }
 
@@ -57,6 +58,17 @@ impl Backend {
             section_preview(source, params.position, params.section_name.as_deref())
         }))
     }
+
+    async fn set_preview_track_state(&self, params: PreviewTrackStateParams) -> Result<()> {
+        self.preview_tracks.write().await.insert(
+            params.text_document.uri,
+            PreviewTrackState {
+                muted: params.muted.into_iter().collect(),
+                soloed: params.soloed.into_iter().collect(),
+            },
+        );
+        self.client.code_lens_refresh().await
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,6 +77,20 @@ struct SectionPreviewParams {
     text_document: TextDocumentIdentifier,
     position: Option<Position>,
     section_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PreviewTrackState {
+    muted: HashSet<String>,
+    soloed: HashSet<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PreviewTrackStateParams {
+    #[serde(rename = "textDocument")]
+    text_document: TextDocumentIdentifier,
+    muted: Vec<String>,
+    soloed: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -348,7 +374,11 @@ impl LanguageServer for Backend {
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let documents = self.documents.read().await;
         let uri = params.text_document.uri;
-        Ok(documents.get(&uri).map(|source| code_lenses(source, &uri)))
+        let preview_tracks = self.preview_tracks.read().await;
+        let state = preview_tracks.get(&uri).cloned().unwrap_or_default();
+        Ok(documents
+            .get(&uri)
+            .map(|source| code_lenses(source, &uri, &state)))
     }
 
     async fn prepare_rename(
@@ -1422,7 +1452,7 @@ fn named_symbol_spans(
     })
 }
 
-fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
+fn code_lenses(source: &SourceText, uri: &Uri, state: &PreviewTrackState) -> Vec<CodeLens> {
     let parsed = parse(source.id, &source.text);
     let mut lenses = Vec::new();
     for declaration in &parsed.file.declarations {
@@ -1452,6 +1482,7 @@ fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
                 data: None,
             });
         }
+        lenses.extend(track_preview_code_lenses(source, uri, song, state));
         for (kind, name) in named_declarations(song) {
             let Some(range) = lsp_range(source, name.span) else {
                 continue;
@@ -1479,6 +1510,58 @@ fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
                     title,
                     command: "symphra.showReferences".to_owned(),
                     arguments,
+                }),
+                data: None,
+            });
+        }
+    }
+    lenses
+}
+
+fn track_preview_code_lenses(
+    source: &SourceText,
+    uri: &Uri,
+    song: &SongDeclaration,
+    state: &PreviewTrackState,
+) -> Vec<CodeLens> {
+    let mut lenses = Vec::new();
+    for track in song.statements.iter().filter_map(|statement| {
+        if let SongStatement::Track(track) = statement {
+            Some(track)
+        } else {
+            None
+        }
+    }) {
+        let Some(range) = lsp_range(source, track.name.span) else {
+            continue;
+        };
+        for (title, command) in [
+            (
+                if state.muted.contains(&track.name.text) {
+                    "Unmute"
+                } else {
+                    "Mute"
+                },
+                "symphra.toggleMute",
+            ),
+            (
+                if state.soloed.contains(&track.name.text) {
+                    "Unsolo"
+                } else {
+                    "Solo"
+                },
+                "symphra.toggleSolo",
+            ),
+        ] {
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title: title.to_owned(),
+                    command: command.to_owned(),
+                    arguments: Some(vec![
+                        serde_json::Value::String(uri.as_str().to_owned()),
+                        serde_json::Value::String(track.name.text.clone()),
+                    ]),
                 }),
                 data: None,
             });
@@ -2330,9 +2413,14 @@ async fn main() {
     let (service, socket) = LspService::build(|client| Backend {
         client,
         documents: RwLock::new(HashMap::new()),
+        preview_tracks: RwLock::new(HashMap::new()),
         hierarchical_symbols: AtomicBool::new(false),
     })
     .custom_method("symphra/sectionPreview", Backend::section_preview)
+    .custom_method(
+        "symphra/setPreviewTrackState",
+        Backend::set_preview_track_state,
+    )
     .finish();
     Server::new(tokio::io::stdin(), tokio::io::stdout(), socket)
         .serve(service)
@@ -2341,12 +2429,15 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{
-        SEMANTIC_MOD_DECLARATION, SEMANTIC_TOKEN_COMMENT, SEMANTIC_TOKEN_FUNCTION,
-        SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER, SEMANTIC_TOKEN_STRING, SEMANTIC_TOKEN_TYPE,
-        SourceId, SourceText, code_lenses, completions, definition, diagnostics,
-        document_highlights, document_symbols, flatten_document_symbols, formatting_edits, hover,
-        inlay_hints, prepare_rename, references, rename, section_preview, semantic_tokens,
+        PreviewTrackState, SEMANTIC_MOD_DECLARATION, SEMANTIC_TOKEN_COMMENT,
+        SEMANTIC_TOKEN_FUNCTION, SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER,
+        SEMANTIC_TOKEN_STRING, SEMANTIC_TOKEN_TYPE, SourceId, SourceText, code_lenses, completions,
+        definition, diagnostics, document_highlights, document_symbols, flatten_document_symbols,
+        formatting_edits, hover, inlay_hints, prepare_rename, references, rename, section_preview,
+        semantic_tokens,
     };
 
     #[test]
@@ -4062,7 +4153,7 @@ mod tests {
         );
         let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
 
-        let lenses = code_lenses(&source, &uri);
+        let lenses = code_lenses(&source, &uri, &PreviewTrackState::default());
         let melody = lenses
             .iter()
             .find(|lens| lens.range == Range::new(Position::new(1, 10), Position::new(1, 16)))
@@ -4109,7 +4200,7 @@ mod tests {
         );
         let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
 
-        let lens = code_lenses(&source, &uri)
+        let lens = code_lenses(&source, &uri, &PreviewTrackState::default())
             .into_iter()
             .find(|lens| {
                 lens.command
@@ -4129,6 +4220,37 @@ mod tests {
                 ]),
             })
         );
+    }
+
+    #[test]
+    fn builds_stateful_mute_and_solo_code_lenses_for_tracks() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 8khz output mono }\n",
+                "song \"Test\" {\n",
+                "  tempo 120bpm meter 4/4 key C major\n",
+                "  instrument tone = sine\n",
+                "  pattern notes = sequence { note C4 for 1/4 }\n",
+                "  track bass role bass { instrument tone play notes }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+        let state = PreviewTrackState {
+            muted: HashSet::from(["bass".to_owned()]),
+            soloed: HashSet::new(),
+        };
+
+        let titles = code_lenses(&source, &uri, &state)
+            .into_iter()
+            .filter_map(|lens| lens.command)
+            .filter(|command| command.command.starts_with("symphra.toggle"))
+            .map(|command| command.title)
+            .collect::<Vec<_>>();
+
+        assert_eq!(titles, vec!["Unmute", "Solo"]);
     }
 
     #[test]

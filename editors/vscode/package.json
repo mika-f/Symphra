@@ -62,6 +62,14 @@
       {
         "command": "symphra.stopPlayback",
         "title": "Symphra: Stop Playback"
+      },
+      {
+        "command": "symphra.toggleMute",
+        "title": "Symphra: Toggle Track Mute"
+      },
+      {
+        "command": "symphra.toggleSolo",
+        "title": "Symphra: Toggle Track Solo"
       }
     ],
     "configuration": {

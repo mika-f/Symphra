@@ -1,5 +1,6 @@
 //! Deterministic offline rendering from score events to interleaved PCM.
 
+use std::collections::HashSet;
 use std::num::NonZeroU32;
 
 use rayon::prelude::*;
@@ -39,6 +40,32 @@ pub trait TrackRenderCache {
     fn load(&mut self, track: &Track, sample_count: usize) -> Option<Vec<f32>>;
 
     fn store(&mut self, track: &Track, samples: &[f32]);
+}
+
+/// Selects track declarations by name while preserving the full song timeline.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrackSelection(Option<HashSet<String>>);
+
+impl TrackSelection {
+    /// Includes every track in the song.
+    #[must_use]
+    pub fn all() -> Self {
+        Self::default()
+    }
+
+    /// Includes only tracks whose declaration names are in `names`.
+    #[must_use]
+    pub fn only(names: HashSet<String>) -> Self {
+        Self(Some(names))
+    }
+
+    /// Returns whether a scheduled track is selected for rendering.
+    #[must_use]
+    pub fn includes(&self, track: &Track) -> bool {
+        self.0
+            .as_ref()
+            .is_none_or(|names| names.contains(&track.name))
+    }
 }
 
 impl AudioBuffer {
@@ -192,6 +219,39 @@ pub fn render_song_with_assets_with_cache(
     sample_library: &SampleLibrary,
     soundfont_library: &SoundFontLibrary,
     vst3_library: &Vst3Library,
+    cache: Option<&mut dyn TrackRenderCache>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<AudioBuffer, RenderError> {
+    render_song_with_assets_with_cache_selected(
+        score,
+        song_index,
+        sample_library,
+        soundfont_library,
+        vst3_library,
+        &TrackSelection::all(),
+        cache,
+        progress,
+    )
+}
+
+/// Renders selected track declarations using preloaded assets and an optional
+/// persistent track-audio cache. The output keeps the full song duration.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] for an invalid score, a referenced asset that is
+/// unavailable, or a VST3 plug-in failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the renderer accepts three asset libraries plus selection, cache, and progress"
+)]
+pub fn render_song_with_assets_with_cache_selected(
+    score: &Score,
+    song_index: usize,
+    sample_library: &SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
+    vst3_library: &Vst3Library,
+    selection: &TrackSelection,
     mut cache: Option<&mut dyn TrackRenderCache>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<AudioBuffer, RenderError> {
@@ -220,6 +280,7 @@ pub fn render_song_with_assets_with_cache(
         channels,
         sample_count,
         &libraries,
+        selection,
         &mut cache,
         progress,
     )?;
@@ -272,21 +333,31 @@ fn validate_song(song: &Song) -> Result<(), RenderError> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "track rendering needs the song format, assets, selection, cache, and progress"
+)]
 fn render_tracks(
     song: &Song,
     sample_rate_hz: u32,
     channels: u16,
     sample_count: usize,
     libraries: &AssetLibraries<'_>,
+    selection: &TrackSelection,
     cache: &mut Option<&mut dyn TrackRenderCache>,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Vec<f32>, RenderError> {
-    let track_count = song.tracks.len();
+    let tracks = song
+        .tracks
+        .iter()
+        .filter(|track| selection.includes(track))
+        .collect::<Vec<_>>();
+    let track_count = tracks.len();
     let mut track_buffers = (0..track_count).map(|_| Vec::new()).collect::<Vec<_>>();
     let mut parallel_tracks = Vec::new();
     let mut vst3_tracks = Vec::new();
     progress(0, track_count);
-    for (track_index, track) in song.tracks.iter().enumerate() {
+    for (track_index, track) in tracks.iter().copied().enumerate() {
         if let Some(samples) = cache
             .as_deref_mut()
             .and_then(|cache| cache.load(track, sample_count))
@@ -315,7 +386,7 @@ fn render_tracks(
         .collect::<Result<Vec<_>, RenderError>>()?;
     for (track_index, track_samples) in rendered_parallel_tracks {
         if let Some(cache) = cache.as_deref_mut() {
-            cache.store(&song.tracks[track_index], &track_samples);
+            cache.store(tracks[track_index], &track_samples);
         }
         track_buffers[track_index] = track_samples;
     }
@@ -985,14 +1056,17 @@ fn automation_rate_hz(cycles_per_bar: f32, tempo_bpm: f64, meter: Meter) -> f64 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use symphra_score::{
         Channels, EntityId, Envelope, InstrumentKind, Key, MasterLimiter, Meter, Mode, MusicalTime,
         NoteEvent, Pan, PitchClass, SampleEvent, SampleSelector, Score, Song, Track,
     };
 
     use super::{
-        RenderError, SampleLibrary, SoundFontLibrary, TrackRenderCache, Vst3Library, render_song,
-        render_song_with_assets_with_cache, render_song_with_assets_with_progress,
+        RenderError, SampleLibrary, SoundFontLibrary, TrackRenderCache, TrackSelection,
+        Vst3Library, render_song, render_song_with_assets_with_cache,
+        render_song_with_assets_with_cache_selected, render_song_with_assets_with_progress,
     };
 
     #[test]
@@ -1006,6 +1080,26 @@ mod tests {
             (first.frames(), first.channels, first.samples),
             (8, 2, second.samples)
         );
+    }
+
+    #[test]
+    fn selected_render_should_keep_the_song_length_when_no_tracks_are_selected() {
+        let score = score(InstrumentKind::Sine { envelope: None });
+        let original = render_song(&score, 0).expect("score should render");
+        let selected = render_song_with_assets_with_cache_selected(
+            &score,
+            0,
+            &SampleLibrary::default(),
+            &SoundFontLibrary::default(),
+            &Vst3Library::default(),
+            &TrackSelection::only(HashSet::new()),
+            None,
+            &mut |_, _| {},
+        )
+        .expect("an empty selection should render silence");
+
+        assert_eq!(selected.frames(), original.frames());
+        assert!(selected.samples.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]

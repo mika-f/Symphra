@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -14,9 +14,9 @@ use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use symphra_engine::{
     DecodeError, EngineError, InstrumentKind, SampleLibrary, SampleSelector, Score,
     SoundFontDecodeError, SoundFontLibrary, SourceId, SourceSpan, SourceText, Track,
-    TrackRenderCache, Vst3Error, Vst3Library, compile_source, decode_soundfont, decode_wav,
-    named_sample_source, packed_sample_source, render_score_with_assets_with_cache,
-    render_score_with_assets_with_progress, validate_plugin,
+    TrackRenderCache, TrackSelection, Vst3Error, Vst3Library, compile_source, decode_soundfont,
+    decode_wav, named_sample_source, packed_sample_source,
+    render_score_with_assets_with_cache_selected, validate_plugin,
 };
 use symphra_export::{ExportError, encode_wav_with_progress};
 
@@ -34,20 +34,22 @@ fn main() -> ExitCode {
 }
 
 fn run(args: impl IntoIterator<Item = OsString>) -> Result<PathBuf, CliError> {
-    let mut args = args.into_iter();
-    let input = PathBuf::from(args.next().ok_or(CliError::Usage)?);
-    let output = args
-        .next()
-        .map_or_else(|| input.with_extension("wav"), PathBuf::from);
-    if args.next().is_some() {
-        return Err(CliError::Usage);
-    }
+    let arguments = CliArguments::parse(args)?;
+    let input = arguments.input;
+    let output = arguments
+        .output
+        .unwrap_or_else(|| input.with_extension("wav"));
 
     let text = fs::read_to_string(&input).map_err(|source| CliError::Read {
         path: input.display().to_string(),
         source,
     })?;
-    let wav = source_to_wav_with_cache(input.display().to_string(), text, &input)?;
+    let wav = source_to_wav_with_cache(
+        input.display().to_string(),
+        text,
+        &input,
+        &arguments.track_mix,
+    )?;
     fs::write(&output, wav).map_err(|source| CliError::Write {
         path: output.display().to_string(),
         source,
@@ -57,17 +59,23 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<PathBuf, CliError> {
 
 #[cfg(test)]
 fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
-    source_to_wav_inner(name, text, None)
+    source_to_wav_inner(name, text, &TrackMix::default(), None)
 }
 
-fn source_to_wav_with_cache(name: String, text: String, input: &Path) -> Result<Vec<u8>, CliError> {
+fn source_to_wav_with_cache(
+    name: String,
+    text: String,
+    input: &Path,
+    track_mix: &TrackMix,
+) -> Result<Vec<u8>, CliError> {
     let mut cache = FileTrackCache::new(input);
-    source_to_wav_inner(name, text, Some(&mut cache))
+    source_to_wav_inner(name, text, track_mix, Some(&mut cache))
 }
 
 fn source_to_wav_inner(
     name: String,
     text: String,
+    track_mix: &TrackMix,
     mut cache: Option<&mut FileTrackCache>,
 ) -> Result<Vec<u8>, CliError> {
     let source_path = PathBuf::from(&name);
@@ -75,34 +83,32 @@ fn source_to_wav_inner(
     let tui = RenderTui::new();
     tui.spinner("Compiling source");
     let score = compile_source(&source).map_err(|error| engine_error(&source, error))?;
+    let selection = track_mix.selection(&score);
     if let Some(cache) = &mut cache {
         cache.set_context(&score);
     }
     let base = source_path.parent().unwrap_or_else(|| Path::new(""));
     tui.spinner("Loading audio assets");
-    let samples = load_samples(&score, base)?;
-    let soundfonts = load_soundfonts(&score, base)?;
-    let vst3s = load_vst3s(&score, base)?;
+    let assets = selected_score(&score, &selection);
+    let samples = load_samples(&assets, base)?;
+    let soundfonts = load_soundfonts(&assets, base)?;
+    let vst3s = load_vst3s(&assets, base)?;
     let mut progress = |complete, total| tui.render(complete, total);
-    let audio = match cache {
-        Some(cache) => render_score_with_assets_with_cache(
-            &score,
-            0,
-            &samples,
-            &soundfonts,
-            &vst3s,
-            cache,
-            &mut progress,
-        ),
-        None => render_score_with_assets_with_progress(
-            &score,
-            0,
-            &samples,
-            &soundfonts,
-            &vst3s,
-            &mut progress,
-        ),
-    }
+    let mut no_cache = NoTrackCache;
+    let render_cache: &mut dyn TrackRenderCache = match cache {
+        Some(cache) => cache,
+        None => &mut no_cache,
+    };
+    let audio = render_score_with_assets_with_cache_selected(
+        &score,
+        0,
+        &samples,
+        &soundfonts,
+        &vst3s,
+        &selection,
+        render_cache,
+        &mut progress,
+    )
     .map_err(|error| engine_error(&source, error))?;
     tui.progress("Encoding WAV", 0, audio.samples.len());
     let wav = encode_wav_with_progress(&audio, &mut |complete, total| {
@@ -111,6 +117,95 @@ fn source_to_wav_inner(
     .map_err(CliError::Export)?;
     tui.finish();
     Ok(wav)
+}
+
+#[derive(Debug)]
+struct CliArguments {
+    input: PathBuf,
+    output: Option<PathBuf>,
+    track_mix: TrackMix,
+}
+
+impl CliArguments {
+    fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Self, CliError> {
+        let mut args = args.into_iter();
+        let mut positional = Vec::new();
+        let mut muted = HashSet::new();
+        let mut soloed = HashSet::new();
+        while let Some(argument) = args.next() {
+            if argument == "--mute" || argument == "--solo" {
+                let is_mute = argument == "--mute";
+                let name = args
+                    .next()
+                    .ok_or(CliError::Usage)?
+                    .into_string()
+                    .map_err(|_| CliError::Usage)?;
+                if is_mute {
+                    muted.insert(name);
+                } else {
+                    soloed.insert(name);
+                }
+            } else if argument.to_string_lossy().starts_with('-') {
+                return Err(CliError::Usage);
+            } else {
+                positional.push(argument);
+            }
+        }
+        if positional.is_empty() || positional.len() > 2 {
+            return Err(CliError::Usage);
+        }
+        let input = PathBuf::from(positional.remove(0));
+        let output = positional.pop().map(PathBuf::from);
+        Ok(Self {
+            input,
+            output,
+            track_mix: TrackMix { muted, soloed },
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+struct TrackMix {
+    muted: HashSet<String>,
+    soloed: HashSet<String>,
+}
+
+impl TrackMix {
+    fn selection(&self, score: &Score) -> TrackSelection {
+        if self.muted.is_empty() && self.soloed.is_empty() {
+            return TrackSelection::all();
+        }
+        let mut included = if self.soloed.is_empty() {
+            score
+                .songs
+                .iter()
+                .flat_map(|song| &song.tracks)
+                .map(|track| track.name.clone())
+                .collect()
+        } else {
+            self.soloed.clone()
+        };
+        included.retain(|name| !self.muted.contains(name));
+        TrackSelection::only(included)
+    }
+}
+
+struct NoTrackCache;
+
+impl TrackRenderCache for NoTrackCache {
+    fn load(&mut self, _track: &Track, _sample_count: usize) -> Option<Vec<f32>> {
+        None
+    }
+
+    fn store(&mut self, _track: &Track, _samples: &[f32]) {}
+}
+
+fn selected_score(score: &Score, selection: &TrackSelection) -> Score {
+    let mut selected = score.clone();
+    for song in &mut selected.songs {
+        song.tracks.retain(|track| selection.includes(track));
+    }
+    selected
 }
 
 const CACHE_MAGIC: [u8; 8] = *b"SYMPHC01";
@@ -218,8 +313,8 @@ fn track_assets(track: &Track) -> Vec<String> {
             .collect::<Vec<_>>(),
         InstrumentKind::Sine { .. }
         | InstrumentKind::Triangle { .. }
-        | InstrumentKind::Supersaw { .. } => Vec::new(),
-        InstrumentKind::Vst3 { .. } => Vec::new(),
+        | InstrumentKind::Supersaw { .. }
+        | InstrumentKind::Vst3 { .. } => Vec::new(),
     }
 }
 
@@ -388,7 +483,7 @@ fn render_diagnostic(source: &SourceText, message: &str, span: SourceSpan) -> St
 
 #[derive(Debug, thiserror::Error)]
 enum CliError {
-    #[error("usage: symphra <input.sym> [output.wav]")]
+    #[error("usage: symphra <input.sym> [output.wav] [--mute <track>]... [--solo <track>]...")]
     Usage,
     #[error("failed to read `{path}`: {source}")]
     Read {
@@ -448,9 +543,45 @@ enum CliError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::ffi::OsString;
     use std::fs;
 
-    use super::{CliError, SourceId, SourceSpan, SourceText, render_diagnostic, source_to_wav};
+    use super::{
+        CliArguments, CliError, SourceId, SourceSpan, SourceText, render_diagnostic, source_to_wav,
+    };
+
+    #[test]
+    fn cli_arguments_should_accept_repeated_mute_and_solo_flags() {
+        let arguments = CliArguments::parse(
+            [
+                "song.sym",
+                "preview.wav",
+                "--mute",
+                "drums",
+                "--solo",
+                "bass",
+                "--solo",
+                "lead",
+            ]
+            .map(OsString::from),
+        )
+        .expect("track flags should parse");
+
+        assert_eq!(arguments.input, std::path::Path::new("song.sym"));
+        assert_eq!(
+            arguments.output.as_deref(),
+            Some(std::path::Path::new("preview.wav"))
+        );
+        assert_eq!(
+            arguments.track_mix.muted,
+            HashSet::from(["drums".to_owned()])
+        );
+        assert_eq!(
+            arguments.track_mix.soloed,
+            HashSet::from(["bass".to_owned(), "lead".to_owned()])
+        );
+    }
 
     #[test]
     fn source_to_wav_should_run_the_complete_offline_pipeline() {

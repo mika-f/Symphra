@@ -14,13 +14,16 @@ tracks the current draft and will need updates as the language grows.
   and punctuation (`|>`, `..`, `:`, `*`, `[]`, `()`, `,`).
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, completions, semantic tokens, and inlay hints.
-- A **Loop section** CodeLens above each section declaration.
+- **Mute** and **Solo** CodeLens controls above each track declaration, plus a
+  **Loop section** CodeLens above each section declaration.
+- A status bar item showing the current file and section; click it to stop playback.
 - **Render and Play**, **Loop Section at Cursor**, and **Stop Playback** commands
   backed by the `symphra` CLI and a persistent background `symphra-player` process. The
   player loops either the full render or the arranged occurrence of the section
   containing the cursor, without opening a player panel. Saving the active
   preview document re-renders and replaces the loop; **Stop Playback** disables
-  this automatic refresh.
+  this automatic refresh. Clicking Mute or Solo during playback also refreshes
+  the current loop automatically.
 
 ## Building and running
 
@@ -34,7 +37,7 @@ npm run compile
 Build the language server and preview player from the repository root:
 
 ```console
-cargo build -p symphra-lsp -p symphra-player --locked
+cargo build -p symphra -p symphra-lsp -p symphra-player --locked
 ```
 
 Then open this `editors/vscode` folder in VS Code and press F5 to launch an

@@ -3,11 +3,12 @@
 use symphra_compiler::{CompileDiagnostic, ScheduleError, compile, schedule};
 use symphra_render::{
     RenderError, render_song_with_assets, render_song_with_assets_with_cache,
-    render_song_with_assets_with_progress, render_song_with_samples,
+    render_song_with_assets_with_cache_selected, render_song_with_assets_with_progress,
+    render_song_with_samples,
 };
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
-pub use symphra_render::{AudioBuffer, TrackRenderCache};
+pub use symphra_render::{AudioBuffer, TrackRenderCache, TrackSelection};
 pub use symphra_sampler::{
     DecodeError, Sample, SampleLibrary, decode_wav, named_sample_source, packed_sample_source,
 };
@@ -128,6 +129,40 @@ pub fn render_score_with_assets_with_cache(
         samples,
         soundfonts,
         vst3s,
+        Some(cache),
+        progress,
+    )
+    .map_err(EngineError::Render)
+}
+
+/// Renders selected track declarations while reusing post-effect track audio
+/// supplied by `cache`. The output keeps the full song duration.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Render`] when the score or a required asset is
+/// invalid or unavailable.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the renderer accepts three asset libraries plus selection, cache, and progress"
+)]
+pub fn render_score_with_assets_with_cache_selected(
+    score: &Score,
+    song_index: usize,
+    samples: &SampleLibrary,
+    soundfonts: &SoundFontLibrary,
+    vst3s: &Vst3Library,
+    selection: &TrackSelection,
+    cache: &mut dyn TrackRenderCache,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<AudioBuffer, EngineError> {
+    render_song_with_assets_with_cache_selected(
+        score,
+        song_index,
+        samples,
+        soundfonts,
+        vst3s,
+        selection,
         Some(cache),
         progress,
     )

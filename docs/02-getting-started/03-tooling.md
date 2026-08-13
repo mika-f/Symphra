@@ -3,7 +3,7 @@
 ## CLI (`symphra`)
 
 ```console
-symphra <input.sym> [output.wav]
+symphra <input.sym> [output.wav] [--mute <track>]... [--solo <track>]...
 ```
 
 - Compiles source, loads referenced assets, renders, encodes WAV
@@ -11,9 +11,9 @@ symphra <input.sym> [output.wav]
 - Reuses unchanged post-effect track audio from `.symphra-cache/` beside the source file
 - Renders independent non-VST3 tracks across available CPU cores, then mixes them in source order
 - Default output: same path as the input with a `.wav` extension
+- `--mute` excludes a named track declaration; `--solo` includes only named
+  track declarations. Both flags are repeatable, and mute takes precedence.
 - Prints `wrote <path>` on success; diagnostics go to stderr on failure
-
-There are no extra flags yet — configuration lives in the source file.
 
 ## Preview player (`symphra-player`)
 

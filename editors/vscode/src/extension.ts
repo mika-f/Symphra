@@ -18,10 +18,13 @@ let previewDirectory: string | undefined;
 let previewGeneration = 0;
 let previewSession: PreviewSession | undefined;
 let savingDocument: string | undefined;
+let playbackStatus: vscode.StatusBarItem | undefined;
+const previewTrackMixes = new Map<string, TrackMix>();
 
 type FrameRange = readonly [start: number, end: number];
 type SectionPreview = { name: string; startFrame: number; endFrame: number };
 type PreviewSession = { uri: string; sectionName?: string };
+type TrackMix = { muted: Set<string>; soloed: Set<string> };
 type PreviewResponse = { id: number; error: string | null };
 type PendingPreview = { resolve: () => void; reject: (error: Error) => void };
 
@@ -31,7 +34,11 @@ const PLAYER_BINARY_NAME = process.platform === "win32" ? "symphra-player.exe" :
 const execFileAsync = promisify(execFile);
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  playbackStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  playbackStatus.command = "symphra.stopPlayback";
+  playbackStatus.tooltip = "Stop Symphra preview";
   context.subscriptions.push(
+    playbackStatus,
     vscode.commands.registerCommand("symphra.restartServer", () => restartServer()),
     vscode.commands.registerCommand("symphra.renderAndPlay", () => renderAndPlay()),
     vscode.commands.registerCommand(
@@ -39,6 +46,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       (uri?: string, sectionName?: string) => loopSection(uri, sectionName),
     ),
     vscode.commands.registerCommand("symphra.stopPlayback", () => stopPlayback()),
+    vscode.commands.registerCommand("symphra.toggleMute", (uri: string, name: string) =>
+      toggleTrack(uri, name, "muted"),
+    ),
+    vscode.commands.registerCommand("symphra.toggleSolo", (uri: string, name: string) =>
+      toggleTrack(uri, name, "soloed"),
+    ),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (document.uri.toString() !== savingDocument) {
         void refreshPreview(document);
@@ -107,6 +120,9 @@ async function startServer(): Promise<void> {
 
   try {
     await client.start();
+    await Promise.all(
+      [...previewTrackMixes].map(([uri, mix]) => sendPreviewTrackState(uri, mix)),
+    );
   } catch (error) {
     void vscode.window.showErrorMessage(
       `Symphra: failed to start the language server ("${command}"). ` +
@@ -163,7 +179,7 @@ async function renderAndPlay(): Promise<void> {
     return;
   }
   if (await renderDocumentAndPlay(document)) {
-    previewSession = { uri: document.uri.toString() };
+    setPreviewSession({ uri: document.uri.toString() });
   }
 }
 
@@ -208,7 +224,7 @@ async function loopSection(uri?: string, sectionName?: string): Promise<void> {
     return;
   }
   if (await renderDocumentAndPlay(document, range, section.name)) {
-    previewSession = { uri: document.uri.toString(), sectionName: section.name };
+    setPreviewSession({ uri: document.uri.toString(), sectionName: section.name });
   }
 }
 
@@ -240,7 +256,7 @@ async function renderDocumentAndPlay(
           ? `Symphra: rendering section ${sectionName}`
           : "Symphra: rendering preview",
       },
-      () => execFileAsync(command, [document.uri.fsPath, output]),
+      () => execFileAsync(command, renderArguments(document, output)),
     );
   } catch (error) {
     await fs.promises.rm(directory, { recursive: true, force: true });
@@ -259,12 +275,31 @@ async function renderDocumentAndPlay(
 }
 
 function stopPlayback(): void {
-  previewSession = undefined;
+  clearPreviewSession();
   previewGeneration += 1;
   void player?.stop().catch(() => {});
   if (previewDirectory) {
     void removePreview(previewDirectory);
   }
+}
+
+function setPreviewSession(session: PreviewSession): void {
+  previewSession = session;
+  if (!playbackStatus) {
+    return;
+  }
+  const filename = path.basename(vscode.Uri.parse(session.uri).fsPath);
+  const mix = previewTrackMixes.get(session.uri);
+  const mixStatus = mix
+    ? `${mix.muted.size ? ` M${mix.muted.size}` : ""}${mix.soloed.size ? ` S${mix.soloed.size}` : ""}`
+    : "";
+  playbackStatus.text = `$(debug-stop) ${filename}${session.sectionName ? `: ${session.sectionName}` : ""}${mixStatus}`;
+  playbackStatus.show();
+}
+
+function clearPreviewSession(): void {
+  previewSession = undefined;
+  playbackStatus?.hide();
 }
 
 async function refreshPreview(document: vscode.TextDocument): Promise<void> {
@@ -300,6 +335,54 @@ async function refreshPreview(document: vscode.TextDocument): Promise<void> {
     return;
   }
   await renderDocumentAndPlay(document, range, section?.name, true);
+}
+
+async function toggleTrack(
+  uri: string,
+  name: string,
+  kind: "muted" | "soloed",
+): Promise<void> {
+  const mix = previewTrackMixes.get(uri) ?? { muted: new Set<string>(), soloed: new Set<string>() };
+  previewTrackMixes.set(uri, mix);
+  const tracks = mix[kind];
+  if (tracks.has(name)) {
+    tracks.delete(name);
+  } else {
+    tracks.add(name);
+  }
+  try {
+    await sendPreviewTrackState(uri, mix);
+  } catch (error) {
+    void vscode.window.showErrorMessage(`Symphra: could not update track state. ${describe(error)}`);
+    return;
+  }
+  if (previewSession?.uri === uri) {
+    setPreviewSession(previewSession);
+    await refreshPreview(await vscode.workspace.openTextDocument(vscode.Uri.parse(uri)));
+  }
+}
+
+function sendPreviewTrackState(uri: string, mix: TrackMix): Promise<void> {
+  if (!client) {
+    return Promise.reject(new Error("the language server is not running"));
+  }
+  return client.sendRequest("symphra/setPreviewTrackState", {
+    textDocument: { uri },
+    muted: [...mix.muted],
+    soloed: [...mix.soloed],
+  });
+}
+
+function renderArguments(document: vscode.TextDocument, output: string): string[] {
+  const args = [document.uri.fsPath, output];
+  const mix = previewTrackMixes.get(document.uri.toString());
+  for (const name of [...(mix?.muted ?? [])].sort()) {
+    args.push("--mute", name);
+  }
+  for (const name of [...(mix?.soloed ?? [])].sort()) {
+    args.push("--solo", name);
+  }
+  return args;
 }
 
 function requestSectionPreview(
@@ -341,6 +424,7 @@ async function startPlayback(
   } catch (error) {
     player?.dispose();
     player = undefined;
+    stopPlayback();
     void removePreview(directory);
     void vscode.window.showErrorMessage(`Symphra: playback failed ("${command}"). ${describe(error)}`);
     return false;
@@ -379,6 +463,7 @@ class PreviewPlayer {
       this.fail(this.stderr.trim() || `exit code ${code ?? "unknown"}`);
       if (player === this) {
         player = undefined;
+        stopPlayback();
       }
     });
   }

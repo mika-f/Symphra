@@ -1,0 +1,4 @@
+interface:
+  display_name: "Strudel to Symphra"
+  short_description: "Translate Strudel compositions into valid Symphra songs"
+  default_prompt: "Use $translate-strudel-to-symphra to port this Strudel composition to Symphra."

@@ -164,7 +164,7 @@ Pipeline stages include:
 - `gain N`
 - `repeat N` or section-only `repeat fit`
 - `reverse`
-- `pan ...` or `alternate { pan ... }`
+- `pan N%` or `pan alternate(L%, R%)`
 - `chance N% { transpose N | retrigger N | speed N }`
 - `speed N` or `alternate { speed ... }`
 - `choose_sample A..B`

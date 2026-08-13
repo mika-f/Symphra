@@ -27,6 +27,20 @@ pub enum ExportError {
 /// Returns [`ExportError`] when the buffer metadata or samples are invalid, or
 /// when the result exceeds the RIFF size limit.
 pub fn encode_wav(buffer: &AudioBuffer) -> Result<Vec<u8>, ExportError> {
+    encode_wav_with_progress(buffer, &mut |_, _| {})
+}
+
+/// Encodes an interleaved audio buffer as PCM 16-bit RIFF/WAVE and reports
+/// the number of samples encoded so far.
+///
+/// # Errors
+///
+/// Returns [`ExportError`] when the buffer metadata or samples are invalid, or
+/// when the result exceeds the RIFF size limit.
+pub fn encode_wav_with_progress(
+    buffer: &AudioBuffer,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<u8>, ExportError> {
     validate_buffer(buffer)?;
 
     let block_align = buffer
@@ -64,8 +78,12 @@ pub fn encode_wav(buffer: &AudioBuffer) -> Result<Vec<u8>, ExportError> {
     wav.extend_from_slice(&PCM_BITS_PER_SAMPLE.to_le_bytes());
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_size.to_le_bytes());
-    for &sample in &buffer.samples {
+    progress(0, buffer.samples.len());
+    for (index, &sample) in buffer.samples.iter().enumerate() {
         wav.extend_from_slice(&sample_to_i16(sample).to_le_bytes());
+        if (index + 1).is_multiple_of(4096) || index + 1 == buffer.samples.len() {
+            progress(index + 1, buffer.samples.len());
+        }
     }
     Ok(wav)
 }
@@ -131,5 +149,22 @@ mod tests {
         .expect_err("incomplete frames should fail");
 
         assert_eq!(error, ExportError::MisalignedSamples);
+    }
+
+    #[test]
+    fn encodes_wav_with_progress() {
+        let buffer = AudioBuffer {
+            sample_rate_hz: 8_000,
+            channels: 1,
+            samples: vec![0.0; 4_097],
+        };
+        let mut updates = Vec::new();
+
+        encode_wav_with_progress(&buffer, &mut |complete, total| {
+            updates.push((complete, total));
+        })
+        .expect("valid audio should encode");
+
+        assert_eq!(updates, vec![(0, 4_097), (4_096, 4_097), (4_097, 4_097)]);
     }
 }

@@ -1,14 +1,17 @@
 //! Source-to-audio orchestration for Symphra.
 
 use symphra_compiler::{CompileDiagnostic, ScheduleError, compile, schedule};
-use symphra_render::{RenderError, render_song_with_assets, render_song_with_samples};
+use symphra_render::{
+    RenderError, render_song_with_assets, render_song_with_assets_with_cache,
+    render_song_with_assets_with_progress, render_song_with_samples,
+};
 use symphra_syntax::{Diagnostic, ParsedSource, parse};
 
-pub use symphra_render::AudioBuffer;
+pub use symphra_render::{AudioBuffer, TrackRenderCache};
 pub use symphra_sampler::{
     DecodeError, Sample, SampleLibrary, decode_wav, named_sample_source, packed_sample_source,
 };
-pub use symphra_score::{SampleSelector, Score};
+pub use symphra_score::{InstrumentKind, SampleSelector, Score, Track};
 pub use symphra_soundfont::{
     DecodeError as SoundFontDecodeError, SoundFontLibrary, decode_soundfont,
 };
@@ -82,6 +85,53 @@ pub fn render_score_with_assets(
 ) -> Result<AudioBuffer, EngineError> {
     render_song_with_assets(score, song_index, samples, soundfonts, vst3s)
         .map_err(EngineError::Render)
+}
+
+/// Renders a compiled score and reports each completed track through
+/// `progress`.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Render`] when the score or a required asset is
+/// invalid or unavailable.
+pub fn render_score_with_assets_with_progress(
+    score: &Score,
+    song_index: usize,
+    samples: &SampleLibrary,
+    soundfonts: &SoundFontLibrary,
+    vst3s: &Vst3Library,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<AudioBuffer, EngineError> {
+    render_song_with_assets_with_progress(score, song_index, samples, soundfonts, vst3s, progress)
+        .map_err(EngineError::Render)
+}
+
+/// Renders a compiled score while reusing post-effect track audio supplied by
+/// `cache`.
+///
+/// # Errors
+///
+/// Returns [`EngineError::Render`] when the score or a required asset is
+/// invalid or unavailable.
+pub fn render_score_with_assets_with_cache(
+    score: &Score,
+    song_index: usize,
+    samples: &SampleLibrary,
+    soundfonts: &SoundFontLibrary,
+    vst3s: &Vst3Library,
+    cache: &mut dyn TrackRenderCache,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<AudioBuffer, EngineError> {
+    render_song_with_assets_with_cache(
+        score,
+        song_index,
+        samples,
+        soundfonts,
+        vst3s,
+        Some(cache),
+        progress,
+    )
+    .map_err(EngineError::Render)
 }
 
 #[cfg(test)]

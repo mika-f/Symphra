@@ -29,6 +29,17 @@ pub struct AudioBuffer {
     pub samples: Vec<f32>,
 }
 
+/// Persists fully rendered track audio between offline render runs.
+///
+/// Cached samples are post-effect, pre-master-mix audio. Implementations must
+/// return `None` for a miss or for data whose length differs from
+/// `sample_count`.
+pub trait TrackRenderCache {
+    fn load(&mut self, track: &Track, sample_count: usize) -> Option<Vec<f32>>;
+
+    fn store(&mut self, track: &Track, samples: &[f32]);
+}
+
 impl AudioBuffer {
     #[must_use]
     pub fn frames(&self) -> usize {
@@ -126,6 +137,63 @@ pub fn render_song_with_assets(
     soundfont_library: &SoundFontLibrary,
     vst3_library: &Vst3Library,
 ) -> Result<AudioBuffer, RenderError> {
+    render_song_with_assets_with_progress(
+        score,
+        song_index,
+        sample_library,
+        soundfont_library,
+        vst3_library,
+        &mut |_, _| {},
+    )
+}
+
+/// Renders one song using preloaded assets, reporting each completed track.
+///
+/// The callback receives the number of completed tracks and the total track
+/// count. It is called once before rendering begins and after every track.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] for an invalid score, a referenced asset that is
+/// unavailable, or a VST3 plug-in failure.
+pub fn render_song_with_assets_with_progress(
+    score: &Score,
+    song_index: usize,
+    sample_library: &SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
+    vst3_library: &Vst3Library,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<AudioBuffer, RenderError> {
+    render_song_with_assets_with_cache(
+        score,
+        song_index,
+        sample_library,
+        soundfont_library,
+        vst3_library,
+        None,
+        progress,
+    )
+}
+
+/// Renders one song using preloaded assets and an optional persistent
+/// track-audio cache.
+///
+/// Cached audio is mixed and mastered exactly like newly rendered audio, so a
+/// cache hit only skips the track renderer.
+///
+/// # Errors
+///
+/// Returns [`RenderError`] for an invalid score, a referenced asset that is
+/// unavailable, or a VST3 plug-in failure.
+pub fn render_song_with_assets_with_cache(
+    score: &Score,
+    song_index: usize,
+    sample_library: &SampleLibrary,
+    soundfont_library: &SoundFontLibrary,
+    vst3_library: &Vst3Library,
+    mut cache: Option<&mut dyn TrackRenderCache>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<AudioBuffer, RenderError> {
     let song = score
         .songs
         .get(song_index)
@@ -177,8 +245,15 @@ pub fn render_song_with_assets(
         vst3: vst3_library,
     };
     let mut samples = vec![0.0; sample_count];
-    for track in &song.tracks {
-        if let Some(effect) = track.effect {
+    let track_count = song.tracks.len();
+    progress(0, track_count);
+    for (track_index, track) in song.tracks.iter().enumerate() {
+        let track_samples = if let Some(samples) = cache
+            .as_deref_mut()
+            .and_then(|cache| cache.load(track, sample_count))
+        {
+            samples
+        } else {
             let mut track_samples = vec![0.0; sample_count];
             render_track(
                 track,
@@ -188,27 +263,25 @@ pub fn render_song_with_assets(
                 &libraries,
                 &mut track_samples,
             )?;
-            apply_track_effect(
-                effect,
-                &mut track_samples,
-                channels,
-                song.tempo_bpm,
-                song.meter,
-                score.sample_rate_hz,
-            )?;
-            for (mixed, dry) in samples.iter_mut().zip(&track_samples) {
-                *mixed += dry;
+            if let Some(effect) = track.effect {
+                apply_track_effect(
+                    effect,
+                    &mut track_samples,
+                    channels,
+                    song.tempo_bpm,
+                    song.meter,
+                    score.sample_rate_hz,
+                )?;
             }
-        } else {
-            render_track(
-                track,
-                song.tempo_bpm,
-                score.sample_rate_hz,
-                channels,
-                &libraries,
-                &mut samples,
-            )?;
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.store(track, &track_samples);
+            }
+            track_samples
+        };
+        for (mixed, dry) in samples.iter_mut().zip(&track_samples) {
+            *mixed += dry;
         }
+        progress(track_index + 1, track_count);
     }
     if let Some(master) = &song.master {
         apply_limiter(&mut samples, master.ceiling);
@@ -836,7 +909,10 @@ mod tests {
         NoteEvent, Pan, PitchClass, SampleEvent, SampleSelector, Score, Song, Track,
     };
 
-    use super::{RenderError, render_song};
+    use super::{
+        RenderError, SampleLibrary, SoundFontLibrary, TrackRenderCache, Vst3Library, render_song,
+        render_song_with_assets_with_cache, render_song_with_assets_with_progress,
+    };
 
     #[test]
     fn render_song_should_be_deterministic_and_interleaved() {
@@ -849,6 +925,68 @@ mod tests {
             (first.frames(), first.channels, first.samples),
             (8, 2, second.samples)
         );
+    }
+
+    #[test]
+    fn render_song_with_progress_should_report_completed_tracks() {
+        let score = score(InstrumentKind::Sine { envelope: None });
+        let mut updates = Vec::new();
+
+        render_song_with_assets_with_progress(
+            &score,
+            0,
+            &SampleLibrary::default(),
+            &SoundFontLibrary::default(),
+            &Vst3Library::default(),
+            &mut |complete, total| updates.push((complete, total)),
+        )
+        .expect("score should render");
+
+        assert_eq!(updates, vec![(0, 1), (1, 1)]);
+    }
+
+    #[test]
+    fn render_song_with_cache_should_reuse_post_effect_track_audio() {
+        struct Cache(Option<Vec<f32>>);
+
+        impl TrackRenderCache for Cache {
+            fn load(&mut self, _track: &Track, sample_count: usize) -> Option<Vec<f32>> {
+                self.0
+                    .as_ref()
+                    .filter(|samples| samples.len() == sample_count)
+                    .cloned()
+            }
+
+            fn store(&mut self, _track: &Track, samples: &[f32]) {
+                self.0 = Some(samples.to_vec());
+            }
+        }
+
+        let score = score(InstrumentKind::Sine { envelope: None });
+        let mut cache = Cache(None);
+        let mut progress = |_, _| {};
+        let first = render_song_with_assets_with_cache(
+            &score,
+            0,
+            &SampleLibrary::default(),
+            &SoundFontLibrary::default(),
+            &Vst3Library::default(),
+            Some(&mut cache),
+            &mut progress,
+        )
+        .expect("score should render and populate the cache");
+        let second = render_song_with_assets_with_cache(
+            &score,
+            0,
+            &SampleLibrary::default(),
+            &SoundFontLibrary::default(),
+            &Vst3Library::default(),
+            Some(&mut cache),
+            &mut progress,
+        )
+        .expect("cached score should render");
+
+        assert_eq!(first, second);
     }
 
     #[test]

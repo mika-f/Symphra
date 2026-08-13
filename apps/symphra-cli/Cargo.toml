@@ -12,5 +12,6 @@ workspace = true
 [dependencies]
 annotate-snippets.workspace = true
 thiserror.workspace = true
+indicatif = "0.18"
 symphra-engine.workspace = true
 symphra-export.workspace = true

@@ -1,19 +1,24 @@
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use symphra_engine::{
-    DecodeError, EngineError, SampleLibrary, SampleSelector, Score, SoundFontDecodeError,
-    SoundFontLibrary, SourceId, SourceSpan, SourceText, Vst3Error, Vst3Library, compile_source,
-    decode_soundfont, decode_wav, named_sample_source, packed_sample_source,
-    render_score_with_assets, validate_plugin,
+    DecodeError, EngineError, InstrumentKind, SampleLibrary, SampleSelector, Score,
+    SoundFontDecodeError, SoundFontLibrary, SourceId, SourceSpan, SourceText, Track,
+    TrackRenderCache, Vst3Error, Vst3Library, compile_source, decode_soundfont, decode_wav,
+    named_sample_source, packed_sample_source, render_score_with_assets_with_cache,
+    render_score_with_assets_with_progress, validate_plugin,
 };
-use symphra_export::{ExportError, encode_wav};
+use symphra_export::{ExportError, encode_wav_with_progress};
 
 fn main() -> ExitCode {
     match run(env::args_os().skip(1)) {
@@ -42,7 +47,7 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<PathBuf, CliError> {
         path: input.display().to_string(),
         source,
     })?;
-    let wav = source_to_wav(input.display().to_string(), text)?;
+    let wav = source_to_wav_with_cache(input.display().to_string(), text, &input)?;
     fs::write(&output, wav).map_err(|source| CliError::Write {
         path: output.display().to_string(),
         source,
@@ -51,16 +56,214 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<PathBuf, CliError> {
 }
 
 fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
+    source_to_wav_inner(name, text, None)
+}
+
+fn source_to_wav_with_cache(name: String, text: String, input: &Path) -> Result<Vec<u8>, CliError> {
+    let mut cache = FileTrackCache::new(input);
+    source_to_wav_inner(name, text, Some(&mut cache))
+}
+
+fn source_to_wav_inner(
+    name: String,
+    text: String,
+    mut cache: Option<&mut FileTrackCache>,
+) -> Result<Vec<u8>, CliError> {
     let source_path = PathBuf::from(&name);
     let source = SourceText::new(SourceId(0), name, text);
+    let tui = RenderTui::new();
+    tui.spinner("Compiling source");
     let score = compile_source(&source).map_err(|error| engine_error(&source, error))?;
+    if let Some(cache) = &mut cache {
+        cache.set_context(&score);
+    }
     let base = source_path.parent().unwrap_or_else(|| Path::new(""));
+    tui.spinner("Loading audio assets");
     let samples = load_samples(&score, base)?;
     let soundfonts = load_soundfonts(&score, base)?;
     let vst3s = load_vst3s(&score, base)?;
-    let audio = render_score_with_assets(&score, 0, &samples, &soundfonts, &vst3s)
-        .map_err(|error| engine_error(&source, error))?;
-    encode_wav(&audio).map_err(CliError::Export)
+    let mut progress = |complete, total| tui.render(complete, total);
+    let audio = match cache {
+        Some(cache) => render_score_with_assets_with_cache(
+            &score,
+            0,
+            &samples,
+            &soundfonts,
+            &vst3s,
+            cache,
+            &mut progress,
+        ),
+        None => render_score_with_assets_with_progress(
+            &score,
+            0,
+            &samples,
+            &soundfonts,
+            &vst3s,
+            &mut progress,
+        ),
+    }
+    .map_err(|error| engine_error(&source, error))?;
+    tui.progress("Encoding WAV", 0, audio.samples.len());
+    let wav = encode_wav_with_progress(&audio, &mut |complete, total| {
+        tui.progress("Encoding WAV", complete, total);
+    })
+    .map_err(CliError::Export)?;
+    tui.finish();
+    Ok(wav)
+}
+
+const CACHE_MAGIC: [u8; 8] = *b"SYMPHC01";
+
+/// Best-effort disk cache for post-effect track PCM. It is deliberately
+/// disposable: malformed data and filesystem failures simply become misses.
+struct FileTrackCache {
+    directory: PathBuf,
+    base: PathBuf,
+    context: u64,
+}
+
+impl FileTrackCache {
+    fn new(input: &Path) -> Self {
+        Self {
+            directory: input
+                .parent()
+                .unwrap_or_else(|| Path::new(""))
+                .join(".symphra-cache"),
+            base: input.parent().unwrap_or_else(|| Path::new("")).to_owned(),
+            context: 0,
+        }
+    }
+
+    fn set_context(&mut self, score: &Score) {
+        let Some(song) = score.songs.first() else {
+            return;
+        };
+        let mut hasher = DefaultHasher::new();
+        format!(
+            "{:?}{:?}{:?}{:?}",
+            score.sample_rate_hz, score.channels, song.tempo_bpm, song.meter
+        )
+        .hash(&mut hasher);
+        self.context = hasher.finish();
+    }
+
+    fn path(&self, track: &Track) -> Option<PathBuf> {
+        if matches!(track.instrument, InstrumentKind::Vst3 { .. }) {
+            return None;
+        }
+        let mut hasher = DefaultHasher::new();
+        self.context.hash(&mut hasher);
+        format!("{track:?}").hash(&mut hasher);
+        for asset in track_assets(track) {
+            asset.hash(&mut hasher);
+            let metadata = fs::metadata(self.base.join(asset)).ok()?;
+            metadata.len().hash(&mut hasher);
+            metadata
+                .modified()
+                .ok()?
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_nanos()
+                .hash(&mut hasher);
+        }
+        Some(self.directory.join(format!("{:016x}.pcm", hasher.finish())))
+    }
+}
+
+impl TrackRenderCache for FileTrackCache {
+    fn load(&mut self, track: &Track, sample_count: usize) -> Option<Vec<f32>> {
+        let bytes = fs::read(self.path(track)?).ok()?;
+        if bytes.get(..CACHE_MAGIC.len())? != CACHE_MAGIC {
+            return None;
+        }
+        let payload = &bytes[CACHE_MAGIC.len()..];
+        if !payload.len().is_multiple_of(4) {
+            return None;
+        }
+        let samples = payload
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect::<Vec<_>>();
+        (samples.len() == sample_count && samples.iter().all(|sample| sample.is_finite()))
+            .then_some(samples)
+    }
+
+    fn store(&mut self, track: &Track, samples: &[f32]) {
+        let Some(path) = self.path(track) else {
+            return;
+        };
+        let _ = fs::create_dir_all(&self.directory);
+        let mut bytes = Vec::with_capacity(CACHE_MAGIC.len() + samples.len() * 4);
+        bytes.extend_from_slice(&CACHE_MAGIC);
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        let _ = fs::write(path, bytes);
+    }
+}
+
+fn track_assets(track: &Track) -> Vec<String> {
+    match &track.instrument {
+        InstrumentKind::Sampled { source, .. } | InstrumentKind::SoundFont { source, .. } => {
+            vec![source.clone()]
+        }
+        InstrumentKind::Sampler { pack } | InstrumentKind::DrumMachine { bank: pack } => track
+            .samples
+            .iter()
+            .map(|sample| match &sample.selector {
+                SampleSelector::Index(index) => packed_sample_source(pack, *index),
+                SampleSelector::Named(name) => named_sample_source(pack, name),
+            })
+            .collect::<Vec<_>>(),
+        InstrumentKind::Sine { .. }
+        | InstrumentKind::Triangle { .. }
+        | InstrumentKind::Supersaw { .. } => Vec::new(),
+        InstrumentKind::Vst3 { .. } => Vec::new(),
+    }
+}
+
+struct RenderTui {
+    progress: ProgressBar,
+}
+
+impl RenderTui {
+    fn new() -> Self {
+        Self {
+            progress: ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr()),
+        }
+    }
+
+    fn render(&self, complete: usize, total: usize) {
+        self.progress("Rendering tracks", complete, total);
+    }
+
+    fn spinner(&self, message: &'static str) {
+        self.progress.set_style(ProgressStyle::default_spinner());
+        self.progress.set_message(message);
+        self.progress.enable_steady_tick(Duration::from_millis(100));
+    }
+
+    fn progress(&self, message: &'static str, complete: usize, total: usize) {
+        self.progress.disable_steady_tick();
+        self.progress.set_style(progress_style());
+        self.progress
+            .set_length(u64::try_from(total).unwrap_or(u64::MAX));
+        self.progress
+            .set_position(u64::try_from(complete).unwrap_or(u64::MAX));
+        self.progress.set_message(message);
+    }
+
+    fn finish(&self) {
+        self.progress.finish_and_clear();
+    }
+}
+
+fn progress_style() -> ProgressStyle {
+    ProgressStyle::with_template(
+        "{spinner:.cyan} {msg:18.bold} [{wide_bar:.cyan/blue}] {pos:>7}/{len:7} {eta_precise}",
+    )
+    .unwrap_or_else(|_| ProgressStyle::default_bar())
+    .progress_chars("=>-")
 }
 
 fn load_samples(score: &Score, base: &Path) -> Result<SampleLibrary, CliError> {

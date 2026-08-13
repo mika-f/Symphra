@@ -7,6 +7,8 @@ symphra <input.sym> [output.wav]
 ```
 
 - Compiles source, loads referenced assets, renders, encodes WAV
+- Shows live terminal progress for compilation, asset loading, rendering, and WAV encoding
+- Reuses unchanged post-effect track audio from `.symphra-cache/` beside the source file
 - Default output: same path as the input with a `.wav` extension
 - Prints `wrote <path>` on success; diagnostics go to stderr on failure
 

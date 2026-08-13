@@ -34,7 +34,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.commands.registerCommand("symphra.restartServer", () => restartServer()),
     vscode.commands.registerCommand("symphra.renderAndPlay", () => renderAndPlay()),
-    vscode.commands.registerCommand("symphra.loopSection", () => loopSection()),
+    vscode.commands.registerCommand(
+      "symphra.loopSection",
+      (uri?: string, sectionName?: string) => loopSection(uri, sectionName),
+    ),
     vscode.commands.registerCommand("symphra.stopPlayback", () => stopPlayback()),
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (document.uri.toString() !== savingDocument) {
@@ -164,10 +167,12 @@ async function renderAndPlay(): Promise<void> {
   }
 }
 
-async function loopSection(): Promise<void> {
+async function loopSection(uri?: string, sectionName?: string): Promise<void> {
   const editor = vscode.window.activeTextEditor;
-  const document = editor?.document;
-  if (!editor || !document || document.languageId !== "symphra" || document.uri.scheme !== "file") {
+  const document = uri
+    ? await vscode.workspace.openTextDocument(vscode.Uri.parse(uri))
+    : editor?.document;
+  if (!document || document.languageId !== "symphra" || document.uri.scheme !== "file") {
     void vscode.window.showErrorMessage("Symphra: open a saved .sym file to loop a section.");
     return;
   }
@@ -178,12 +183,15 @@ async function loopSection(): Promise<void> {
 
   let section: SectionPreview | null;
   try {
-    section = await requestSectionPreview(document, {
-      position: {
-        line: editor.selection.active.line,
-        character: editor.selection.active.character,
-      },
-    });
+    const selector = sectionName
+      ? { sectionName }
+      : {
+          position: {
+            line: editor?.selection.active.line ?? 0,
+            character: editor?.selection.active.character ?? 0,
+          },
+        };
+    section = await requestSectionPreview(document, selector);
   } catch (error) {
     void vscode.window.showErrorMessage(`Symphra: could not resolve the section. ${describe(error)}`);
     return;

@@ -1429,6 +1429,29 @@ fn code_lenses(source: &SourceText, uri: &Uri) -> Vec<CodeLens> {
         let Declaration::Song(song) = declaration else {
             continue;
         };
+        for section in song.statements.iter().filter_map(|statement| {
+            if let SongStatement::Section(section) = statement {
+                Some(section)
+            } else {
+                None
+            }
+        }) {
+            let Some(range) = lsp_range(source, section.name.span) else {
+                continue;
+            };
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title: "Loop section".to_owned(),
+                    command: "symphra.loopSection".to_owned(),
+                    arguments: Some(vec![
+                        serde_json::Value::String(uri.as_str().to_owned()),
+                        serde_json::Value::String(section.name.text.clone()),
+                    ]),
+                }),
+                data: None,
+            });
+        }
         for (kind, name) in named_declarations(song) {
             let Some(range) = lsp_range(source, name.span) else {
                 continue;
@@ -2355,8 +2378,8 @@ mod tests {
         );
     }
     use tower_lsp_server::ls_types::{
-        CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, InlayHintLabel, Position,
-        PrepareRenameResponse, Range, SemanticToken, SymbolKind, Uri,
+        Command, CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, InlayHintLabel,
+        Position, PrepareRenameResponse, Range, SemanticToken, SymbolKind, Uri,
     };
 
     #[test]
@@ -4069,6 +4092,42 @@ mod tests {
                 .as_ref()
                 .map(|command| command.command.as_str()),
             Some("symphra.showReferences")
+        );
+    }
+
+    #[test]
+    fn builds_loop_code_lenses_for_sections() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  section intro bars 2 { parallel { play track pad } }\n",
+                "  arrangement { play intro }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let lens = code_lenses(&source, &uri)
+            .into_iter()
+            .find(|lens| {
+                lens.command
+                    .as_ref()
+                    .is_some_and(|command| command.command == "symphra.loopSection")
+            })
+            .expect("section should have a loop code lens");
+
+        assert_eq!(
+            lens.command,
+            Some(Command {
+                title: "Loop section".to_owned(),
+                command: "symphra.loopSection".to_owned(),
+                arguments: Some(vec![
+                    serde_json::Value::String("file:///test.sym".to_owned()),
+                    serde_json::Value::String("intro".to_owned()),
+                ]),
+            })
         );
     }
 

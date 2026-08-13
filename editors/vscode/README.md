@@ -14,6 +14,8 @@ tracks the current draft and will need updates as the language grows.
   and punctuation (`|>`, `..`, `:`, `*`, `[]`, `()`, `,`).
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, completions, semantic tokens, and inlay hints.
+- **Render and Play** and **Stop Playback** commands backed by the `symphra`
+  CLI and a VS Code audio player.
 
 ## Building and running
 
@@ -45,9 +47,12 @@ folder isn't the repository root).
 ## Settings
 
 - `symphra.server.path`: path to the `symphra-lsp` executable.
+- `symphra.cli.path`: path to the `symphra` executable used for preview rendering.
 - `symphra.trace.server`: `off` | `messages` | `verbose`, for LSP wire tracing
   in the "Symphra Language Server" output channel.
 
 ## Commands
 
 - **Symphra: Restart Language Server** (`symphra.restartServer`)
+- **Symphra: Render and Play** (`symphra.renderAndPlay`)
+- **Symphra: Stop Playback** (`symphra.stopPlayback`)

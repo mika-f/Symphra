@@ -50,6 +50,14 @@
       {
         "command": "symphra.showReferences",
         "title": "Symphra: Show References"
+      },
+      {
+        "command": "symphra.renderAndPlay",
+        "title": "Symphra: Render and Play"
+      },
+      {
+        "command": "symphra.stopPlayback",
+        "title": "Symphra: Stop Playback"
       }
     ],
     "configuration": {
@@ -59,6 +67,11 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Path to the `symphra-lsp` executable. When empty, the extension looks for `target/debug/symphra-lsp` or `target/release/symphra-lsp` in the workspace, then falls back to `symphra-lsp` on `PATH`."
+        },
+        "symphra.cli.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `symphra` executable used by **Symphra: Render and Play**. When empty, the extension looks under the workspace's `target/debug` and `target/release`, then falls back to `symphra` on `PATH`."
         },
         "symphra.trace.server": {
           "scope": "window",

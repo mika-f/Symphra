@@ -1,0 +1,4 @@
+interface:
+  display_name: "Symphra"
+  short_description: "Understand, write, and validate Symphra music source"
+  default_prompt: "Use $symphra to create or explain a valid Symphra song."

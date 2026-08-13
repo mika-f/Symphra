@@ -1,12 +1,14 @@
 use std::env;
 use std::ffi::OsString;
 use std::fs;
+use std::io::{self, BufRead, Write};
 use std::ops::Range;
 use std::process::ExitCode;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, FromSample, I24, Sample, SampleFormat, SizedSample, Stream, StreamConfig, U24};
+use serde::{Deserialize, Serialize};
 
 fn main() -> ExitCode {
     match run(env::args_os().skip(1)) {
@@ -21,7 +23,13 @@ fn main() -> ExitCode {
 fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), PlayerError> {
     let mut args = args.into_iter();
     let input = args.next().ok_or(PlayerError::Usage)?;
-    let audio = decode_wav(&fs::read(input)?)?;
+    if input == "--server" {
+        if args.next().is_some() {
+            return Err(PlayerError::Usage);
+        }
+        return serve();
+    }
+    let audio = decode_wav(&fs::read(input).map_err(PlayerError::Read)?)?;
     let range = match (args.next(), args.next(), args.next()) {
         (None, None, None) => 0..audio.frames(),
         (Some(start), Some(end), None) => parse_frame(&start)?..parse_frame(&end)?,
@@ -35,6 +43,108 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), PlayerError> {
         });
     }
     play(audio, range)
+}
+
+#[derive(Deserialize)]
+struct PreviewRequest {
+    id: u64,
+    path: Option<std::path::PathBuf>,
+    start_frame: Option<usize>,
+    end_frame: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct PreviewResponse {
+    id: u64,
+    error: Option<String>,
+}
+
+/// Keeps the output device open while accepting newline-delimited JSON preview
+/// requests on stdin. A missing `path` clears the current loop.
+fn serve() -> Result<(), PlayerError> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or(PlayerError::NoOutputDevice)?;
+    let supported = device.default_output_config()?;
+    let format = supported.sample_format();
+    let config: StreamConfig = supported.into();
+    let playback = Arc::new(Mutex::new(None));
+    let (errors, _stream_errors) = mpsc::channel();
+    let stream = match format {
+        SampleFormat::I8 => server_output_stream::<i8>(&device, config, &playback, errors),
+        SampleFormat::I16 => server_output_stream::<i16>(&device, config, &playback, errors),
+        SampleFormat::I24 => server_output_stream::<I24>(&device, config, &playback, errors),
+        SampleFormat::I32 => server_output_stream::<i32>(&device, config, &playback, errors),
+        SampleFormat::I64 => server_output_stream::<i64>(&device, config, &playback, errors),
+        SampleFormat::U8 => server_output_stream::<u8>(&device, config, &playback, errors),
+        SampleFormat::U16 => server_output_stream::<u16>(&device, config, &playback, errors),
+        SampleFormat::U24 => server_output_stream::<U24>(&device, config, &playback, errors),
+        SampleFormat::U32 => server_output_stream::<u32>(&device, config, &playback, errors),
+        SampleFormat::U64 => server_output_stream::<u64>(&device, config, &playback, errors),
+        SampleFormat::F32 => server_output_stream::<f32>(&device, config, &playback, errors),
+        SampleFormat::F64 => server_output_stream::<f64>(&device, config, &playback, errors),
+        unsupported => return Err(PlayerError::UnsupportedSampleFormat(unsupported)),
+    }?;
+    stream.play()?;
+
+    let stdin = io::stdin();
+    let mut stdout = io::BufWriter::new(io::stdout().lock());
+    for line in stdin.lock().lines() {
+        let line = line.map_err(PlayerError::Protocol)?;
+        let Ok(request) = serde_json::from_str::<PreviewRequest>(&line) else {
+            continue;
+        };
+        let error = load_preview(
+            request.path,
+            request.start_frame,
+            request.end_frame,
+            &config,
+        )
+        .and_then(|next| {
+            let mut current = playback.lock().map_err(|_| PlayerError::PlaybackState)?;
+            *current = next;
+            Ok(())
+        })
+        .err()
+        .map(|error| error.to_string());
+        serde_json::to_writer(
+            &mut stdout,
+            &PreviewResponse {
+                id: request.id,
+                error,
+            },
+        )
+        .map_err(PlayerError::ProtocolJson)?;
+        writeln!(stdout).map_err(PlayerError::Protocol)?;
+        stdout.flush().map_err(PlayerError::Protocol)?;
+    }
+    Ok(())
+}
+
+fn load_preview(
+    path: Option<std::path::PathBuf>,
+    start_frame: Option<usize>,
+    end_frame: Option<usize>,
+    config: &StreamConfig,
+) -> Result<Option<Playback>, PlayerError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let audio = decode_wav(&fs::read(path).map_err(PlayerError::Read)?)?;
+    let range = match (start_frame, end_frame) {
+        (None, None) => 0..audio.frames(),
+        (Some(start), Some(end)) => start..end,
+        _ => return Err(PlayerError::Usage),
+    };
+    if range.start >= range.end || range.end > audio.frames() {
+        return Err(PlayerError::InvalidRange {
+            start: range.start,
+            end: range.end,
+            frames: audio.frames(),
+        });
+    }
+    Ok(Some(Playback::new(audio, range, config)))
 }
 
 fn parse_frame(value: &OsString) -> Result<usize, PlayerError> {
@@ -90,6 +200,34 @@ where
     device.build_output_stream(
         config,
         move |output: &mut [T], _| playback.write(output),
+        move |error| {
+            let _ = errors.send(error.to_string());
+        },
+        None,
+    )
+}
+
+fn server_output_stream<T>(
+    device: &Device,
+    config: StreamConfig,
+    playback: &Arc<Mutex<Option<Playback>>>,
+    errors: mpsc::Sender<String>,
+) -> Result<Stream, cpal::Error>
+where
+    T: Sample + SizedSample + FromSample<f32>,
+{
+    let playback = Arc::clone(playback);
+    device.build_output_stream(
+        config,
+        move |output: &mut [T], _| {
+            if let Ok(mut playback) = playback.lock()
+                && let Some(playback) = playback.as_mut()
+            {
+                playback.write(output);
+                return;
+            }
+            output.fill(T::from_sample(0.0));
+        },
         move |error| {
             let _ = errors.send(error.to_string());
         },
@@ -248,7 +386,7 @@ fn u32_at(bytes: &[u8], offset: usize) -> Result<u32, WavError> {
 
 #[derive(Debug, thiserror::Error)]
 enum PlayerError {
-    #[error("usage: symphra-player <input.wav> [<start-frame> <end-frame>]")]
+    #[error("usage: symphra-player <input.wav> [<start-frame> <end-frame>] | --server")]
     Usage,
     #[error("frame range {start}..{end} is outside the WAV's {frames} frames")]
     InvalidRange {
@@ -257,7 +395,13 @@ enum PlayerError {
         frames: usize,
     },
     #[error("failed to read WAV: {0}")]
-    Read(#[from] std::io::Error),
+    Read(std::io::Error),
+    #[error("preview protocol failed: {0}")]
+    Protocol(std::io::Error),
+    #[error("preview protocol JSON failed: {0}")]
+    ProtocolJson(serde_json::Error),
+    #[error("preview playback state is unavailable")]
+    PlaybackState,
     #[error(transparent)]
     Wav(#[from] WavError),
     #[error("no default audio output device is available")]
@@ -371,5 +515,22 @@ mod tests {
                 .all(|(actual, expected)| (actual - expected).abs() < f32::EPSILON),
             "section-looped output differs: {output:?}"
         );
+    }
+
+    #[test]
+    fn load_preview_should_clear_the_loop_without_a_path() {
+        let preview = load_preview(
+            None,
+            None,
+            None,
+            &StreamConfig {
+                channels: 2,
+                sample_rate: 48_000,
+                buffer_size: cpal::BufferSize::Default,
+            },
+        )
+        .expect("an empty preview request should clear playback");
+
+        assert!(preview.is_none());
     }
 }

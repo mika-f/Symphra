@@ -15,7 +15,7 @@ tracks the current draft and will need updates as the language grows.
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, completions, semantic tokens, and inlay hints.
 - **Render and Play**, **Loop Section at Cursor**, and **Stop Playback** commands
-  backed by the `symphra` CLI and a background `symphra-player` process. The
+  backed by the `symphra` CLI and a persistent background `symphra-player` process. The
   player loops either the full render or the arranged occurrence of the section
   containing the cursor, without opening a player panel. Saving the active
   preview document re-renders and replaces the loop; **Stop Playback** disables

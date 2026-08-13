@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import {
@@ -12,7 +13,7 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient | undefined;
-let playback: ChildProcess | undefined;
+let player: PreviewPlayer | undefined;
 let previewDirectory: string | undefined;
 let previewGeneration = 0;
 let previewSession: PreviewSession | undefined;
@@ -21,6 +22,8 @@ let savingDocument: string | undefined;
 type FrameRange = readonly [start: number, end: number];
 type SectionPreview = { name: string; startFrame: number; endFrame: number };
 type PreviewSession = { uri: string; sectionName?: string };
+type PreviewResponse = { id: number; error: string | null };
+type PendingPreview = { resolve: () => void; reject: (error: Error) => void };
 
 const LSP_BINARY_NAME = process.platform === "win32" ? "symphra-lsp.exe" : "symphra-lsp";
 const CLI_BINARY_NAME = process.platform === "win32" ? "symphra.exe" : "symphra";
@@ -78,6 +81,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 export async function deactivate(): Promise<void> {
   stopPlayback();
+  player?.dispose();
+  player = undefined;
   await client?.stop();
 }
 
@@ -238,9 +243,7 @@ async function renderDocumentAndPlay(
   }
 
   if (generation === previewGeneration) {
-    terminatePlayback();
-    startPlayback(resolvePlayerCommand(), output, directory, range);
-    return true;
+    return startPlayback(resolvePlayerCommand(), output, directory, range);
   } else {
     void removePreview(directory);
     return false;
@@ -250,12 +253,7 @@ async function renderDocumentAndPlay(
 function stopPlayback(): void {
   previewSession = undefined;
   previewGeneration += 1;
-  terminatePlayback();
-}
-
-function terminatePlayback(): void {
-  playback?.kill();
-  playback = undefined;
+  void player?.stop().catch(() => {});
   if (previewDirectory) {
     void removePreview(previewDirectory);
   }
@@ -316,45 +314,28 @@ function sectionFrameRange(section: SectionPreview): FrameRange | undefined {
     : undefined;
 }
 
-function startPlayback(
+async function startPlayback(
   command: string,
   output: string,
   directory: string,
   range?: FrameRange,
-): void {
-  const args = range ? [output, String(range[0]), String(range[1])] : [output];
-  const child = spawn(command, args, {
-    stdio: ["ignore", "ignore", "pipe"],
-    windowsHide: true,
-  });
-  let stderr = "";
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    stderr = (stderr + chunk).slice(-8_192);
-  });
-  playback = child;
-  previewDirectory = directory;
-
-  child.once("error", (error) => finishPlayback(child, directory, command, describe(error)));
-  child.once("exit", (code) => {
-    const error = code && code !== 0 ? stderr.trim() || `exit code ${code}` : undefined;
-    finishPlayback(child, directory, command, error);
-  });
-}
-
-function finishPlayback(
-  child: ChildProcess,
-  directory: string,
-  command: string,
-  error: string | undefined,
-): void {
-  const current = playback === child;
-  if (current) {
-    playback = undefined;
-  }
-  void removePreview(directory);
-  if (current && error) {
-    void vscode.window.showErrorMessage(`Symphra: playback failed ("${command}"). ${error}`);
+): Promise<boolean> {
+  try {
+    const activePlayer = player ?? PreviewPlayer.start(command);
+    player = activePlayer;
+    await activePlayer.play(output, range);
+    const previousDirectory = previewDirectory;
+    previewDirectory = directory;
+    if (previousDirectory) {
+      void removePreview(previousDirectory);
+    }
+    return true;
+  } catch (error) {
+    player?.dispose();
+    player = undefined;
+    void removePreview(directory);
+    void vscode.window.showErrorMessage(`Symphra: playback failed ("${command}"). ${describe(error)}`);
+    return false;
   }
 }
 
@@ -366,6 +347,96 @@ async function removePreview(directory: string): Promise<void> {
     await fs.promises.rm(directory, { recursive: true, force: true });
   } catch {
     // The player may briefly retain the WAV on Windows; the OS temp directory is disposable.
+  }
+}
+
+class PreviewPlayer {
+  private readonly pending = new Map<number, PendingPreview>();
+  private nextRequestId = 1;
+  private stderr = "";
+
+  constructor(private readonly child: ChildProcess) {
+    const output = child.stdout;
+    if (!output || !child.stdin) {
+      throw new Error("could not create the preview player protocol streams");
+    }
+    const lines = createInterface({ input: output });
+    lines.on("line", (line) => this.handleResponse(line));
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk: string) => {
+      this.stderr = (this.stderr + chunk).slice(-8_192);
+    });
+    child.once("error", (error) => this.fail(describe(error)));
+    child.once("exit", (code) => {
+      this.fail(this.stderr.trim() || `exit code ${code ?? "unknown"}`);
+      if (player === this) {
+        player = undefined;
+      }
+    });
+  }
+
+  static start(command: string): PreviewPlayer {
+    return new PreviewPlayer(
+      spawn(command, ["--server"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      }),
+    );
+  }
+
+  play(path: string, range?: FrameRange): Promise<void> {
+    return this.request({
+      path,
+      ...(range ? { start_frame: range[0], end_frame: range[1] } : {}),
+    });
+  }
+
+  stop(): Promise<void> {
+    return this.request({});
+  }
+
+  dispose(): void {
+    this.fail("preview player was stopped");
+    this.child.kill();
+  }
+
+  private request(payload: Omit<Record<string, unknown>, "id">): Promise<void> {
+    const id = this.nextRequestId++;
+    return new Promise<void>((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      this.child.stdin?.write(`${JSON.stringify({ id, ...payload })}\n`, (error) => {
+        if (error) {
+          this.pending.delete(id);
+          reject(error);
+        }
+      });
+    });
+  }
+
+  private handleResponse(line: string): void {
+    let response: PreviewResponse;
+    try {
+      response = JSON.parse(line) as PreviewResponse;
+    } catch {
+      return;
+    }
+    const pending = this.pending.get(response.id);
+    if (!pending) {
+      return;
+    }
+    this.pending.delete(response.id);
+    if (response.error) {
+      pending.reject(new Error(response.error));
+    } else {
+      pending.resolve();
+    }
+  }
+
+  private fail(message: string): void {
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error(message));
+    }
+    this.pending.clear();
   }
 }
 

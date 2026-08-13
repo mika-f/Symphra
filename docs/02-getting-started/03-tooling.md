@@ -21,6 +21,9 @@ There are no extra flags yet — configuration lives in the source file.
 symphra-player <input.wav>
 ```
 
+The VS Code extension uses `symphra-player --server` to keep the output device
+open between save-to-refresh previews, avoiding player startup latency.
+
 Plays a PCM 16-bit WAV continuously through the default output device. The
 process runs until it is terminated. The VS Code extension manages this
 process for background loop previews; it is not a real-time Symphra host.

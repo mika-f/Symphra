@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import * as vscode from "vscode";
 import {
@@ -12,11 +12,13 @@ import {
 } from "vscode-languageclient/node";
 
 let client: LanguageClient | undefined;
-let player: vscode.WebviewPanel | undefined;
+let playback: ChildProcess | undefined;
 let previewDirectory: string | undefined;
+let playbackGeneration = 0;
 
 const LSP_BINARY_NAME = process.platform === "win32" ? "symphra-lsp.exe" : "symphra-lsp";
 const CLI_BINARY_NAME = process.platform === "win32" ? "symphra.exe" : "symphra";
+const PLAYER_BINARY_NAME = process.platform === "win32" ? "symphra-player.exe" : "symphra-player";
 const execFileAsync = promisify(execFile);
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -114,6 +116,14 @@ function resolveCliCommand(): string {
   return findWorkspaceBinary(CLI_BINARY_NAME) ?? CLI_BINARY_NAME;
 }
 
+function resolvePlayerCommand(): string {
+  const configured = vscode.workspace.getConfiguration("symphra").get<string>("player.path");
+  if (configured) {
+    return configured;
+  }
+  return findWorkspaceBinary(PLAYER_BINARY_NAME) ?? PLAYER_BINARY_NAME;
+}
+
 function findWorkspaceBinary(binaryName: string): string | undefined {
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     for (const profile of ["debug", "release"]) {
@@ -137,6 +147,7 @@ async function renderAndPlay(): Promise<void> {
   }
 
   stopPlayback();
+  const generation = playbackGeneration;
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "symphra-preview-"));
   const output = path.join(directory, "preview.wav");
   const command = resolveCliCommand();
@@ -154,30 +165,55 @@ async function renderAndPlay(): Promise<void> {
     return;
   }
 
-  previewDirectory = directory;
-  const outputUri = vscode.Uri.file(output);
-  const panel = vscode.window.createWebviewPanel(
-    "symphraPlayer",
-    `Symphra: ${path.basename(document.uri.fsPath)}`,
-    vscode.ViewColumn.Beside,
-    { localResourceRoots: [vscode.Uri.file(directory)] },
-  );
-  player = panel;
-  const audioUri = panel.webview.asWebviewUri(outputUri);
-  panel.webview.html = playerHtml(audioUri, path.basename(document.uri.fsPath));
-  panel.onDidDispose(() => {
-    if (player === panel) {
-      player = undefined;
-    }
+  if (generation === playbackGeneration) {
+    startPlayback(resolvePlayerCommand(), output, directory);
+  } else {
     void removePreview(directory);
-  });
+  }
 }
 
 function stopPlayback(): void {
-  player?.dispose();
-  player = undefined;
+  playbackGeneration += 1;
+  playback?.kill();
+  playback = undefined;
   if (previewDirectory) {
     void removePreview(previewDirectory);
+  }
+}
+
+function startPlayback(command: string, output: string, directory: string): void {
+  const child = spawn(command, [output], {
+    stdio: ["ignore", "ignore", "pipe"],
+    windowsHide: true,
+  });
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderr = (stderr + chunk).slice(-8_192);
+  });
+  playback = child;
+  previewDirectory = directory;
+
+  child.once("error", (error) => finishPlayback(child, directory, command, describe(error)));
+  child.once("exit", (code) => {
+    const error = code && code !== 0 ? stderr.trim() || `exit code ${code}` : undefined;
+    finishPlayback(child, directory, command, error);
+  });
+}
+
+function finishPlayback(
+  child: ChildProcess,
+  directory: string,
+  command: string,
+  error: string | undefined,
+): void {
+  const current = playback === child;
+  if (current) {
+    playback = undefined;
+  }
+  void removePreview(directory);
+  if (current && error) {
+    void vscode.window.showErrorMessage(`Symphra: playback failed ("${command}"). ${error}`);
   }
 }
 
@@ -188,29 +224,8 @@ async function removePreview(directory: string): Promise<void> {
   try {
     await fs.promises.rm(directory, { recursive: true, force: true });
   } catch {
-    // The webview may briefly retain the WAV on Windows; the OS temp directory is disposable.
+    // The player may briefly retain the WAV on Windows; the OS temp directory is disposable.
   }
-}
-
-function playerHtml(audioUri: vscode.Uri, fileName: string): string {
-  const name = escapeHtml(fileName);
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; media-src ${audioUri.scheme}:; style-src 'unsafe-inline';">
-  <title>${name}</title>
-</head>
-<body>
-  <p>${name}</p>
-  <audio src="${audioUri}" controls autoplay></audio>
-</body>
-</html>`;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => `&#${character.charCodeAt(0)};`);
 }
 
 function commandError(error: unknown): string {

@@ -37,6 +37,7 @@ render with asset libraries.
 | Crate | Role |
 | --- | --- |
 | `symphra` (`apps/symphra-cli`) | CLI entry: path in → WAV out |
+| `symphra-player` | Background PCM16 WAV loop playback for editor previews |
 | `symphra-lsp` | Language server over stdio |
 | `symphra-formatter` | Source formatter |
 

@@ -15,6 +15,16 @@ symphra <input.sym> [output.wav]
 
 There are no extra flags yet — configuration lives in the source file.
 
+## Preview player (`symphra-player`)
+
+```console
+symphra-player <input.wav>
+```
+
+Plays a PCM 16-bit WAV continuously through the default output device. The
+process runs until it is terminated. The VS Code extension manages this
+process for background loop previews; it is not a real-time Symphra host.
+
 ## Formatter (`symphra-formatter`)
 
 Formats Symphra source in a stable layout (pipeline stages, rhythm hit/rest
@@ -49,7 +59,7 @@ cargo build -p symphra-lsp --locked
 Extension sources: [`editors/vscode`](https://github.com/mika-f/Symphra/tree/main/editors/vscode).
 
 1. `npm install` / `npm run compile` in that folder
-2. Build `symphra-lsp` from the monorepo root
+2. Build `symphra-lsp` and `symphra-player` from the monorepo root
 3. Open the extension folder and press F5
 
 By default the client looks for `target/debug/symphra-lsp` or

@@ -15,7 +15,8 @@ tracks the current draft and will need updates as the language grows.
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, completions, semantic tokens, and inlay hints.
 - **Render and Play** and **Stop Playback** commands backed by the `symphra`
-  CLI and a VS Code audio player.
+  CLI and a background `symphra-player` process that loops the full render
+  without opening a player panel.
 
 ## Building and running
 
@@ -26,10 +27,10 @@ npm install
 npm run compile
 ```
 
-Build the language server from the repository root:
+Build the language server and preview player from the repository root:
 
 ```console
-cargo build -p symphra-lsp --locked
+cargo build -p symphra-lsp -p symphra-player --locked
 ```
 
 Then open this `editors/vscode` folder in VS Code and press F5 to launch an
@@ -48,6 +49,7 @@ folder isn't the repository root).
 
 - `symphra.server.path`: path to the `symphra-lsp` executable.
 - `symphra.cli.path`: path to the `symphra` executable used for preview rendering.
+- `symphra.player.path`: path to the `symphra-player` executable used for background playback.
 - `symphra.trace.server`: `off` | `messages` | `verbose`, for LSP wire tracing
   in the "Symphra Language Server" output channel.
 

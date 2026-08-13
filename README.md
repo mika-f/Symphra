@@ -28,7 +28,8 @@ ad-hoc examples when something looks out of date.
 - **Effects** — one track effect at a time (`delay`, `filter`, `reverb`), plus
   LFO automation of filter cutoff; master limiter
 - **Deterministic rendering** — seeded choices and chance; offline WAV export
-- **Editor support** — `symphra-lsp`, VS Code and IntelliJ extensions, formatter
+- **Editor support** — `symphra-lsp`, VS Code and IntelliJ extensions, formatter;
+  background loop preview in VS Code with `symphra-player`
 
 ## Quick start
 
@@ -47,7 +48,8 @@ attached to [GitHub Releases](https://github.com/mika-f/Symphra/releases).
 cargo build --workspace --locked
 ```
 
-The CLI binary is `symphra` (`apps/symphra-cli`).
+The CLI binary is `symphra` (`apps/symphra-cli`). The VS Code preview player is
+`symphra-player` (`apps/symphra-player`).
 
 ### Render a song
 
@@ -87,7 +89,7 @@ cargo build -p symphra-formatter --locked
 ## Repository layout
 
 ```text
-apps/           # CLI, LSP, formatter binaries
+apps/           # CLI, player, LSP, formatter binaries
 crates/         # syntax, compiler, score, render, DSP, assets, engine
 docs/           # Language and project documentation (English)
 editors/        # VS Code and IntelliJ extensions

@@ -59,6 +59,7 @@ Also: multi-voice `layer { use instrument { play … } … }` on a track.
 ### Tooling
 
 - CLI: `symphra input.sym [output.wav]`
+- Background WAV loop player (`symphra-player`), used by VS Code previews
 - Formatter (`symphra-formatter`)
 - Language server (`symphra-lsp`): diagnostics, symbols, completion, hover,
   go-to-definition, references, rename, semantic tokens, inlay hints

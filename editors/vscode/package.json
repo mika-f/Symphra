@@ -73,6 +73,11 @@
           "default": "",
           "markdownDescription": "Path to the `symphra` executable used by **Symphra: Render and Play**. When empty, the extension looks under the workspace's `target/debug` and `target/release`, then falls back to `symphra` on `PATH`."
         },
+        "symphra.player.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `symphra-player` executable used for background loop playback. When empty, the extension looks under the workspace's `target/debug` and `target/release`, then falls back to `symphra-player` on `PATH`."
+        },
         "symphra.trace.server": {
           "scope": "window",
           "type": "string",

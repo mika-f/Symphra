@@ -2,8 +2,8 @@
 
 ## Prebuilt binaries
 
-Tagged releases publish archives of `symphra`, `symphra-lsp`, and
-`symphra-formatter` for:
+Tagged releases publish archives of `symphra`, `symphra-player`,
+`symphra-lsp`, and `symphra-formatter` for:
 
 | Target | Archive |
 | --- | --- |
@@ -40,6 +40,7 @@ Useful packages:
 | Package | Binary / crate | Role |
 | --- | --- | --- |
 | `symphra` | `symphra` | Compile `.sym` → WAV |
+| `symphra-player` | `symphra-player` | Loop a rendered WAV in the background |
 | `symphra-lsp` | `symphra-lsp` | Language server (stdio) |
 | `symphra-formatter` | `symphra-formatter` | Format source |
 
@@ -47,6 +48,7 @@ Release builds:
 
 ```console
 cargo build -p symphra --release --locked
+cargo build -p symphra-player --release --locked
 cargo build -p symphra-lsp --release --locked
 cargo build -p symphra-formatter --release --locked
 ```

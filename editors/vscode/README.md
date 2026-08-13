@@ -15,7 +15,8 @@ tracks the current draft and will need updates as the language grows.
 - A language client that launches `symphra-lsp` over stdio and forwards
   diagnostics, document symbols, completions, semantic tokens, and inlay hints.
 - **Mute** and **Solo** CodeLens controls above each track declaration, plus a
-  **Loop section** CodeLens above each section declaration.
+  **▶ Loop section** CodeLens above each section declaration and **▶ From
+  here** above each section-based arrangement entry.
 - A status bar item showing the current file and section; click it to stop playback.
 - **Render and Play**, **Loop Section at Cursor**, and **Stop Playback** commands
   backed by the `symphra` CLI and a persistent background `symphra-player` process. The
@@ -65,6 +66,7 @@ folder isn't the repository root).
 - **Symphra: Restart Language Server** (`symphra.restartServer`)
 - **Symphra: Render and Play** (`symphra.renderAndPlay`)
 - **Symphra: Loop Section at Cursor** (`symphra.loopSection`)
+- **Symphra: Play Arrangement from Here** (`symphra.playFromHere`)
 - **Symphra: Stop Playback** (`symphra.stopPlayback`)
 
 After starting either preview command, save the same `.sym` document to refresh

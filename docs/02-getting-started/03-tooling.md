@@ -50,6 +50,7 @@ Speaks LSP over **stdio**. Capabilities include:
 - Hover (keywords; MIDI note numbers for pitches)
 - Go to definition / find references / rename
 - Semantic tokens and inlay hints
+- Section loop and arrangement **From here** CodeLens actions in VS Code
 
 Build:
 

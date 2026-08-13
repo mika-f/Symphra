@@ -60,6 +60,10 @@
         "title": "Symphra: Loop Section at Cursor"
       },
       {
+        "command": "symphra.playFromHere",
+        "title": "Symphra: Play Arrangement from Here"
+      },
+      {
         "command": "symphra.stopPlayback",
         "title": "Symphra: Stop Playback"
       },

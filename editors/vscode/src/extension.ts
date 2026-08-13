@@ -23,7 +23,7 @@ const previewTrackMixes = new Map<string, TrackMix>();
 
 type FrameRange = readonly [start: number, end: number];
 type SectionPreview = { name: string; startFrame: number; endFrame: number };
-type PreviewSession = { uri: string; sectionName?: string };
+type PreviewSession = { uri: string; sectionName?: string; arrangementIndex?: number };
 type TrackMix = { muted: Set<string>; soloed: Set<string> };
 type PreviewResponse = { id: number; error: string | null };
 type PendingPreview = { resolve: () => void; reject: (error: Error) => void };
@@ -44,6 +44,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand(
       "symphra.loopSection",
       (uri?: string, sectionName?: string) => loopSection(uri, sectionName),
+    ),
+    vscode.commands.registerCommand("symphra.playFromHere", (uri: string, index: number) =>
+      playFromHere(uri, index),
     ),
     vscode.commands.registerCommand("symphra.stopPlayback", () => stopPlayback()),
     vscode.commands.registerCommand("symphra.toggleMute", (uri: string, name: string) =>
@@ -228,6 +231,39 @@ async function loopSection(uri?: string, sectionName?: string): Promise<void> {
   }
 }
 
+async function playFromHere(uri: string, index: number): Promise<void> {
+  const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(uri));
+  if (document.languageId !== "symphra" || document.uri.scheme !== "file") {
+    void vscode.window.showErrorMessage("Symphra: open a saved .sym file to play its arrangement.");
+    return;
+  }
+  let preview: SectionPreview | null;
+  try {
+    preview = await requestArrangementPreview(document, index);
+  } catch (error) {
+    void vscode.window.showErrorMessage(
+      `Symphra: could not resolve the arrangement entry. ${describe(error)}`,
+    );
+    return;
+  }
+  if (!preview) {
+    void vscode.window.showErrorMessage("Symphra: the arrangement entry is no longer available.");
+    return;
+  }
+  const range = sectionFrameRange(preview);
+  if (!range) {
+    void vscode.window.showErrorMessage("Symphra: the arrangement playback range is invalid.");
+    return;
+  }
+  if (await renderDocumentAndPlay(document, range, `from ${preview.name}`)) {
+    setPreviewSession({
+      uri: document.uri.toString(),
+      sectionName: preview.name,
+      arrangementIndex: index,
+    });
+  }
+}
+
 async function renderDocumentAndPlay(
   document: vscode.TextDocument,
   range?: FrameRange,
@@ -289,11 +325,14 @@ function setPreviewSession(session: PreviewSession): void {
     return;
   }
   const filename = path.basename(vscode.Uri.parse(session.uri).fsPath);
+  const location = session.arrangementIndex === undefined
+    ? session.sectionName
+    : `from ${session.sectionName}`;
   const mix = previewTrackMixes.get(session.uri);
   const mixStatus = mix
     ? `${mix.muted.size ? ` M${mix.muted.size}` : ""}${mix.soloed.size ? ` S${mix.soloed.size}` : ""}`
     : "";
-  playbackStatus.text = `$(debug-stop) ${filename}${session.sectionName ? `: ${session.sectionName}` : ""}${mixStatus}`;
+  playbackStatus.text = `$(debug-stop) ${filename}${location ? `: ${location}` : ""}${mixStatus}`;
   playbackStatus.show();
 }
 
@@ -309,7 +348,20 @@ async function refreshPreview(document: vscode.TextDocument): Promise<void> {
   }
 
   let section: SectionPreview | null = null;
-  if (session.sectionName) {
+  if (session.arrangementIndex !== undefined) {
+    try {
+      section = await requestArrangementPreview(document, session.arrangementIndex);
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Symphra: could not refresh the arrangement entry. ${describe(error)}`,
+      );
+      return;
+    }
+    if (!section) {
+      void vscode.window.showErrorMessage("Symphra: the arrangement entry is no longer available.");
+      return;
+    }
+  } else if (session.sectionName) {
     try {
       section = await requestSectionPreview(document, { sectionName: session.sectionName });
     } catch (error) {
@@ -334,7 +386,8 @@ async function refreshPreview(document: vscode.TextDocument): Promise<void> {
     void vscode.window.showErrorMessage("Symphra: the section playback range is invalid.");
     return;
   }
-  await renderDocumentAndPlay(document, range, section?.name, true);
+  const label = session.arrangementIndex === undefined ? section?.name : `from ${section?.name}`;
+  await renderDocumentAndPlay(document, range, label, true);
 }
 
 async function toggleTrack(
@@ -395,6 +448,19 @@ function requestSectionPreview(
   return client.sendRequest("symphra/sectionPreview", {
     textDocument: { uri: document.uri.toString() },
     ...selector,
+  });
+}
+
+function requestArrangementPreview(
+  document: vscode.TextDocument,
+  index: number,
+): Promise<SectionPreview | null> {
+  if (!client) {
+    return Promise.reject(new Error("the language server is not running"));
+  }
+  return client.sendRequest("symphra/arrangementPreview", {
+    textDocument: { uri: document.uri.toString() },
+    index,
   });
 }
 

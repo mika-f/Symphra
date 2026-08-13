@@ -59,6 +59,16 @@ impl Backend {
         }))
     }
 
+    async fn arrangement_preview(
+        &self,
+        params: ArrangementPreviewParams,
+    ) -> Result<Option<SectionPreview>> {
+        let documents = self.documents.read().await;
+        Ok(documents
+            .get(&params.text_document.uri)
+            .and_then(|source| arrangement_preview(source, params.index)))
+    }
+
     async fn set_preview_track_state(&self, params: PreviewTrackStateParams) -> Result<()> {
         self.preview_tracks.write().await.insert(
             params.text_document.uri,
@@ -77,6 +87,13 @@ struct SectionPreviewParams {
     text_document: TextDocumentIdentifier,
     position: Option<Position>,
     section_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArrangementPreviewParams {
+    text_document: TextDocumentIdentifier,
+    index: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -170,6 +187,54 @@ fn section_preview(
         elapsed_bars = elapsed_bars.checked_add(bars)?;
     }
     None
+}
+
+fn arrangement_preview(source: &SourceText, target_index: usize) -> Option<SectionPreview> {
+    let parsed = parse(source.id, &source.text);
+    if !parsed.diagnostics.is_empty() {
+        return None;
+    }
+    let program = compile(&parsed.file).ok()?;
+    let song_declaration = parsed.file.declarations.iter().find_map(|declaration| {
+        if let Declaration::Song(song) = declaration {
+            Some(song)
+        } else {
+            None
+        }
+    })?;
+    let song = program.songs.first()?;
+    let entries = song_declaration
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            SongStatement::Arrangement { entries, .. } => Some(entries),
+            _ => None,
+        })?;
+    let sections = song_declaration
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            SongStatement::Section(section) => Some((section.name.text.as_str(), section.bars)),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut elapsed_bars = 0_u64;
+    let mut target = None;
+    for (index, entry) in entries.iter().enumerate() {
+        let ArrangementEntry::Play { name, .. } = entry else {
+            return None;
+        };
+        if index == target_index {
+            target = Some((name.text.clone(), elapsed_bars));
+        }
+        elapsed_bars = elapsed_bars.checked_add(u64::from(*sections.get(name.text.as_str())?))?;
+    }
+    let (name, start_bars) = target?;
+    Some(SectionPreview {
+        name,
+        start_frame: bars_to_frames(start_bars, song, program.project.sample_rate_hz)?,
+        end_frame: bars_to_frames(elapsed_bars, song, program.project.sample_rate_hz)?,
+    })
 }
 
 #[expect(
@@ -1472,7 +1537,7 @@ fn code_lenses(source: &SourceText, uri: &Uri, state: &PreviewTrackState) -> Vec
             lenses.push(CodeLens {
                 range,
                 command: Some(Command {
-                    title: "Loop section".to_owned(),
+                    title: "▶ Loop section".to_owned(),
                     command: "symphra.loopSection".to_owned(),
                     arguments: Some(vec![
                         serde_json::Value::String(uri.as_str().to_owned()),
@@ -1481,6 +1546,35 @@ fn code_lenses(source: &SourceText, uri: &Uri, state: &PreviewTrackState) -> Vec
                 }),
                 data: None,
             });
+        }
+        if let Some(entries) = song
+            .statements
+            .iter()
+            .find_map(|statement| match statement {
+                SongStatement::Arrangement { entries, .. } => Some(entries),
+                _ => None,
+            })
+        {
+            for (index, entry) in entries.iter().enumerate() {
+                let ArrangementEntry::Play { name, .. } = entry else {
+                    continue;
+                };
+                let Some(range) = lsp_range(source, name.span) else {
+                    continue;
+                };
+                lenses.push(CodeLens {
+                    range,
+                    command: Some(Command {
+                        title: "▶ From here".to_owned(),
+                        command: "symphra.playFromHere".to_owned(),
+                        arguments: Some(vec![
+                            serde_json::Value::String(uri.as_str().to_owned()),
+                            serde_json::Value::from(index),
+                        ]),
+                    }),
+                    data: None,
+                });
+            }
         }
         lenses.extend(track_preview_code_lenses(source, uri, song, state));
         for (kind, name) in named_declarations(song) {
@@ -2417,6 +2511,7 @@ async fn main() {
         hierarchical_symbols: AtomicBool::new(false),
     })
     .custom_method("symphra/sectionPreview", Backend::section_preview)
+    .custom_method("symphra/arrangementPreview", Backend::arrangement_preview)
     .custom_method(
         "symphra/setPreviewTrackState",
         Backend::set_preview_track_state,
@@ -2434,10 +2529,10 @@ mod tests {
     use super::{
         PreviewTrackState, SEMANTIC_MOD_DECLARATION, SEMANTIC_TOKEN_COMMENT,
         SEMANTIC_TOKEN_FUNCTION, SEMANTIC_TOKEN_KEYWORD, SEMANTIC_TOKEN_NUMBER,
-        SEMANTIC_TOKEN_STRING, SEMANTIC_TOKEN_TYPE, SourceId, SourceText, code_lenses, completions,
-        definition, diagnostics, document_highlights, document_symbols, flatten_document_symbols,
-        formatting_edits, hover, inlay_hints, prepare_rename, references, rename, section_preview,
-        semantic_tokens,
+        SEMANTIC_TOKEN_STRING, SEMANTIC_TOKEN_TYPE, SectionPreview, SourceId, SourceText,
+        arrangement_preview, code_lenses, completions, definition, diagnostics,
+        document_highlights, document_symbols, flatten_document_symbols, formatting_edits, hover,
+        inlay_hints, prepare_rename, references, rename, section_preview, semantic_tokens,
     };
 
     #[test]
@@ -2465,6 +2560,37 @@ mod tests {
                 name: "drop".to_owned(),
                 start_frame: 614_400,
                 end_frame: 1_228_800,
+            }
+        );
+    }
+
+    #[test]
+    fn resolves_an_arrangement_entry_from_its_start_to_the_song_end() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 8khz output mono }\n",
+                "song \"Test\" {\n",
+                "  tempo 120bpm meter 4/4 key C major\n",
+                "  instrument tone = sine\n",
+                "  pattern notes = sequence { note C4 for 1/4 }\n",
+                "  track bass role bass { instrument tone play notes }\n",
+                "  section intro bars 1 { parallel { play track bass } }\n",
+                "  section drop bars 2 { parallel { play track bass } }\n",
+                "  arrangement { play intro play drop play intro }\n",
+                "}\n",
+            ),
+        );
+
+        let preview = arrangement_preview(&source, 1).expect("drop should resolve");
+
+        assert_eq!(
+            preview,
+            SectionPreview {
+                name: "drop".to_owned(),
+                start_frame: 16_000,
+                end_frame: 64_000,
             }
         );
     }
@@ -4212,13 +4338,44 @@ mod tests {
         assert_eq!(
             lens.command,
             Some(Command {
-                title: "Loop section".to_owned(),
+                title: "▶ Loop section".to_owned(),
                 command: "symphra.loopSection".to_owned(),
                 arguments: Some(vec![
                     serde_json::Value::String("file:///test.sym".to_owned()),
                     serde_json::Value::String("intro".to_owned()),
                 ]),
             })
+        );
+    }
+
+    #[test]
+    fn builds_from_here_code_lenses_for_section_arrangement_entries() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "song \"Test\" {\n",
+                "  section intro bars 2 { parallel { play track pad } }\n",
+                "  arrangement { play intro play intro }\n",
+                "}\n",
+            ),
+        );
+        let uri = "file:///test.sym".parse::<Uri>().expect("URI should parse");
+
+        let lenses = code_lenses(&source, &uri, &PreviewTrackState::default())
+            .into_iter()
+            .filter_map(|lens| lens.command)
+            .filter(|command| command.command == "symphra.playFromHere")
+            .collect::<Vec<_>>();
+
+        assert_eq!(lenses.len(), 2);
+        assert_eq!(lenses[1].title, "▶ From here");
+        assert_eq!(
+            lenses[1].arguments,
+            Some(vec![
+                serde_json::Value::String("file:///test.sym".to_owned()),
+                serde_json::Value::from(1),
+            ])
         );
     }
 

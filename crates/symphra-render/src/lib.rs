@@ -2,6 +2,7 @@
 
 use std::num::NonZeroU32;
 
+use rayon::prelude::*;
 use symphra_dsp::{
     Envelope as DspEnvelope, Oscillator, SupersawOscillator, Waveform, apply_delay, apply_filter,
     apply_filter_automated, apply_limiter, apply_reverb, envelope_gain, fade_gain,
@@ -198,6 +199,44 @@ pub fn render_song_with_assets_with_cache(
         .songs
         .get(song_index)
         .ok_or(RenderError::SongNotFound)?;
+    validate_song(song)?;
+    let channels = match score.channels {
+        Channels::Mono => 1,
+        Channels::Stereo => 2,
+    };
+    let frames = song_frames(song, score.sample_rate_hz)?;
+    let sample_count = frames
+        .checked_mul(u64::from(channels))
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or(RenderError::AudioTooLarge)?;
+    let libraries = AssetLibraries {
+        samples: sample_library,
+        soundfonts: soundfont_library,
+        vst3: vst3_library,
+    };
+    let mut samples = render_tracks(
+        song,
+        score.sample_rate_hz,
+        channels,
+        sample_count,
+        &libraries,
+        &mut cache,
+        progress,
+    )?;
+    if let Some(master) = &song.master {
+        apply_limiter(&mut samples, master.ceiling);
+    }
+    for sample in &mut samples {
+        *sample = sample.clamp(-1.0, 1.0);
+    }
+    Ok(AudioBuffer {
+        sample_rate_hz: score.sample_rate_hz,
+        channels,
+        samples,
+    })
+}
+
+fn validate_song(song: &Song) -> Result<(), RenderError> {
     if !song.tempo_bpm.is_finite() || song.tempo_bpm <= 0.0 {
         return Err(RenderError::InvalidTempo);
     }
@@ -230,70 +269,112 @@ pub fn render_song_with_assets_with_cache(
     if song.master.is_some_and(|master| !master_is_valid(master)) {
         return Err(RenderError::InvalidMasterCeiling);
     }
-    let channels = match score.channels {
-        Channels::Mono => 1,
-        Channels::Stereo => 2,
-    };
-    let frames = song_frames(song, score.sample_rate_hz)?;
-    let sample_count = frames
-        .checked_mul(u64::from(channels))
-        .and_then(|count| usize::try_from(count).ok())
-        .ok_or(RenderError::AudioTooLarge)?;
-    let libraries = AssetLibraries {
-        samples: sample_library,
-        soundfonts: soundfont_library,
-        vst3: vst3_library,
-    };
-    let mut samples = vec![0.0; sample_count];
+    Ok(())
+}
+
+fn render_tracks(
+    song: &Song,
+    sample_rate_hz: u32,
+    channels: u16,
+    sample_count: usize,
+    libraries: &AssetLibraries<'_>,
+    cache: &mut Option<&mut dyn TrackRenderCache>,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<Vec<f32>, RenderError> {
     let track_count = song.tracks.len();
+    let mut track_buffers = (0..track_count).map(|_| Vec::new()).collect::<Vec<_>>();
+    let mut parallel_tracks = Vec::new();
+    let mut vst3_tracks = Vec::new();
     progress(0, track_count);
     for (track_index, track) in song.tracks.iter().enumerate() {
-        let track_samples = if let Some(samples) = cache
+        if let Some(samples) = cache
             .as_deref_mut()
             .and_then(|cache| cache.load(track, sample_count))
         {
-            samples
+            track_buffers[track_index] = samples;
+        } else if matches!(track.instrument, InstrumentKind::Vst3 { .. }) {
+            vst3_tracks.push((track_index, track));
         } else {
-            let mut track_samples = vec![0.0; sample_count];
-            render_track(
+            parallel_tracks.push((track_index, track));
+        }
+    }
+    let rendered_parallel_tracks = parallel_tracks
+        .par_iter()
+        .map(|(track_index, track)| {
+            render_track_buffer(
                 track,
                 song.tempo_bpm,
-                score.sample_rate_hz,
+                song.meter,
+                sample_rate_hz,
                 channels,
-                &libraries,
-                &mut track_samples,
-            )?;
-            if let Some(effect) = track.effect {
-                apply_track_effect(
-                    effect,
-                    &mut track_samples,
-                    channels,
-                    song.tempo_bpm,
-                    song.meter,
-                    score.sample_rate_hz,
-                )?;
-            }
-            if let Some(cache) = cache.as_deref_mut() {
-                cache.store(track, &track_samples);
-            }
-            track_samples
-        };
-        for (mixed, dry) in samples.iter_mut().zip(&track_samples) {
-            *mixed += dry;
+                sample_count,
+                libraries,
+            )
+            .map(|samples| (*track_index, samples))
+        })
+        .collect::<Result<Vec<_>, RenderError>>()?;
+    for (track_index, track_samples) in rendered_parallel_tracks {
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.store(&song.tracks[track_index], &track_samples);
+        }
+        track_buffers[track_index] = track_samples;
+    }
+    // VST3 hosts and third-party plugins do not promise thread safety, so
+    // keep those tracks off Rayon while rendering all built-in tracks above.
+    for (track_index, track) in vst3_tracks {
+        let track_samples = render_track_buffer(
+            track,
+            song.tempo_bpm,
+            song.meter,
+            sample_rate_hz,
+            channels,
+            sample_count,
+            libraries,
+        )?;
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.store(track, &track_samples);
+        }
+        track_buffers[track_index] = track_samples;
+    }
+    let mut samples = vec![0.0; sample_count];
+    for (track_index, track_samples) in track_buffers.iter().enumerate() {
+        for (mixed, rendered) in samples.iter_mut().zip(track_samples) {
+            *mixed += rendered;
         }
         progress(track_index + 1, track_count);
     }
-    if let Some(master) = &song.master {
-        apply_limiter(&mut samples, master.ceiling);
-    }
-    for sample in &mut samples {
-        *sample = sample.clamp(-1.0, 1.0);
-    }
-    Ok(AudioBuffer {
-        sample_rate_hz: score.sample_rate_hz,
+    Ok(samples)
+}
+
+fn render_track_buffer(
+    track: &Track,
+    tempo_bpm: f64,
+    meter: Meter,
+    sample_rate_hz: u32,
+    channels: u16,
+    sample_count: usize,
+    libraries: &AssetLibraries<'_>,
+) -> Result<Vec<f32>, RenderError> {
+    let mut samples = vec![0.0; sample_count];
+    render_track(
+        track,
+        tempo_bpm,
+        sample_rate_hz,
         channels,
-        samples,
-    })
+        libraries,
+        &mut samples,
+    )?;
+    if let Some(effect) = track.effect {
+        apply_track_effect(
+            effect,
+            &mut samples,
+            channels,
+            tempo_bpm,
+            meter,
+            sample_rate_hz,
+        )?;
+    }
+    Ok(samples)
 }
 
 fn master_is_valid(master: MasterLimiter) -> bool {
@@ -925,6 +1006,32 @@ mod tests {
             (first.frames(), first.channels, first.samples),
             (8, 2, second.samples)
         );
+    }
+
+    #[test]
+    fn render_song_should_mix_parallel_tracks_in_source_order() {
+        let first = score(InstrumentKind::Sine { envelope: None });
+        let mut second = first.clone();
+        second.songs[0].tracks[0].notes[0].midi_pitch = 72;
+        let mut combined = first.clone();
+        combined.songs[0]
+            .tracks
+            .push(second.songs[0].tracks[0].clone());
+
+        let expected = render_song(&first, 0)
+            .expect("first track should render")
+            .samples
+            .into_iter()
+            .zip(
+                render_song(&second, 0)
+                    .expect("second track should render")
+                    .samples,
+            )
+            .map(|(first, second)| (first + second).clamp(-1.0, 1.0))
+            .collect::<Vec<_>>();
+        let rendered = render_song(&combined, 0).expect("parallel tracks should render");
+
+        assert_eq!(rendered.samples, expected);
     }
 
     #[test]

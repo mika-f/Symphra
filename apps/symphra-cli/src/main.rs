@@ -55,6 +55,7 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<PathBuf, CliError> {
     Ok(output)
 }
 
+#[cfg(test)]
 fn source_to_wav(name: String, text: String) -> Result<Vec<u8>, CliError> {
     source_to_wav_inner(name, text, None)
 }

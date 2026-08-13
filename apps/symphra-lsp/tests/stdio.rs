@@ -477,10 +477,6 @@ fn stdio_server_should_handle_documents_and_shutdown() {
     );
 
     let section_source = include_str!("../../../examples/draft-0.1/001-example.sym");
-    let drop_line = section_source
-        .lines()
-        .position(|line| line.trim_start().starts_with("section drop bars"))
-        .expect("example should declare drop");
     server.send(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didChange",
@@ -499,7 +495,7 @@ fn stdio_server_should_handle_documents_and_shutdown() {
         "method": "symphra/sectionPreview",
         "params": {
             "textDocument": { "uri": "file:///test.sym" },
-            "position": { "line": drop_line, "character": 10 }
+            "sectionName": "drop"
         }
     }));
     assert_eq!(

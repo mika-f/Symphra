@@ -14,10 +14,13 @@ import {
 let client: LanguageClient | undefined;
 let playback: ChildProcess | undefined;
 let previewDirectory: string | undefined;
-let playbackGeneration = 0;
+let previewGeneration = 0;
+let previewSession: PreviewSession | undefined;
+let savingDocument: string | undefined;
 
 type FrameRange = readonly [start: number, end: number];
 type SectionPreview = { name: string; startFrame: number; endFrame: number };
+type PreviewSession = { uri: string; sectionName?: string };
 
 const LSP_BINARY_NAME = process.platform === "win32" ? "symphra-lsp.exe" : "symphra-lsp";
 const CLI_BINARY_NAME = process.platform === "win32" ? "symphra.exe" : "symphra";
@@ -30,6 +33,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("symphra.renderAndPlay", () => renderAndPlay()),
     vscode.commands.registerCommand("symphra.loopSection", () => loopSection()),
     vscode.commands.registerCommand("symphra.stopPlayback", () => stopPlayback()),
+    vscode.workspace.onDidSaveTextDocument((document) => {
+      if (document.uri.toString() !== savingDocument) {
+        void refreshPreview(document);
+      }
+    }),
     // CodeLens "N references" clicks: server sends LSP positions/locations as plain JSON.
     vscode.commands.registerCommand(
       "symphra.showReferences",
@@ -146,7 +154,9 @@ async function renderAndPlay(): Promise<void> {
     void vscode.window.showErrorMessage("Symphra: open a saved .sym file to render it.");
     return;
   }
-  await renderDocumentAndPlay(document);
+  if (await renderDocumentAndPlay(document)) {
+    previewSession = { uri: document.uri.toString() };
+  }
 }
 
 async function loopSection(): Promise<void> {
@@ -163,8 +173,7 @@ async function loopSection(): Promise<void> {
 
   let section: SectionPreview | null;
   try {
-    section = await client.sendRequest<SectionPreview | null>("symphra/sectionPreview", {
-      textDocument: { uri: document.uri.toString() },
+    section = await requestSectionPreview(document, {
       position: {
         line: editor.selection.active.line,
         character: editor.selection.active.character,
@@ -180,25 +189,32 @@ async function loopSection(): Promise<void> {
     );
     return;
   }
-  const range: FrameRange = [section.startFrame, section.endFrame];
-  if (!range.every(Number.isSafeInteger) || range[0] < 0 || range[0] >= range[1]) {
+  const range = sectionFrameRange(section);
+  if (!range) {
     void vscode.window.showErrorMessage("Symphra: the section playback range is invalid.");
     return;
   }
-  await renderDocumentAndPlay(document, range, section.name);
+  if (await renderDocumentAndPlay(document, range, section.name)) {
+    previewSession = { uri: document.uri.toString(), sectionName: section.name };
+  }
 }
 
 async function renderDocumentAndPlay(
   document: vscode.TextDocument,
   range?: FrameRange,
   sectionName?: string,
-): Promise<void> {
-  if (!(await document.save())) {
-    return;
+  automatic = false,
+): Promise<boolean> {
+  savingDocument = document.uri.toString();
+  try {
+    if (!(await document.save())) {
+      return false;
+    }
+  } finally {
+    savingDocument = undefined;
   }
 
-  stopPlayback();
-  const generation = playbackGeneration;
+  const generation = ++previewGeneration;
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "symphra-preview-"));
   const output = path.join(directory, "preview.wav");
   const command = resolveCliCommand();
@@ -206,7 +222,7 @@ async function renderDocumentAndPlay(
   try {
     await vscode.window.withProgress(
       {
-        location: vscode.ProgressLocation.Notification,
+        location: automatic ? vscode.ProgressLocation.Window : vscode.ProgressLocation.Notification,
         title: sectionName
           ? `Symphra: rendering section ${sectionName}`
           : "Symphra: rendering preview",
@@ -218,23 +234,86 @@ async function renderDocumentAndPlay(
     void vscode.window.showErrorMessage(
       `Symphra: render failed ("${command}"). ${commandError(error)}`,
     );
-    return;
+    return false;
   }
 
-  if (generation === playbackGeneration) {
+  if (generation === previewGeneration) {
+    terminatePlayback();
     startPlayback(resolvePlayerCommand(), output, directory, range);
+    return true;
   } else {
     void removePreview(directory);
+    return false;
   }
 }
 
 function stopPlayback(): void {
-  playbackGeneration += 1;
+  previewSession = undefined;
+  previewGeneration += 1;
+  terminatePlayback();
+}
+
+function terminatePlayback(): void {
   playback?.kill();
   playback = undefined;
   if (previewDirectory) {
     void removePreview(previewDirectory);
   }
+}
+
+async function refreshPreview(document: vscode.TextDocument): Promise<void> {
+  const session = previewSession;
+  if (!session || session.uri !== document.uri.toString()) {
+    return;
+  }
+
+  let section: SectionPreview | null = null;
+  if (session.sectionName) {
+    try {
+      section = await requestSectionPreview(document, { sectionName: session.sectionName });
+    } catch (error) {
+      void vscode.window.showErrorMessage(
+        `Symphra: could not refresh section ${session.sectionName}. ${describe(error)}`,
+      );
+      return;
+    }
+    if (!section) {
+      void vscode.window.showErrorMessage(
+        `Symphra: section ${session.sectionName} is no longer in the arrangement.`,
+      );
+      return;
+    }
+  }
+  if (previewSession !== session) {
+    return;
+  }
+
+  const range = section ? sectionFrameRange(section) : undefined;
+  if (section && !range) {
+    void vscode.window.showErrorMessage("Symphra: the section playback range is invalid.");
+    return;
+  }
+  await renderDocumentAndPlay(document, range, section?.name, true);
+}
+
+function requestSectionPreview(
+  document: vscode.TextDocument,
+  selector: { position: { line: number; character: number } } | { sectionName: string },
+): Promise<SectionPreview | null> {
+  if (!client) {
+    return Promise.reject(new Error("the language server is not running"));
+  }
+  return client.sendRequest("symphra/sectionPreview", {
+    textDocument: { uri: document.uri.toString() },
+    ...selector,
+  });
+}
+
+function sectionFrameRange(section: SectionPreview): FrameRange | undefined {
+  const range: FrameRange = [section.startFrame, section.endFrame];
+  return range.every(Number.isSafeInteger) && range[0] >= 0 && range[0] < range[1]
+    ? range
+    : undefined;
 }
 
 function startPlayback(

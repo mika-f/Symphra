@@ -17,7 +17,9 @@ tracks the current draft and will need updates as the language grows.
 - **Render and Play**, **Loop Section at Cursor**, and **Stop Playback** commands
   backed by the `symphra` CLI and a background `symphra-player` process. The
   player loops either the full render or the arranged occurrence of the section
-  containing the cursor, without opening a player panel.
+  containing the cursor, without opening a player panel. Saving the active
+  preview document re-renders and replaces the loop; **Stop Playback** disables
+  this automatic refresh.
 
 ## Building and running
 
@@ -60,3 +62,7 @@ folder isn't the repository root).
 - **Symphra: Render and Play** (`symphra.renderAndPlay`)
 - **Symphra: Loop Section at Cursor** (`symphra.loopSection`)
 - **Symphra: Stop Playback** (`symphra.stopPlayback`)
+
+After starting either preview command, save the same `.sym` document to refresh
+the background loop automatically. A section preview follows the named section
+even when tempo, meter, or earlier arrangement entries change.

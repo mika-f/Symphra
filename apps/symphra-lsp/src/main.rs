@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use symphra_compiler::compile;
 use symphra_syntax::ast::{
     ArrangementEntry, ChordPitches, Declaration, Identifier, PatternBody, PlaySource,
@@ -25,8 +25,9 @@ use tower_lsp_server::ls_types::{
     RenameParams, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions, WorkspaceEdit,
+    SymbolInformation, SymbolKind, TextDocumentIdentifier, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri, WorkDoneProgressOptions,
+    WorkspaceEdit,
 };
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 
@@ -49,13 +50,21 @@ impl Backend {
 
     async fn section_preview(
         &self,
-        params: TextDocumentPositionParams,
+        params: SectionPreviewParams,
     ) -> Result<Option<SectionPreview>> {
         let documents = self.documents.read().await;
-        Ok(documents
-            .get(&params.text_document.uri)
-            .and_then(|source| section_preview(source, params.position)))
+        Ok(documents.get(&params.text_document.uri).and_then(|source| {
+            section_preview(source, params.position, params.section_name.as_deref())
+        }))
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SectionPreviewParams {
+    text_document: TextDocumentIdentifier,
+    position: Option<Position>,
+    section_name: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -66,7 +75,11 @@ struct SectionPreview {
     end_frame: u64,
 }
 
-fn section_preview(source: &SourceText, position: Position) -> Option<SectionPreview> {
+fn section_preview(
+    source: &SourceText,
+    position: Option<Position>,
+    section_name: Option<&str>,
+) -> Option<SectionPreview> {
     let parsed = parse(source.id, &source.text);
     if !parsed.diagnostics.is_empty() {
         return None;
@@ -80,21 +93,25 @@ fn section_preview(source: &SourceText, position: Position) -> Option<SectionPre
         }
     })?;
     let song = program.songs.first()?;
-    let offset = source.byte_offset_utf16(SourcePosition {
-        line: position.line,
-        utf16_column: position.character,
+    let offset = position.and_then(|position| {
+        source.byte_offset_utf16(SourcePosition {
+            line: position.line,
+            utf16_column: position.character,
+        })
+    });
+    let target = song_declaration.statements.iter().find_map(|statement| {
+        let SongStatement::Section(section) = statement else {
+            return None;
+        };
+        let matches = section_name.map_or_else(
+            || {
+                offset
+                    .is_some_and(|offset| section.span.start <= offset && offset < section.span.end)
+            },
+            |name| section.name.text == name,
+        );
+        matches.then_some(section)
     })?;
-    let target = song_declaration
-        .statements
-        .iter()
-        .find_map(|statement| match statement {
-            SongStatement::Section(section)
-                if section.span.start <= offset && offset < section.span.end =>
-            {
-                Some(section)
-            }
-            _ => None,
-        })?;
     let entries = song_declaration
         .statements
         .iter()
@@ -2320,7 +2337,11 @@ mod tests {
 
         let preview = section_preview(
             &source,
-            Position::new(u32::try_from(drop_line).expect("line fits in u32"), 10),
+            Some(Position::new(
+                u32::try_from(drop_line).expect("line fits in u32"),
+                10,
+            )),
+            None,
         )
         .expect("drop should be arranged");
 

@@ -18,6 +18,8 @@ tracks the current draft and will need updates as the language grows.
   **▶ Loop section** CodeLens above each section declaration and **▶ From
   here** above each section-based arrangement entry.
 - A status bar item showing the current file and section; click it to stop playback.
+  It also shows the last render duration and track-cache hits, such as
+  `184ms · cache 3/4`.
 - A BPM-synchronized `▶ bar.beat` cursor on the active arrangement entry and
   a subtle whole-line highlight over the section currently being played.
 - Playback highlighting for sequence `note`, `chord`, and `rest` items plus

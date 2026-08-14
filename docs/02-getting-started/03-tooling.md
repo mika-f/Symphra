@@ -54,6 +54,7 @@ Speaks LSP over **stdio**. Capabilities include:
 - A playback cursor and active-section highlight synchronized to section frame boundaries
 - Playback highlighting for sequence and rhythm source items through derived,
   arpeggiated, repeated, and reversed playback
+- Last-render duration and track-cache hit counts in the VS Code status bar
 
 Build:
 

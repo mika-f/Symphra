@@ -69,7 +69,14 @@ fn source_to_wav_with_cache(
     track_mix: &TrackMix,
 ) -> Result<Vec<u8>, CliError> {
     let mut cache = FileTrackCache::new(input);
-    source_to_wav_inner(name, text, track_mix, Some(&mut cache))
+    let wav = source_to_wav_inner(name, text, track_mix, Some(&mut cache));
+    if wav.is_ok() {
+        eprintln!(
+            "symphra-render-stats cache_hits={} cache_misses={}",
+            cache.hits, cache.misses
+        );
+    }
+    wav
 }
 
 fn source_to_wav_inner(
@@ -216,6 +223,8 @@ struct FileTrackCache {
     directory: PathBuf,
     base: PathBuf,
     context: u64,
+    hits: usize,
+    misses: usize,
 }
 
 impl FileTrackCache {
@@ -227,6 +236,8 @@ impl FileTrackCache {
                 .join(".symphra-cache"),
             base: input.parent().unwrap_or_else(|| Path::new("")).to_owned(),
             context: 0,
+            hits: 0,
+            misses: 0,
         }
     }
 
@@ -264,10 +275,8 @@ impl FileTrackCache {
         }
         Some(self.directory.join(format!("{:016x}.pcm", hasher.finish())))
     }
-}
 
-impl TrackRenderCache for FileTrackCache {
-    fn load(&mut self, track: &Track, sample_count: usize) -> Option<Vec<f32>> {
+    fn read(&self, track: &Track, sample_count: usize) -> Option<Vec<f32>> {
         let bytes = fs::read(self.path(track)?).ok()?;
         if bytes.get(..CACHE_MAGIC.len())? != CACHE_MAGIC {
             return None;
@@ -282,6 +291,18 @@ impl TrackRenderCache for FileTrackCache {
             .collect::<Vec<_>>();
         (samples.len() == sample_count && samples.iter().all(|sample| sample.is_finite()))
             .then_some(samples)
+    }
+}
+
+impl TrackRenderCache for FileTrackCache {
+    fn load(&mut self, track: &Track, sample_count: usize) -> Option<Vec<f32>> {
+        let samples = self.read(track, sample_count);
+        if samples.is_some() {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        samples
     }
 
     fn store(&mut self, track: &Track, samples: &[f32]) {
@@ -548,7 +569,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        CliArguments, CliError, SourceId, SourceSpan, SourceText, render_diagnostic, source_to_wav,
+        CliArguments, CliError, FileTrackCache, SourceId, SourceSpan, SourceText, TrackRenderCache,
+        compile_source, render_diagnostic, source_to_wav,
     };
 
     #[test]
@@ -601,6 +623,38 @@ song "Test" {
         .expect("valid source should encode");
 
         assert_eq!((&wav[0..4], &wav[8..12]), (&b"RIFF"[..], &b"WAVE"[..]));
+    }
+
+    #[test]
+    fn file_track_cache_should_count_hits_and_misses() {
+        let directory =
+            std::env::temp_dir().join(format!("symphra-cli-cache-test-{}", std::process::id()));
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            r#"
+project { seed 1 sample_rate 8khz output mono }
+song "Test" {
+  tempo 120bpm meter 4/4 key C major
+  instrument lead = sine
+  pattern melody = sequence { note A4 for 1/4 }
+  track lead role melody { instrument lead play melody }
+  section verse bars 1 { parallel { play track lead } }
+  arrangement { play verse }
+}
+"#,
+        );
+        let score = compile_source(&source).expect("source should compile");
+        let track = &score.songs[0].tracks[0];
+        let mut cache = FileTrackCache::new(&directory.join("test.sym"));
+        cache.set_context(&score);
+        cache.store(track, &[0.0, 0.5]);
+
+        let _ = cache.load(track, 2);
+        let _ = cache.load(track, 1);
+
+        fs::remove_dir_all(directory).expect("cache directory should be removed");
+        assert_eq!((cache.hits, cache.misses), (1, 1));
     }
 
     #[test]

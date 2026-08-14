@@ -24,6 +24,7 @@ let activeSectionDecoration: vscode.TextEditorDecorationType | undefined;
 let activeMaterialDecoration: vscode.TextEditorDecorationType | undefined;
 let playbackTimelineTimer: NodeJS.Timeout | undefined;
 let playbackTimelineGeneration = 0;
+let lastRenderStats: RenderStats | undefined;
 const previewTrackMixes = new Map<string, TrackMix>();
 
 type FrameRange = readonly [start: number, end: number];
@@ -46,6 +47,7 @@ type PlaybackTimeline = {
 };
 type PreviewSession = { uri: string; sectionName?: string; arrangementIndex?: number };
 type TrackMix = { muted: Set<string>; soloed: Set<string> };
+type RenderStats = { durationMs: number; cache?: { hits: number; misses: number } };
 type PreviewResponse = { id: number; error: string | null };
 type PendingPreview = { resolve: () => void; reject: (error: Error) => void };
 
@@ -320,9 +322,12 @@ async function renderDocumentAndPlay(
   const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "symphra-preview-"));
   const output = path.join(directory, "preview.wav");
   const command = resolveCliCommand();
+  const renderStartedAt = performance.now();
+  let renderStderr: string;
+  let renderDurationMs: number;
 
   try {
-    await vscode.window.withProgress(
+    const result = await vscode.window.withProgress(
       {
         location: automatic ? vscode.ProgressLocation.Window : vscode.ProgressLocation.Notification,
         title: sectionName
@@ -331,6 +336,8 @@ async function renderDocumentAndPlay(
       },
       () => execFileAsync(command, renderArguments(document, output)),
     );
+    renderStderr = result.stderr;
+    renderDurationMs = performance.now() - renderStartedAt;
   } catch (error) {
     await fs.promises.rm(directory, { recursive: true, force: true });
     void vscode.window.showErrorMessage(
@@ -340,7 +347,7 @@ async function renderDocumentAndPlay(
   }
 
   if (generation === previewGeneration) {
-    return startPlayback(
+    const started = await startPlayback(
       resolvePlayerCommand(),
       output,
       directory,
@@ -348,6 +355,16 @@ async function renderDocumentAndPlay(
       await wavFrameCount(output),
       range,
     );
+    if (started) {
+      lastRenderStats = {
+        durationMs: renderDurationMs,
+        cache: parseCacheStats(renderStderr),
+      };
+      if (previewSession?.uri === document.uri.toString()) {
+        setPreviewSession(previewSession);
+      }
+    }
+    return started;
   } else {
     void removePreview(directory);
     return false;
@@ -377,8 +394,27 @@ function setPreviewSession(session: PreviewSession): void {
   const mixStatus = mix
     ? `${mix.muted.size ? ` M${mix.muted.size}` : ""}${mix.soloed.size ? ` S${mix.soloed.size}` : ""}`
     : "";
-  playbackStatus.text = `$(debug-stop) ${filename}${location ? `: ${location}` : ""}${mixStatus}`;
+  const renderStatus = lastRenderStats ? ` · ${formatRenderStats(lastRenderStats)}` : "";
+  playbackStatus.text = `$(debug-stop) ${filename}${location ? `: ${location}` : ""}${mixStatus}${renderStatus}`;
+  playbackStatus.tooltip = lastRenderStats
+    ? `Stop Symphra preview\nLast ${formatRenderStats(lastRenderStats)}`
+    : "Stop Symphra preview";
   playbackStatus.show();
+}
+
+function parseCacheStats(stderr: string): { hits: number; misses: number } | undefined {
+  const match = /symphra-render-stats cache_hits=(\d+) cache_misses=(\d+)/.exec(stderr);
+  return match ? { hits: Number(match[1]), misses: Number(match[2]) } : undefined;
+}
+
+function formatRenderStats(stats: RenderStats): string {
+  const duration = stats.durationMs < 1_000
+    ? `${Math.round(stats.durationMs)}ms`
+    : `${(stats.durationMs / 1_000).toFixed(2)}s`;
+  if (!stats.cache) {
+    return duration;
+  }
+  return `${duration} · cache ${stats.cache.hits}/${stats.cache.hits + stats.cache.misses}`;
 }
 
 function clearPreviewSession(): void {

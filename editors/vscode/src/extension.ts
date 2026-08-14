@@ -19,10 +19,31 @@ let previewGeneration = 0;
 let previewSession: PreviewSession | undefined;
 let savingDocument: string | undefined;
 let playbackStatus: vscode.StatusBarItem | undefined;
+let playbackCursorDecoration: vscode.TextEditorDecorationType | undefined;
+let activeSectionDecoration: vscode.TextEditorDecorationType | undefined;
+let activeMaterialDecoration: vscode.TextEditorDecorationType | undefined;
+let playbackTimelineTimer: NodeJS.Timeout | undefined;
+let playbackTimelineGeneration = 0;
 const previewTrackMixes = new Map<string, TrackMix>();
 
 type FrameRange = readonly [start: number, end: number];
 type SectionPreview = { name: string; startFrame: number; endFrame: number };
+type LspRange = {
+  start: { line: number; character: number };
+  end: { line: number; character: number };
+};
+type PlaybackOccurrence = SectionPreview & {
+  sectionRange: LspRange;
+  arrangementRange: LspRange;
+};
+type PlaybackCue = { startFrame: number; endFrame: number; range: LspRange };
+type PlaybackTimeline = {
+  sampleRateHz: number;
+  framesPerBeat: number;
+  beatsPerBar: number;
+  occurrences: PlaybackOccurrence[];
+  cues: PlaybackCue[];
+};
 type PreviewSession = { uri: string; sectionName?: string; arrangementIndex?: number };
 type TrackMix = { muted: Set<string>; soloed: Set<string> };
 type PreviewResponse = { id: number; error: string | null };
@@ -35,10 +56,26 @@ const execFileAsync = promisify(execFile);
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   playbackStatus = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  playbackCursorDecoration = vscode.window.createTextEditorDecorationType({
+    before: {
+      color: new vscode.ThemeColor("editorInfo.foreground"),
+      fontWeight: "bold",
+    },
+  });
+  activeSectionDecoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: new vscode.ThemeColor("editor.wordHighlightBackground"),
+  });
+  activeMaterialDecoration = vscode.window.createTextEditorDecorationType({
+    backgroundColor: new vscode.ThemeColor("editor.findMatchHighlightBackground"),
+  });
   playbackStatus.command = "symphra.stopPlayback";
   playbackStatus.tooltip = "Stop Symphra preview";
   context.subscriptions.push(
     playbackStatus,
+    playbackCursorDecoration,
+    activeSectionDecoration,
+    activeMaterialDecoration,
     vscode.commands.registerCommand("symphra.restartServer", () => restartServer()),
     vscode.commands.registerCommand("symphra.renderAndPlay", () => renderAndPlay()),
     vscode.commands.registerCommand(
@@ -303,7 +340,14 @@ async function renderDocumentAndPlay(
   }
 
   if (generation === previewGeneration) {
-    return startPlayback(resolvePlayerCommand(), output, directory, range);
+    return startPlayback(
+      resolvePlayerCommand(),
+      output,
+      directory,
+      document.uri.toString(),
+      await wavFrameCount(output),
+      range,
+    );
   } else {
     void removePreview(directory);
     return false;
@@ -312,6 +356,7 @@ async function renderDocumentAndPlay(
 
 function stopPlayback(): void {
   clearPreviewSession();
+  stopPlaybackTimeline();
   previewGeneration += 1;
   void player?.stop().catch(() => {});
   if (previewDirectory) {
@@ -464,6 +509,15 @@ function requestArrangementPreview(
   });
 }
 
+function requestPlaybackTimeline(uri: string): Promise<PlaybackTimeline | null> {
+  if (!client) {
+    return Promise.resolve(null);
+  }
+  return client.sendRequest("symphra/playbackTimeline", {
+    textDocument: { uri },
+  });
+}
+
 function sectionFrameRange(section: SectionPreview): FrameRange | undefined {
   const range: FrameRange = [section.startFrame, section.endFrame];
   return range.every(Number.isSafeInteger) && range[0] >= 0 && range[0] < range[1]
@@ -475,12 +529,15 @@ async function startPlayback(
   command: string,
   output: string,
   directory: string,
+  uri: string,
+  totalFrames: number | undefined,
   range?: FrameRange,
 ): Promise<boolean> {
   try {
     const activePlayer = player ?? PreviewPlayer.start(command);
     player = activePlayer;
     await activePlayer.play(output, range);
+    startPlaybackTimeline(uri, totalFrames, range);
     const previousDirectory = previewDirectory;
     previewDirectory = directory;
     if (previousDirectory) {
@@ -494,6 +551,113 @@ async function startPlayback(
     void removePreview(directory);
     void vscode.window.showErrorMessage(`Symphra: playback failed ("${command}"). ${describe(error)}`);
     return false;
+  }
+}
+
+function startPlaybackTimeline(
+  uri: string,
+  totalFrames: number | undefined,
+  range?: FrameRange,
+): void {
+  stopPlaybackTimeline();
+  const generation = playbackTimelineGeneration;
+  const startedAt = performance.now();
+  void requestPlaybackTimeline(uri)
+    .then((timeline) => {
+      if (!timeline || generation !== playbackTimelineGeneration) {
+        return;
+      }
+      const startFrame = range?.[0] ?? 0;
+      const endFrame = range?.[1] ?? totalFrames ?? timeline.occurrences.at(-1)?.endFrame;
+      if (endFrame === undefined || startFrame >= endFrame) {
+        return;
+      }
+      const update = () => {
+        const elapsedFrames = ((performance.now() - startedAt) * timeline.sampleRateHz) / 1_000;
+        const frame = startFrame + (elapsedFrames % (endFrame - startFrame));
+        const occurrence = timeline.occurrences.find(
+          (candidate) => candidate.startFrame <= frame && frame < candidate.endFrame,
+        );
+        const beatIndex = occurrence
+          ? Math.floor((frame - occurrence.startFrame) / timeline.framesPerBeat)
+          : 0;
+        const position = occurrence
+          ? `${Math.floor(beatIndex / timeline.beatsPerBar) + 1}.${(beatIndex % timeline.beatsPerBar) + 1}`
+          : undefined;
+        const cues = timeline.cues.filter(
+          (candidate) => candidate.startFrame <= frame && frame < candidate.endFrame,
+        );
+        updatePlaybackDecorations(uri, occurrence, position, cues);
+      };
+      update();
+      playbackTimelineTimer = setInterval(update, 50);
+    })
+    .catch(() => {});
+}
+
+function stopPlaybackTimeline(): void {
+  playbackTimelineGeneration += 1;
+  if (playbackTimelineTimer) {
+    clearInterval(playbackTimelineTimer);
+    playbackTimelineTimer = undefined;
+  }
+  updatePlaybackDecorations(undefined, undefined);
+}
+
+function updatePlaybackDecorations(
+  uri: string | undefined,
+  occurrence: PlaybackOccurrence | undefined,
+  position?: string,
+  cues: PlaybackCue[] = [],
+): void {
+  for (const editor of vscode.window.visibleTextEditors) {
+    const matches = uri !== undefined && editor.document.uri.toString() === uri;
+    editor.setDecorations(
+      playbackCursorDecoration!,
+      matches && occurrence
+        ? [
+            {
+              range: vscodeRange(occurrence.arrangementRange),
+              renderOptions: { before: { contentText: `▶ ${position} ` } },
+            },
+          ]
+        : [],
+    );
+    editor.setDecorations(
+      activeSectionDecoration!,
+      matches && occurrence ? [vscodeRange(occurrence.sectionRange)] : [],
+    );
+    editor.setDecorations(
+      activeMaterialDecoration!,
+      matches ? cues.map((cue) => vscodeRange(cue.range)) : [],
+    );
+  }
+}
+
+function vscodeRange(range: LspRange): vscode.Range {
+  return new vscode.Range(
+    range.start.line,
+    range.start.character,
+    range.end.line,
+    range.end.character,
+  );
+}
+
+async function wavFrameCount(filename: string): Promise<number | undefined> {
+  try {
+    const handle = await fs.promises.open(filename, "r");
+    try {
+      const header = Buffer.alloc(44);
+      const { bytesRead } = await handle.read(header, 0, header.length, 0);
+      const blockAlign = header.readUInt16LE(32);
+      return bytesRead === header.length && blockAlign > 0
+        ? header.readUInt32LE(40) / blockAlign
+        : undefined;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
   }
 }
 

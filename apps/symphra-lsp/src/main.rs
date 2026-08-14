@@ -311,10 +311,6 @@ fn playback_timeline(source: &SourceText) -> Option<PlaybackTimeline> {
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "pattern and drum cue expansion share the section and play traversal"
-)]
 fn section_playback_cues(
     source: &SourceText,
     declaration: &SongDeclaration,
@@ -340,26 +336,12 @@ fn section_playback_cues(
             TrackBody::Layers { uses, .. } => uses.iter().map(|layer| &layer.play).collect(),
         };
         for play in plays {
-            if play.reverse {
-                continue;
-            }
             let offset = play_offset_frames(play, song, sample_rate_hz)?;
             match &play.source {
                 PlaySource::Pattern(name) => {
-                    let pattern =
-                        declaration
-                            .statements
-                            .iter()
-                            .find_map(|statement| match statement {
-                                SongStatement::Pattern(pattern)
-                                    if pattern.name.text == name.text =>
-                                {
-                                    Some(pattern)
-                                }
-                                _ => None,
-                            })?;
+                    let pattern = named_pattern(declaration, &name.text)?;
                     let Some((pattern_cues, duration)) =
-                        pattern_playback_cues(source, pattern, song, sample_rate_hz)
+                        pattern_playback_cues(source, declaration, pattern, song, sample_rate_hz)
                     else {
                         continue;
                     };
@@ -389,8 +371,10 @@ fn section_playback_cues(
                         &play_cues,
                         section_start.checked_add(offset)?,
                         section_end,
+                        section_end.checked_sub(section_start)?,
                         duration,
                         play.repeat.map(|repeat| repeat.count),
+                        play.reverse,
                     )?;
                 }
                 PlaySource::Drum { rhythm, .. } => {
@@ -423,8 +407,10 @@ fn section_playback_cues(
                         &rhythm_cues,
                         section_start.checked_add(offset)?,
                         section_end,
+                        section_end.checked_sub(section_start)?,
                         duration,
                         play.repeat.map(|repeat| repeat.count),
+                        play.reverse,
                     )?;
                 }
             }
@@ -435,25 +421,68 @@ fn section_playback_cues(
 
 fn pattern_playback_cues(
     source: &SourceText,
+    declaration: &SongDeclaration,
     pattern: &symphra_syntax::ast::PatternDeclaration,
     song: &symphra_compiler::hir::Song,
     sample_rate_hz: u32,
 ) -> Option<(Vec<PlaybackCue>, f64)> {
-    let PatternBody::Sequence { step, items, .. } = &pattern.body else {
-        return None;
-    };
-    let mut cues = Vec::new();
-    let mut cursor = 0.0;
-    append_sequence_cues(
-        &mut cues,
-        &mut cursor,
-        items,
-        step.as_ref(),
-        source,
-        song,
-        sample_rate_hz,
-    )?;
-    Some((cues, cursor))
+    match &pattern.body {
+        PatternBody::Sequence { step, items, .. } => {
+            let mut cues = Vec::new();
+            let mut cursor = 0.0;
+            append_sequence_cues(
+                &mut cues,
+                &mut cursor,
+                items,
+                step.as_ref(),
+                source,
+                song,
+                sample_rate_hz,
+            )?;
+            Some((cues, cursor))
+        }
+        PatternBody::Arpeggiate { source: name, .. } => pattern_playback_cues(
+            source,
+            declaration,
+            named_pattern(declaration, &name.text)?,
+            song,
+            sample_rate_hz,
+        ),
+        PatternBody::Derived {
+            source: name,
+            repeat,
+            reverse,
+            ..
+        } => {
+            let (cues, duration) = pattern_playback_cues(
+                source,
+                declaration,
+                named_pattern(declaration, &name.text)?,
+                song,
+                sample_rate_hz,
+            )?;
+            let copies = match repeat.map(|repeat| repeat.count) {
+                Some(RepeatCount::Fixed(count)) => count,
+                Some(RepeatCount::Fit) => return None,
+                None => 1,
+            };
+            transform_cues(&cues, duration, copies, *reverse)
+        }
+        PatternBody::Steps { .. } => None,
+    }
+}
+
+fn named_pattern<'a>(
+    declaration: &'a SongDeclaration,
+    name: &str,
+) -> Option<&'a symphra_syntax::ast::PatternDeclaration> {
+    declaration
+        .statements
+        .iter()
+        .find_map(|statement| match statement {
+            SongStatement::Pattern(pattern) if pattern.name.text == name => Some(pattern),
+            _ => None,
+        })
 }
 
 fn append_sequence_cues(
@@ -551,35 +580,62 @@ fn rhythm_item_ranges(source: &SourceText, items: &[RhythmItem]) -> Option<Vec<R
     Some(ranges)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the arguments mirror one play's timing transform and section bounds"
+)]
 fn append_play_cues(
     destination: &mut Vec<PlaybackCue>,
     cues: &[PlaybackCue],
     offset: u64,
     section_end: u64,
+    section_duration: u64,
     duration: f64,
     repeat: Option<RepeatCount>,
+    reverse: bool,
 ) -> Option<()> {
     let copies = match repeat {
         None => 1,
         Some(RepeatCount::Fixed(count)) => count,
-        Some(RepeatCount::Fit) => u32::MAX,
-    };
-    let duration = rounded_frame(duration)?;
-    for copy in 0..copies {
-        let copy_offset = offset.checked_add(duration.checked_mul(u64::from(copy))?)?;
-        if copy_offset >= section_end {
-            break;
+        Some(RepeatCount::Fit) => {
+            u32::try_from(section_duration.checked_div(rounded_frame(duration)?)?).ok()?
         }
-        for cue in cues {
-            let mut cue = cue.clone();
-            cue.start_frame = cue.start_frame.checked_add(copy_offset)?;
-            cue.end_frame = cue.end_frame.checked_add(copy_offset)?.min(section_end);
-            if !destination.contains(&cue) {
-                destination.push(cue);
-            }
+    };
+    let (cues, _) = transform_cues(cues, duration, copies, reverse)?;
+    for mut cue in cues {
+        cue.start_frame = cue.start_frame.checked_add(offset)?;
+        cue.end_frame = cue.end_frame.checked_add(offset)?.min(section_end);
+        if cue.start_frame < section_end && !destination.contains(&cue) {
+            destination.push(cue);
         }
     }
     Some(())
+}
+
+fn transform_cues(
+    cues: &[PlaybackCue],
+    duration: f64,
+    copies: u32,
+    reverse: bool,
+) -> Option<(Vec<PlaybackCue>, f64)> {
+    let duration_frames = rounded_frame(duration)?;
+    let total_frames = duration_frames.checked_mul(u64::from(copies))?;
+    let mut transformed = Vec::new();
+    for copy in 0..copies {
+        let copy_offset = duration_frames.checked_mul(u64::from(copy))?;
+        for cue in cues {
+            let mut cue = cue.clone();
+            cue.start_frame = cue.start_frame.checked_add(copy_offset)?;
+            cue.end_frame = cue.end_frame.checked_add(copy_offset)?;
+            if reverse {
+                let start_frame = total_frames.checked_sub(cue.end_frame)?;
+                cue.end_frame = total_frames.checked_sub(cue.start_frame)?;
+                cue.start_frame = start_frame;
+            }
+            transformed.push(cue);
+        }
+    }
+    Some((transformed, duration * f64::from(copies)))
 }
 
 #[expect(
@@ -3065,6 +3121,40 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(active_lines, vec![6, 11]);
+    }
+
+    #[test]
+    fn builds_playback_cues_through_derivation_arpeggiation_and_reverse() {
+        let source = SourceText::new(
+            SourceId(0),
+            "test.sym",
+            concat!(
+                "project { seed 1 sample_rate 8khz output mono }\n",
+                "song \"Test\" {\n",
+                "  tempo 120bpm meter 4/4 key C major\n",
+                "  instrument tone = sine\n",
+                "  pattern notes = sequence step 1/4 {\n",
+                "    note C4\n",
+                "    chord C4 E4 G4\n",
+                "  }\n",
+                "  pattern derived = notes |> repeat 2 |> reverse\n",
+                "  pattern arp = arpeggiate derived { style up step 1/8 }\n",
+                "  track lead role lead { instrument tone play arp |> reverse }\n",
+                "  section verse bars 1 { parallel { play track lead } }\n",
+                "  arrangement { play verse }\n",
+                "}\n",
+            ),
+        );
+
+        let timeline = playback_timeline(&source).expect("timeline should resolve");
+        let active_lines = timeline
+            .cues
+            .iter()
+            .filter(|cue| cue.start_frame <= 1_000 && 1_000 < cue.end_frame)
+            .map(|cue| cue.range.start.line)
+            .collect::<Vec<_>>();
+
+        assert_eq!(active_lines, vec![5]);
     }
     use tower_lsp_server::ls_types::{
         Command, CompletionItemKind, DiagnosticSeverity, DocumentHighlightKind, InlayHintLabel,

@@ -20,8 +20,9 @@ tracks the current draft and will need updates as the language grows.
 - A status bar item showing the current file and section; click it to stop playback.
 - A BPM-synchronized `▶ bar.beat` cursor on the active arrangement entry and
   a subtle whole-line highlight over the section currently being played.
-- Playback highlighting for directly written sequence `note`, `chord`, and
-  `rest` items plus rhythm `hit` / `rest` cells.
+- Playback highlighting for sequence `note`, `chord`, and `rest` items plus
+  rhythm `hit` / `rest` cells, including derived and arpeggiated patterns and
+  reversed playback.
 - **Render and Play**, **Loop Section at Cursor**, and **Stop Playback** commands
   backed by the `symphra` CLI and a persistent background `symphra-player` process. The
   player loops either the full render or the arranged occurrence of the section

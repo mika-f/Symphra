@@ -52,7 +52,8 @@ Speaks LSP over **stdio**. Capabilities include:
 - Semantic tokens and inlay hints
 - Section loop and arrangement **From here** CodeLens actions in VS Code
 - A playback cursor and active-section highlight synchronized to section frame boundaries
-- Playback highlighting for direct sequence and rhythm source items
+- Playback highlighting for sequence and rhythm source items through derived,
+  arpeggiated, repeated, and reversed playback
 
 Build:
 
